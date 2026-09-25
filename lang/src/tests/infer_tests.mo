@@ -7,8 +7,8 @@ use lib::types {
 }
 use lib::scope {build_scope_from_decls, scope_find_inductive}
 use lib::typecheck::infer {
-  TypedTerm, empty_local_types, empty_locals, mk, sentinel, type_check,
-  type_check_match_case,
+  CalleeDomain, TypedTerm, empty_local_types, empty_locals, lam_binder_hint, mk,
+  sentinel, type_check, type_check_match_case,
 }
 
 open Term {app, forall, hole, lam, lit, pi, var}
@@ -820,6 +820,81 @@ def test_field_pattern_bare_scrutinee_head_leaves_declared_types : Bool :=
             match checked {
                 mk _resolved_case body_typ => term_is_named_var body_typ "A",
             },
+    }
+
+// -------------------------------------------------------------------
+// The GATE on an unannotated lambda argument's discovered binder type
+// (`lam_binder_hint`, `lang/src/typecheck/infer.mo`).
+//
+// The discovery exists for the do-bind shape (`implementations/
+// do-bind-binder-untyped.md`), and its first corpus run found that handing
+// over a domain the callee had NOT finished solving is worse than handing
+// over nothing: `Foldable.foldr (fn x acc => x + acc) 0 [1, 2, 3]` and
+// `MonadState.modify_get (fn n => ...)` got a binder typed as the leaked
+// signature variable (`B`, `S`) instead of a hole, carrier inference read
+// that variable, and the emitted dictionary called itself until the driver
+// died -- `driver exited -1` on `init/src/foldable_tests.mo`, `init/src/
+// foldable_tests_fold.mo` and `examples/state_monad.mo`, all three of which
+// the pre-change compiler ran clean. The pins below are that finding: each
+// rejection is a shape the ungated version accepted.
+//
+// `pair_scope` declares the inductive `P`, so `P` is a name the scope
+// resolves and `B` is not -- exactly the two cases the gate separates.
+// -------------------------------------------------------------------
+
+def cd_of (dom : Term) (vars : List Identifier) : CalleeDomain :=
+    CalleeDomain.mk dom vars
+
+/// The accepting case: a domain that is a real, closed type and that the
+/// callee's own declaration does not bind -- the do-bind / callback shape
+/// the fix is for.
+#[test]
+def test_lam_binder_hint_accepts_a_closed_type : Bool :=
+    match lam_binder_hint (cd_of (named_free_var "P") List.empty) pair_scope {
+        Option.none => false,
+        Option.some bt => term_is_named_var bt "P",
+    }
+
+/// A free name that resolves to nothing is a type VARIABLE. This is the
+/// foldable regression, and it is the reason the gate is not optional.
+#[test]
+def test_lam_binder_hint_rejects_an_unresolved_name : Bool :=
+    match lam_binder_hint (cd_of (named_free_var "B") List.empty) pair_scope {
+        Option.none => true,
+        Option.some _ => false,
+    }
+
+/// A name the callee's OWN declaration binds is rejected even when the
+/// scope happens to resolve it as a type: a class parameter is a variable
+/// to the call site however the scope reads its name. `state_monad.mo`'s
+/// rejection is this arm -- its domain was the class's own `S`.
+#[test]
+def test_lam_binder_hint_rejects_a_declared_name_that_resolves : Bool :=
+    match lam_binder_hint (cd_of (named_free_var "P") (List.cons (Identifier.id "P") List.empty)) pair_scope {
+        Option.none => true,
+        Option.some _ => false,
+    }
+
+/// A HOLE domain says nothing, which is exactly what the parser wrote for
+/// the unannotated lambda -- so there is no discovery and the argument
+/// keeps the old behavior rather than gaining a meaningless annotation.
+#[test]
+def test_lam_binder_hint_rejects_a_hole : Bool :=
+    match lam_binder_hint (cd_of Term.hole List.empty) pair_scope {
+        Option.none => true,
+        Option.some _ => false,
+    }
+
+/// A function-typed domain is read for its ARROW domain, which is what the
+/// lambda's parameter becomes (`Monad.bind`'s continuation parameter is
+/// `A -> M B`, and the binder is its `A`). The codomain is deliberately NOT
+/// part of the test -- the caller hands over `Term.pi bt Term.hole`, so an
+/// unsolved `Q` there can never reach a binder.
+#[test]
+def test_lam_binder_hint_reads_the_arrow_domain : Bool :=
+    match lam_binder_hint (cd_of (Term.pi (named_free_var "P") (named_free_var "Q")) List.empty) pair_scope {
+        Option.none => false,
+        Option.some bt => term_is_named_var bt "P",
     }
 
 // --- Error tests: type mismatch in if ---

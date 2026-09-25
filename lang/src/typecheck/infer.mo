@@ -11,7 +11,7 @@ use lib::types {
 use lib::scope {
   DictBinding, build_dict_field_projection_checked, build_scope_def,
   carrier_bindings, class_method_declared_type, class_method_var_names,
-  class_param_names, dict_binding_class_of, dict_param_name,
+  class_param_names, dict_binding_class_of, dict_param_name, type_mentions_any,
   find_constructor_in_inductive,
   find_matching_instance, flatten_call_spine, inductive_has_constructor,
   instance_wildcard_names, list_append,
@@ -2877,6 +2877,33 @@ def app_arg_expected_type (f : Term) : Term :=
 // comments), so inferring the callee first would break carrier derivation for
 // every class method. This is additive instead -- it changes the argument's
 // expected type only for the shape above, and `Term.hole` otherwise.
+//
+// A discovered domain is handed over ONLY when it is a real, CLOSED type --
+// no name left in it that resolves to nothing, and no name the callee's own
+// declaration binds. That gate is not caution, it is the whole difference
+// between this fix and a regression: a signature variable that nothing solved
+// is a type variable, and a binder carrying one re-creates the failure
+// `class_method_var_names` (`lang/src/scope.mo`) and `lam_binder_type` exist
+// to prevent -- measured there on `init/src/foldable_tests.mo`'s `Foldable.
+// foldr (fn x acc => x + acc) 0 [1, 2, 3]`, whose `+` then resolved against
+// the wildcard-headed `instance [Add A] HAdd A A A`, emitting a dictionary
+// that called itself until the driver died by signal (`driver exited -1`).
+// Handing the lambda the callee's own abstract domain is, without the gate,
+// exactly that bug re-entered from the checker side.
+
+/// A callee's domain at the argument position we are about to check, together
+/// with the names the callee's own declaration binds.
+///
+/// The names travel with the domain because they ARE the test that decides
+/// whether the domain may be handed to a lambda (see `lam_binder_hint`), and
+/// which names are variables depends on where the declaration came from and
+/// not on its shape at all -- the same point `sig_hints` makes for the
+/// resolution pass's identical hint, whose `names` parameter exists for the
+/// same reason.
+pub struct CalleeDomain {
+    dom : Term,
+    vars : List Identifier,
+}
 
 /// The type to check an application's ARGUMENT against. `app_arg_expected_type`
 /// handles the inline-lambda callee; this adds the one other shape whose
@@ -2888,8 +2915,12 @@ def app_arg_expected_type_from_callee (f : Term) (a : Term) (scope : Scope) (loc
     let written : Term := app_arg_expected_type f in
     if is_hole written && arg_is_unannotated_lam a then
         match callee_arg_domain f scope local_types locals {
-            Option.some dom => lam_expected_of_domain dom,
             Option.none => written,
+            Option.some cd =>
+                match lam_binder_hint cd scope {
+                    Option.some bt => Term.pi bt Term.hole,
+                    Option.none => written,
+                },
         }
     else
         written
@@ -2903,43 +2934,106 @@ def arg_is_unannotated_lam (a : Term) : Bool :=
         _ => false,
     }
 
-/// Turn a callee's domain into the expected type for an unannotated lambda.
+/// The binder type an unannotated lambda argument should learn from its
+/// callee, or `Option.none` when the callee's domain is not usable as one.
 ///
-/// Only the DOMAIN is asserted, never the codomain: the lambda's real
-/// expected type here is `Term.pi dom ret`, and handing that over verbatim
-/// would make `type_check_lam`'s branch A check the continuation's body
-/// against a `ret` like `IO B` whose `B` is an unsolved free variable -- and
-/// with no metas there is nothing to solve it against, so every do-bind in the
-/// corpus would fail on a variable the checker cannot solve. The binder's type
-/// is what this bug is about, and it is what gets enforced; the codomain is
-/// left to the outer check that already handles it.
-def lam_expected_of_domain (dom : Term) : Term :=
+/// Only the DOMAIN is asserted, never the codomain -- the caller builds
+/// `Term.pi bt Term.hole`, not the callee's Pi verbatim. The lambda's real
+/// expected type is `Term.pi dom ret`, and handing that over whole would make
+/// `type_check_lam`'s branch A check the continuation's body against a `ret`
+/// like `IO B` whose `B` is an unsolved free variable; with no metas there is
+/// nothing to solve it against, so every do-bind in the corpus would fail on a
+/// variable the checker cannot solve. The binder's type is what this bug is
+/// about, and it is what gets enforced.
+///
+/// Three rejections, in order of what they protect:
+///
+///  * an uninformative binder type (hole or sort) says nothing, so it is no
+///    better than the written hole -- the parser writes a sort for an omitted
+///    annotation, and `is_uninformative_carrier` is this module's own test
+///    for both shapes;
+///  * a free name that resolves to no type in `scope` is a TYPE VARIABLE the
+///    callee's declaration never solved (`B` in `Monad.bind`'s `A -> M B`,
+///    which nothing in the call site can bind -- the result position is not
+///    reachable from here). Handing one down is the foldable regression;
+///  * a name the callee's OWN declaration binds, even one that happens to
+///    resolve as a type, because a class parameter's name is a variable to
+///    the call site however the scope reads it. `class_method_var_names`
+///    reports that set, and `hint_arrow_domain` (`lang/src/scope.mo`) applies
+///    the identical rule before its own hint goes down.
+#[partial]
+pub def lam_binder_hint (cd : CalleeDomain) (scope : Scope) : Option Term :=
+    let bt : Term := binder_typ_of cd.dom in
+    if is_uninformative_carrier (term_peel bt) then Option.none
+    else if mentions_unresolved_name bt scope then Option.none
+    else if type_mentions_any cd.vars bt then Option.none
+    else Option.some bt
+
+/// The type a lambda's parameter would take from this domain: the domain of
+/// the domain, for a function-typed one (`Monad.bind`'s continuation parameter
+/// is `A -> M B`, and the lambda's own binder is its `A`).
+#[partial]
+def binder_typ_of (dom : Term) : Term :=
     match term_peel dom {
-        Term.pi binder_typ _ret => Term.pi binder_typ Term.hole,
+        Term.pi binder_typ _ret => binder_typ,
         _ => dom,
+    }
+
+/// Does `t` mention a free name that resolves to no type in `scope`?
+///
+/// `type_mentions_any`'s sibling with the name set left out, for the one
+/// caller that cannot supply one: the names it must reject are exactly those
+/// that resolve to nothing, so resolution IS the test. The `sentinel` gate is
+/// `solve_typevars`'s own -- a var bound by a binder inside `t` carries a real
+/// de Bruijn index and is not free, so it is not a signature variable.
+#[partial]
+def mentions_unresolved_name (t : Term) (scope : Scope) : Bool :=
+    match term_peel t {
+        Term.var idx dbg =>
+            if I64.beq idx sentinel then
+                match dbg {
+                    DebugName.named id => Bool.not (is_scope_type_name id scope),
+                    DebugName.unnamed => false,
+                }
+            else
+                false,
+        Term.app f a => if mentions_unresolved_name f scope then true else mentions_unresolved_name a scope,
+        Term.pi p ret => if mentions_unresolved_name p scope then true else mentions_unresolved_name ret scope,
+        Term.forall _dbg _kind body => mentions_unresolved_name body scope,
+        Term.lam _dbg ty body => if mentions_unresolved_name ty scope then true else mentions_unresolved_name body scope,
+        _ => false,
     }
 
 /// The domain a callee expects at the position of an argument we are about to
 /// check. Two sources, cheapest first.
 #[terminating]
-def callee_arg_domain (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option Term :=
+def callee_arg_domain (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option CalleeDomain :=
     // A class method first: its own inference yields the class's ABSTRACT
     // signature (a hole at this position) rather than an instance-solved Pi,
     // so the declared signature in the class is the only source that has an
     // answer -- and consulting it first also spares a do-bind the wasted
     // `type_check` below.
     match class_method_next_param f scope local_types locals {
-        Option.some dom => Option.some dom,
+        Option.some cd => Option.some cd,
         Option.none => inferred_callee_domain f scope local_types locals,
     }
 
 /// The domain of the callee's own inferred type, for callees that are not
 /// class methods (a parameter bound to a function, say).
+///
+/// No `vars`: the callee is an ordinary term, not a class declaration, so
+/// there is no declared binder set to read. `lam_binder_hint`'s resolution
+/// test is what carries this path -- and it is the stronger of the two, since
+/// an unresolved name is rejected whether or not a declaration owns it.
 #[terminating]
-def inferred_callee_domain (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option Term :=
+def inferred_callee_domain (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option CalleeDomain :=
     match type_check f Term.hole scope local_types locals {
         err _ => Option.none,
-        ok f_tt => pi_domain_of f_tt.typ,
+        ok f_tt =>
+            match pi_domain_of f_tt.typ {
+                Option.none => Option.none,
+                Option.some dom => Option.some (CalleeDomain.mk dom List.empty),
+            },
     }
 
 /// Peel a (possibly forall-wrapped) Pi chain down to its first domain, if that
@@ -2962,14 +3056,19 @@ def pi_domain_of (t : Term) : Option Term :=
 /// solved with the same `def_call_check_args` the signature-driven def path
 /// uses, so `A` and `B` come out as the real types the call site implies
 /// rather than the free variables the registry signature stores.
+///
+/// Solving is best-effort by construction (`def_call_check_args`'s own doc
+/// comment: an argument this infer-only checker cannot type leaves its
+/// variables unsolved), which is why the result carries the class's variable
+/// names alongside the domain -- see `CalleeDomain`.
 #[terminating]
-def class_method_next_param (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option Term :=
+def class_method_next_param (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option CalleeDomain :=
     match flatten_call_spine f {
         CallSpine.mk head args =>
             match class_method_declared_sig head scope {
                 Option.none => Option.none,
-                Option.some sig =>
-                    match sig_tvars_params_ret sig {
+                Option.some decl =>
+                    match sig_tvars_params_ret decl.sig {
                         SigInfo.mk params _ret =>
                             // The NEXT parameter is the one after as many
                             // arguments as the spine has already applied.
@@ -2978,12 +3077,22 @@ def class_method_next_param (f : Term) (scope : Scope) (local_types : List Term)
                                 Option.some next_param =>
                                     match def_call_check_args args params List.empty scope local_types locals {
                                         err _ => Option.none,
-                                        ok dcc => Option.some (subst_typevars_term next_param dcc.subst),
+                                        ok dcc =>
+                                            let dom : Term := subst_typevars_term next_param dcc.subst in
+                                            Option.some (CalleeDomain.mk dom decl.vars),
                                     },
                             },
                     },
             },
     }
+
+/// A class method's declared signature, plus the names its class declaration
+/// binds (`class_method_var_names`, `lang/src/scope.mo`) -- the wildcard set
+/// `lam_binder_hint` rejects a discovered domain against.
+struct ClassMethodDecl {
+    sig : Term,
+    vars : List Identifier,
+}
 
 /// The class method a bare reference names, or `Option.none` if `head` is not
 /// one. Mirrors `type_check_free_var`'s own class-method test -- `ref_names_
@@ -2992,7 +3101,7 @@ def class_method_next_param (f : Term) (scope : Scope) (local_types : List Term)
 /// is why the qualifier is stripped first: class methods are registered under
 /// their bare method name (`add_methods_go`, `lang/scope.mo`).
 #[partial]
-def class_method_declared_sig (head : Term) (scope : Scope) : Option Term :=
+def class_method_declared_sig (head : Term) (scope : Scope) : Option ClassMethodDecl :=
     match term_peel head {
         Term.var idx dbg =>
             if I64.beq idx sentinel then
@@ -3006,7 +3115,12 @@ def class_method_declared_sig (head : Term) (scope : Scope) : Option Term :=
                                 ok cd =>
                                     match scope_find_class cd.class_name scope {
                                         Option.none => Option.none,
-                                        Option.some cls => class_method_declared_type cls cd.name,
+                                        Option.some cls =>
+                                            match class_method_declared_type cls cd.name {
+                                                Option.none => Option.none,
+                                                Option.some sig =>
+                                                    Option.some (ClassMethodDecl.mk sig (class_method_var_names cls sig)),
+                                            },
                                     },
                             }
                         else
