@@ -1092,3 +1092,61 @@ def test_dup_type_name_other_declared_first : Bool :=
 #[test]
 def test_dup_type_name_wanted_declared_first : Bool :=
     dup_match_checks (List.cons (Decl.inductive_d dup_wanted_ind) (List.cons (Decl.inductive_d dup_other_ind) List.empty))
+
+// --- A `forall`-headed expected type must still check the lambda's body ---
+//
+// `type_check_lam` used to match only `Term.pi` and a catch-all that INFERS,
+// so a `forall`-headed expected type -- which is what `elaborate_type` produces
+// for every polymorphic def, and for any def whose declared type mentions a
+// name that is not a top-level decl -- fell into the catch-all and the
+// expectation was discarded outright. The body, and every match arm inside it,
+// was then checked against `Term.hole`, i.e. not checked.
+//
+// These pin the fix at term level deliberately. A source-level pin through
+// `typecheck_source` (`lang/src/tests/typecheck_examples_tests.mo`) does not
+// reproduce it: that helper builds a synthetic single-module scope, and the
+// over-generalization that produces the `forall` depends on which names count
+// as known, so the bug is reachable there only through an explicit implicit
+// binder. Building the `forall` by hand tests the arm itself.
+//
+// The body `Sort 1` against an expected return of `Sort 1` is rejected by the
+// `Sort n : Sort n` rule, so it is a mismatch the checker is known to catch --
+// which is what makes the NEGATIVE pin below meaningful rather than a test of
+// some unrelated permissiveness.
+
+/// The Pi the two `forall` pins wrap: `Type -> Type`.
+def forall_pin_pi : Term := Term.pi (sort_n 1) (sort_n 1)
+
+/// `forall (a : Type). Type -> Type` -- the shape `{A : Type}` elaborates to.
+def forall_pin_expected : Term :=
+    Term.forall (DebugName.named (Identifier.id "a")) (sort_n 1) forall_pin_pi
+
+/// NEGATIVE, and the actual regression: the body is `Sort 1` where the Pi's
+/// return is `Sort 1`, which `type_check_sort_full` rejects. Before the
+/// `Term.forall` arm existed this was ACCEPTED, because the expected type never
+/// reached the body.
+#[test]
+def test_forall_expected_still_rejects_bad_body : Bool :=
+    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) forall_pin_expected {
+        ok _ => false,
+        err _ => true,
+    }
+
+/// POSITIVE control: the same shape with a body that does check. Without this,
+/// the pin above would also pass if the arm simply rejected everything.
+#[test]
+def test_forall_expected_still_accepts_good_body : Bool :=
+    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 0)) forall_pin_expected {
+        ok _ => true,
+        err _ => false,
+    }
+
+/// The un-wrapped control: a plain `Term.pi` expectation already rejected this
+/// body, so this pin is what says the `forall` case now agrees with it rather
+/// than being special.
+#[test]
+def test_plain_pi_expected_rejects_bad_body : Bool :=
+    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) forall_pin_pi {
+        ok _ => false,
+        err _ => true,
+    }

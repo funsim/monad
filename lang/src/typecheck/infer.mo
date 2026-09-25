@@ -2449,6 +2449,19 @@ def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : T
                     ok (mk_typed lam_term lam_typ),
                 err e => err e,
             },
+        // A `forall`-headed expected type is the SAME lambda check with the
+        // binder stripped, exactly as `unify_go` strips one before comparing.
+        // Without this arm a `forall` fell to the inferring `_` arm below and
+        // the expected type was discarded outright, so EVERY polymorphic def's
+        // body -- and every monomorphic def whose declared type got
+        // over-generalized -- was checked against `Term.hole`, i.e. not
+        // checked. Stripping is sound here because a reference to the binder
+        // inside `inner` is a free `sentinel` var resolved BY NAME (the def's
+        // type variables are skolemized into `locals` by
+        // `locals_with_def_typevars`, `lang/module.mo`), not a de Bruijn index
+        // into this binder -- so removing the binder renumbers nothing.
+        Term.forall _dbg _kind inner =>
+            type_check_lam dbg t body inner scope local_types locals,
         _ =>
             match type_check t Term.hole scope local_types locals {
                 ok t_tt =>

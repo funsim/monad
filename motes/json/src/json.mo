@@ -755,9 +755,22 @@ def Json.sequence_result {A : Type} (results : List (Result String A)) : Result 
   }
 
 /// Deserialize a `List A` given an explicit element deserializer.
+///
+/// The `rs` annotation is load-bearing, not style. Inside a match arm, with
+/// `arr : List Json` bound from the scrutinee, the checker solves
+/// `Json.sequence_result`'s own type variable from `arr`'s element type rather
+/// than from `List.map`'s result, and infers `Result String (List Json)` for
+/// this arm -- reported as
+/// `expected ((Result String) (List Json)), found ((Result String) (List A))`.
+/// Naming the intermediate gives `List.map` an expected type and the arm checks.
+/// The same expression outside a match arm needs no annotation, which is what
+/// localises the defect to the arm path. See
+/// `plans/implementations/match-arm-typevar-solved-from-scrutinee.md`.
 def Json.deserialize_list {A : Type} (deserialize_elem : Json -> Result String A) (j : Json) : Result String (List A) :=
   match Json.get_array j {
-    ok arr => Json.sequence_result (List.map deserialize_elem arr),
+    ok arr =>
+      let rs : List (Result String A) := List.map deserialize_elem arr in
+      Json.sequence_result rs,
     err e => err e
   }
 
