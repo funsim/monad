@@ -27,14 +27,11 @@ cd "$root"
 
 out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
 # Reuse the binary `bootstrap-compile.sh` just built -- in CI that is the step
-# immediately before this one, in the same job. Rebuild when it is missing or
-# older than any source compiled INTO it: a stale binary reports failures that
-# are really its own age (one here predated two examples' syntax and could not
-# parse them at all), which would be indistinguishable from the transparency
-# break this looks for. All four motes, not just lang/ -- cli/ holds the compile
-# target itself, and llvm/ and runtime/ hold the backend.
-if [ ! -x "$out/monad" ] || [ -n "$(find "$root"/lang "$root"/cli "$root"/llvm "$root"/runtime -name '*.mo' -newer "$out/monad" -print -quit)" ]; then
-  mkdir -p "$out"
-  cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$out/monad" --release
-fi
+# immediately before this one, in the same job. The staleness check and build
+# command live in scripts/build-self-hosted.sh, shared with the other two CI
+# scripts. Its coverage (init std lang cli llvm runtime, *.mo *.c *.h) is
+# wider than this script's own check used to be (lang cli llvm runtime, *.mo):
+# a stale binary reports failures that are really its own age, and init/std
+# are compiled into the binary just as lang/cli are.
+scripts/build-self-hosted.sh "$out" --release
 MONAD_BIN="$out/monad" "$root"/tools/debug_transparency_oracle.sh "$root"/examples/*.mo

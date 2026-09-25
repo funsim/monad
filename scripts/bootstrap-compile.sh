@@ -42,7 +42,6 @@ cd "$root"
 ulimit -s 131072 || true
 
 out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
-rm -rf "$out"; mkdir -p "$out"
 # No timeout, by design: the interpreted self-compile measured ~320s
 # (2026-09-09) but stretches 2-4x when the runner's other jobs and local
 # sessions share this machine, and `cargo run`'s own build phase is ~10 min
@@ -53,8 +52,10 @@ rm -rf "$out"; mkdir -p "$out"
 # wedged run shows exactly which stage stalled.
 # --release: debug info is on by default; DWARF emission costs ~30s on this
 # workload and the binary this job tests does not need it.
-cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$out/monad" --verbose --release
-test -x "$out/monad"
+# rm -rf forces a from-scratch build rather than trusting a stale binary;
+# the staleness check and build command live in scripts/build-self-hosted.sh.
+rm -rf "$out"; mkdir -p "$out"
+scripts/build-self-hosted.sh "$out" --verbose --release
 "$out/monad" check cli/src/main.mo
 # ... and the FIXPOINT, which is the property that would regress silently: the
 # binary just built compiles the same source itself, and the `.ll` it emits
@@ -81,8 +82,7 @@ cmp "$out/monad.ll" "$out/monad2.ll"
 # assumed).
 dbg="${TMPDIR:-/tmp}/monad-bootstrap-ci-debug"
 rm -rf "$dbg"; mkdir -p "$dbg"
-cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$dbg/monad" --verbose
-test -x "$dbg/monad"
+scripts/build-self-hosted.sh "$dbg" --verbose
 "$dbg/monad" check cli/src/main.mo
 # Same fixpoint in the default (DWARF-emitting) mode -- see the `--release`
 # block above for why both turns are asserted.

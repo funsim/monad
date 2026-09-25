@@ -310,18 +310,10 @@ set -euo pipefail
 # then measured through the self-hosted runner with a binary rebuilt from
 # the change, and both report a clean run.
 out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
-# Staleness: every input that ends up INSIDE the binary. `init` and `std`
-# are compiled into it just as `lang`/`cli`/`llvm`/`runtime` are, and
-# runtime.c/.h are linked into it -- omitting them meant an edit to any
-# of them left a stale binary in place, so CI tested the previous
-# compiler and reported its results as this commit's.
-if [ ! -x "$out/monad" ] || [ -n "$(find init std lang cli llvm runtime \
-      \( -name '*.mo' -o -name '*.c' -o -name '*.h' \) \
-      -newer "$out/monad" -print -quit)" ]; then
-  mkdir -p "$out"
-  cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$out/monad" --release
-fi
-test -x "$out/monad"
+# All four motes, not just lang/: cli/ holds the compile target, llvm/ and
+# runtime/ the backend. The staleness check and the build command live in
+# scripts/build-self-hosted.sh so all three CI scripts share one definition.
+scripts/build-self-hosted.sh "$out" --release
 
 # The self-hosted sweep: the whole corpus, with no exclusions at all.
 # `host_only` was the last registry and it is deleted above, so the loop
