@@ -148,7 +148,7 @@ def compile_ffi_fixture_exit_code : IO I64 := do {
     IO.write_file (Path.path (output_dir ++ "/mote.toml")) ffi_fixture_manifest;
     IO.write_file (Path.path src_path) ffi_fixture_source;
 
-    let loaded_result : Result String LoadedModules <- load_file_modules src_path false;
+    let loaded_result <- load_file_modules src_path false;
     match loaded_result {
         Result.err e => do {
             println ("ffi_codegen_e2e: failed to load: " ++ e);
@@ -222,7 +222,7 @@ def test_extern_f64_return_type_declares_double : IO Bool := do {
     let _ <- exec_cmd "mkdir" ["-p", output_dir];
     IO.write_file (Path.path src_path) ffi_fixture_source;
 
-    let loaded_result : Result String LoadedModules <- load_file_modules src_path false;
+    let loaded_result <- load_file_modules src_path false;
     match loaded_result {
         Result.err e => do {
             println ("test_extern_f64_return_type_declares_double: failed to load: " ++ e);
@@ -276,7 +276,7 @@ def test_extern_link_libs_flag : IO Bool := do {
     IO.write_file (Path.path (output_dir ++ "/mote.toml")) ffi_fixture_manifest;
     IO.write_file (Path.path src_path) ffi_fixture_source;
 
-    let loaded_result : Result String LoadedModules <- load_file_modules src_path false;
+    let loaded_result <- load_file_modules src_path false;
     match loaded_result {
         Result.err e => do {
             println ("test_extern_link_libs_flag: failed to load: " ++ e);
