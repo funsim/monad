@@ -88,6 +88,7 @@ def numeric_runtime_functions : List LLVMFunction :=
    emit_u32_shl, emit_u32_shr, emit_u32_eq, emit_u32_lt, emit_u32_gt,
    emit_i64_to_u64, emit_u8_to_u64,
    emit_u16_eq, emit_u16_lt, emit_u16_gt,
+   emit_u16_add, emit_u16_sub, emit_u16_mul, emit_u16_div,
    emit_i8_eq, emit_i8_lt, emit_i8_gt,
    emit_i64_add, emit_i64_sub, emit_i64_mul, emit_i64_div,
    emit_i64_eq, emit_i64_lt, emit_i64_gt]
@@ -748,6 +749,67 @@ def emit_i64_gt : LLVMFunction := emit_icmp_native "monad_i64_gt" (icmp_sgt (par
 def emit_u16_eq : LLVMFunction := emit_icmp_native "monad_u16_eq" (icmp_eq (parm_ 0) (parm_ 1))
 def emit_u16_lt : LLVMFunction := emit_icmp_native "monad_u16_lt" (icmp_slt (parm_ 0) (parm_ 1))
 def emit_u16_gt : LLVMFunction := emit_icmp_native "monad_u16_gt" (icmp_sgt (parm_ 0) (parm_ 1))
+
+/// `U16` arithmetic (`init/number.mo`'s `U16.add`/`sub`/`mul`/`div`),
+/// newly reachable from the HTTP motes: `motes/http/src/wire.mo` and
+/// `uri.mo` accumulate a parsed decimal through `U16.add (U16.mul acc
+/// 10u16) digit`, and nothing in the corpus multiplied a `U16` before.
+///
+/// UNMASKED, like the `U16` comparisons directly above and like
+/// `emit_u8_sub`/`_mul`/`_div`. The reference routes `U16` through the
+/// SAME generic, unmasked `int_binop` group as `I8`/`I16`/`I32`/`U8`/
+/// `I64` (`core/src/core_native.rs`'s `"i8_add" | ... | "u16_add" |
+/// "u64_add"` arm) and masks `U32` alone, so `U16.add 65535u16 1u16`
+/// has to come out 65536 here exactly as it does there. Masking would
+/// not fail loudly -- it would just be a different answer from the
+/// other runtime, which is the divergence class the u64_mod comment
+/// above records the cost of.
+///
+/// `emit_u8_add` does mask, and it is the outlier rather than the
+/// model: the reference does not mask `u8` either, and the family
+/// comment above describes the `U32` rule. It is left as it is here --
+/// correcting it changes the u8 result for out-of-range operands, which
+/// is a separate change with its own evidence to gather, not something
+/// to smuggle into a wiring commit.
+def emit_u16_add : LLVMFunction :=
+  let entry :=
+    LLVMBasicBlock.mk "entry"
+      [assign "r" (add (parm_ 0) (parm_ 1)), ret (var_ "r")] in
+  { name := "monad_u16_add",
+    params := (i64_params 2),
+    ret_ty := i64_,
+    blocks := [entry],
+    ghc_cc := false,
+    dbg_loc := Option.none }
+
+def emit_u16_sub : LLVMFunction :=
+  let entry :=
+    LLVMBasicBlock.mk "entry"
+      [assign "r" (sub (parm_ 0) (parm_ 1)), ret (var_ "r")] in
+  { name := "monad_u16_sub",
+    params := (i64_params 2),
+    ret_ty := i64_,
+    blocks := [entry],
+    ghc_cc := false,
+    dbg_loc := Option.none }
+
+def emit_u16_mul : LLVMFunction :=
+  let entry :=
+    LLVMBasicBlock.mk "entry"
+      [assign "r" (mul (parm_ 0) (parm_ 1)), ret (var_ "r")] in
+  { name := "monad_u16_mul",
+    params := (i64_params 2),
+    ret_ty := i64_,
+    blocks := [entry],
+    ghc_cc := false,
+    dbg_loc := Option.none }
+
+/// `monad_u16_div(a, b)`: 0 when `b == 0`, else `a / b`, matching the
+/// reference's `if b == 0 { 0 } else { a.wrapping_div(b) }`. `sdiv`
+/// rather than `udiv` for `emit_u8_div`'s reason: the reference's
+/// `wrapping_div` is signed, and identical to `udiv` for the in-range
+/// operands a 16-bit divide is given anyway.
+def emit_u16_div : LLVMFunction := emit_guarded_native "monad_u16_div" (sdiv (parm_ 0) (parm_ 1))
 def emit_i8_eq : LLVMFunction := emit_icmp_native "monad_i8_eq" (icmp_eq (parm_ 0) (parm_ 1))
 def emit_i8_lt : LLVMFunction := emit_icmp_native "monad_i8_lt" (icmp_slt (parm_ 0) (parm_ 1))
 def emit_i8_gt : LLVMFunction := emit_icmp_native "monad_i8_gt" (icmp_sgt (parm_ 0) (parm_ 1))

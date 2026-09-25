@@ -106,6 +106,14 @@ an implementation detail.
 `is_dir`, `list_dir` (all `Path`-typed), plus `IO.get_env` and
 `IO.current_time` (monotonic milliseconds — only differences are meaningful).
 
+It also holds the entire TCP surface: the opaque `Socket` and `Listener` types
+and eight blocking natives — `tcp_connect`, `tcp_listen`, `tcp_accept`,
+`tcp_read`, `tcp_write`, `tcp_close`, `tcp_close_listener`, `tcp_local_port`.
+These are implemented **only** by the self-hosted backend; the Rust bootstrap
+host has no TCP at all, so a socket test cannot run under `cargo run -- test`.
+[The IO Monad](./io-monad.md#sockets-and-tcp) has the signatures, the two worked
+snippets, and the caveats.
+
 ### `std.path` — ambient
 
 A validated `Path` newtype: `Path.of` (the validating constructor),
@@ -225,5 +233,9 @@ cooperative, so the two backends disagree about what a `forkIO` means.
   import of `std.show`'s. Prefer `std.show`.
 - **Three declared-but-unimplemented natives**: `eq_rec` (so `Eq.rec` cannot be
   called), `string_to_chars`, and `string_from_chars`.
+- **TCP has no timeout** and no non-blocking mode: `tcp_connect`, `tcp_accept`
+  and `tcp_read` block until they complete, so a peer that connects and then
+  stays silent holds a fiber and its OS thread indefinitely. And TCP is
+  self-hosted only — the Rust host cannot run a socket at all.
 
 See the [Maturity Matrix](./maturity.md) for the summary view.

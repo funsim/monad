@@ -28,6 +28,9 @@
 #include <dirent.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
 #include <unistd.h>
 
 typedef struct {
@@ -1227,15 +1230,24 @@ char* monad_i32_to_string(int64_t n) {
     return out;
 }
 
-/* `#[native u8_to_string]`/`#[native u64_to_string]` (init/number.mo).
-   Same shape as monad_i64_to_string/monad_i32_to_string above; both
-   print UNSIGNED, which is the whole difference from the signed
-   variants (a U64 near the top of its range is a negative i64 in this
-   backend's uniform i64 representation, and must still print as the
-   large positive number the reference prints). */
+/* `#[native u8_to_string]`/`#[native u16_to_string]`/`#[native
+   u64_to_string]` (init/number.mo). Same shape as
+   monad_i64_to_string/monad_i32_to_string above; all three print
+   UNSIGNED, which is the whole difference from the signed variants (a
+   U64 near the top of its range is a negative i64 in this backend's
+   uniform i64 representation, and must still print as the large
+   positive number the reference prints). */
 char* monad_u8_to_string(int64_t n) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%u", (unsigned)(uint8_t)n);
+    char* out = (char*)monad_alloc_atomic((size_t)len + 1);
+    if (out) memcpy(out, buf, (size_t)len + 1);
+    return out;
+}
+
+char* monad_u16_to_string(int64_t n) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%u", (unsigned)(uint16_t)n);
     char* out = (char*)monad_alloc_atomic((size_t)len + 1);
     if (out) memcpy(out, buf, (size_t)len + 1);
     return out;
@@ -1562,6 +1574,270 @@ void* monad_get_env(char* name) {
     Constructor* some = (Constructor*)alloc_constructor(4, 1);
     some->fields[0] = copy;
     return some;
+}
+
+/* ─── TCP ────────────────────────────────────────────────────────────
+   `std/io.mo`'s eight `#[native "tcp_*"]` defs, reached by
+   `motes/moon`'s server and `motes/moose`'s client.
+
+   This is TCP's ONLY implementation. The reference deliberately has
+   none -- a second implementation was not worth its maintenance cost --
+   so the behaviours recorded here ARE the contract, and
+   `slow_tests/src/codegen_wired_natives_e2e_tests.mo` is what holds
+   them to it. `std/io.mo`'s own declarations restate the same contract
+   for a reader who starts from the source side.
+
+   A Socket/Listener value is the raw FILE DESCRIPTOR as an i64, not a
+   constructor. `type Socket { socket }` exists so the checker has a
+   nominal type; its single zero-arity constructor is never built,
+   because `alloc_constructor` CACHES nullary constructors by tag (see
+   MONAD_NULLARY_CACHE above) -- one shared pointer for every socket in
+   the program, which could not carry an fd in any case. Nothing in the
+   corpus pattern-matches, compares or prints one, so an fd in the
+   payload position is all this flow ever needs; it is the same shape
+   the generated `List U8` code already uses to hold a byte. It also
+   means no handle table is needed here, and no `constructor_tag`
+   lookup -- the `io_passthrough` wrapper in `lang/codegen/natives.mo`
+   only IO-wraps whatever word comes back.
+
+   Divergences from the deleted Rust implementation, recorded rather
+   than papered over:
+
+     - A double `close` here closes a RECYCLED descriptor, where the
+       Rust version's handle drop was a harmless no-op for an unknown
+       id. Latent only (every test closes each descriptor at most
+       once), and the trade is deliberate: a C-side handle table would
+       buy nothing the fd does not already give, and would have to be
+       kept in step with the collector.
+     - `tcp_local_port : IO U16` has no `Result` channel, so a failing
+       `getsockname` returns 0 where the Rust version raised.
+     - No poll loop anywhere: every motes test writes before it reads
+       on a single thread, so a blocking read cannot deadlock. That is
+       a property of the corpus rather than of these functions -- a
+       test that reads before it writes WILL block on both sides.
+     - `MSG_NOSIGNAL` on every send, because this file installs no
+       SIGPIPE handler where Rust's std ignores SIGPIPE process-wide: a
+       write to a peer that already closed would otherwise kill the
+       process instead of returning `Result.err`.
+*/
+
+/* Build `Result.ok <word>`. `Result.ok` is tag 10, `Result.err` tag 11
+   and `Unit.unit` tag 0 -- `lang/src/codegen/ctors.mo`'s fixed prelude
+   tags, the same table the generated `rt_tag_*` helpers mirror. The
+   field holds a raw word, so one `tcp_ok` serves an fd, a byte count
+   and a `List U8` pointer alike. */
+static void* tcp_ok(void* payload) {
+    Constructor* ok = (Constructor*)alloc_constructor(10, 1);
+    if (ok) ok->fields[0] = payload;
+    return ok;
+}
+
+/* `Result.err` (tag 11) carrying `<a>: <b>`, or `<a>: <b> (os error
+   <n>)` when `errnum` is positive. The message is COPIED into a
+   GC-visible buffer: `strerror`'s storage is libc's and a format
+   string is the caller's, and every other `String` here is an owned
+   char* (same reasoning as `monad_get_env` above). */
+static void* tcp_err_pair(const char* a, const char* b, int errnum) {
+    char buf[512];
+    if (errnum != 0) {
+        snprintf(buf, sizeof(buf), "%s: %s (os error %d)", a, b, errnum);
+    } else {
+        snprintf(buf, sizeof(buf), "%s: %s", a, b);
+    }
+    size_t len = strlen(buf);
+    char* copy = (char*)monad_alloc_atomic(len + 1);
+    if (copy) memcpy(copy, buf, len + 1);
+    Constructor* err = (Constructor*)alloc_constructor(11, 1);
+    if (err) err->fields[0] = copy;
+    return err;
+}
+
+/* `<op>: <strerror> (os error <errno>)` -- the shape the deleted Rust
+   implementation got from `std::io::Error`'s own Display. Nothing in
+   the corpus asserts on the text; keeping the shape keeps a familiar
+   debugging aid. */
+static void* tcp_os_err(const char* op, int errnum) {
+    return tcp_err_pair(op, strerror(errnum), errnum);
+}
+
+/* `Unit.unit` (tag 0). The nullary cache makes this the same instance
+   every call. */
+static void* tcp_unit(void) {
+    return alloc_constructor(0, 0);
+}
+
+/* Count a `List U8` cons chain -- `monad_string_from_list`'s own walk,
+   split out because `tcp_write` needs the length before it needs the
+   bytes (it is the ok payload). */
+static int64_t tcp_list_len(void* list) {
+    int64_t n = 0;
+    for (void* cur = list; cur && monad_get_tag(cur) == 6; ) {
+        n++;
+        cur = monad_get_field(cur, 1);
+    }
+    return n;
+}
+
+/* `IO.tcp_connect (host : String) (port : U16) : IO (Result String Socket)`
+   -- blocking connect. `getaddrinfo` resolves the host the way the
+   Rust version's `TcpStream::connect((host, port))` did, so
+   `"127.0.0.1"`, `"localhost"` and a real name all work, and each
+   address it returns is tried in turn (a v6 address that fails to
+   connect must not stop a working v4 one from being tried). */
+void* monad_tcp_connect(char* host, int64_t port) {
+    struct addrinfo hints;
+    struct addrinfo* res = NULL;
+    char portbuf[16];
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    snprintf(portbuf, sizeof(portbuf), "%u", (unsigned)(uint16_t)port);
+    int rc = getaddrinfo(host ? host : "", portbuf, &hints, &res);
+    if (rc != 0) return tcp_err_pair("tcp_connect", gai_strerror(rc), 0);
+    int fd = -1;
+    int last_errno = 0;
+    for (struct addrinfo* ai = res; ai != NULL; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) { last_errno = errno; continue; }
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        last_errno = errno;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) return tcp_os_err("tcp_connect", last_errno);
+    return tcp_ok((void*)(int64_t)fd);
+}
+
+/* `IO.tcp_listen (port : U16) : IO (Result String Listener)` -- binds
+   `0.0.0.0:port`, with port 0 asking the OS for one (read it back with
+   `tcp_local_port`). Deliberately NO `SO_REUSEADDR`: the Rust version
+   set none, every test binds port 0, and setting it would let a second
+   bind steal a port a lingering connection still owns. Backlog 128 is
+   Rust's own default for `TcpListener::bind`. */
+void* monad_tcp_listen(int64_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) return tcp_os_err("tcp_listen", errno);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        int e = errno;
+        close(fd);
+        return tcp_os_err("tcp_listen", e);
+    }
+    if (listen(fd, 128) != 0) {
+        int e = errno;
+        close(fd);
+        return tcp_os_err("tcp_listen", e);
+    }
+    return tcp_ok((void*)(int64_t)fd);
+}
+
+/* `IO.tcp_accept (listener : Listener) : IO (Result String Socket)` --
+   blocking accept, returning a new Socket for the accepted connection.
+   `EINTR` retries rather than surfacing: no signal handler in this file
+   wants the caller to see a spurious failure. */
+void* monad_tcp_accept(int64_t listener) {
+    int fd;
+    do {
+        fd = accept((int)listener, NULL, NULL);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) return tcp_os_err("tcp_accept", errno);
+    return tcp_ok((void*)(int64_t)fd);
+}
+
+/* `IO.tcp_read (sock : Socket) (max_bytes : U64) : IO (Result String (List U8))`
+   -- blocking read of AT MOST `max_bytes`. EOF (the peer closed) is
+   `Result.ok List.empty`, NOT an error; only a real read error
+   (connection reset, and so on) is `Result.err`. Both motes' read loops
+   terminate on exactly this convention. */
+void* monad_tcp_read(int64_t sock, int64_t max_bytes) {
+    if (max_bytes <= 0) return tcp_ok(alloc_constructor(5, 0));  /* List.empty */
+    char* buf = (char*)malloc((size_t)max_bytes);
+    if (!buf) return tcp_err_pair("tcp_read", "out of memory", 0);
+    ssize_t n;
+    do {
+        n = recv((int)sock, buf, (size_t)max_bytes, 0);
+    } while (n < 0 && errno == EINTR);
+    if (n < 0) {
+        int e = errno;
+        free(buf);
+        return tcp_os_err("tcp_read", e);
+    }
+    /* Built back-to-front so the list reads in the order the bytes
+       arrived; each head is the byte as a raw word, the representation
+       `monad_string_from_list` reads back. */
+    void* list = alloc_constructor(5, 0);
+    for (ssize_t i = n - 1; i >= 0; i--) {
+        Constructor* cons = (Constructor*)alloc_constructor(6, 2);
+        if (!cons) break;
+        cons->fields[0] = (void*)(int64_t)(unsigned char)buf[i];
+        cons->fields[1] = list;
+        list = cons;
+    }
+    free(buf);
+    return tcp_ok(list);
+}
+
+/* `IO.tcp_write (sock : Socket) (data : List U8) : IO (Result String U64)`
+   -- blocking write of ALL of `data`, with the ok payload the FULL
+   length rather than the last partial count (`write_all(&data).map(|()
+   | data.len())` in the Rust version). `send` in a loop, because a
+   stream socket is free to accept less than asked. */
+void* monad_tcp_write(int64_t sock, void* data) {
+    int64_t n = tcp_list_len(data);
+    if (n == 0) return tcp_ok((void*)(int64_t)0);
+    char* buf = (char*)malloc((size_t)n);
+    if (!buf) return tcp_err_pair("tcp_write", "out of memory", 0);
+    int64_t i = 0;
+    for (void* cur = data; cur && monad_get_tag(cur) == 6 && i < n; ) {
+        buf[i++] = (char)((int64_t)monad_get_field(cur, 0) & 0xFF);
+        cur = monad_get_field(cur, 1);
+    }
+    int64_t done = 0;
+    while (done < n) {
+        ssize_t w = send((int)sock, buf + done, (size_t)(n - done), MSG_NOSIGNAL);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            int e = errno;
+            free(buf);
+            return tcp_os_err("tcp_write", e);
+        }
+        done += w;
+    }
+    free(buf);
+    return tcp_ok((void*)(int64_t)n);
+}
+
+/* `IO.tcp_close (sock : Socket) : IO Unit` -- closes the socket. Never
+   fails: the type has no error channel, and every caller closes each
+   descriptor once. */
+void* monad_tcp_close(int64_t sock) {
+    if (sock >= 0) close((int)sock);
+    return tcp_unit();
+}
+
+/* `IO.tcp_close_listener (listener : Listener) : IO Unit` -- same, for
+   a listening socket (closing it does not touch connections already
+   accepted from it). */
+void* monad_tcp_close_listener(int64_t listener) {
+    if (listener >= 0) close((int)listener);
+    return tcp_unit();
+}
+
+/* `IO.tcp_local_port (listener : Listener) : IO U16` -- the port the
+   listener actually bound, which is the only way to learn the
+   OS-assigned port after `tcp_listen 0u16`. Returns 0 if
+   `getsockname` fails; see the divergence note above. */
+int64_t monad_tcp_local_port(int64_t listener) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname((int)listener, (struct sockaddr*)&addr, &len) != 0) return 0;
+    return (int64_t)ntohs(addr.sin_port);
 }
 
 void* monad_build_args(int argc, char** argv) {

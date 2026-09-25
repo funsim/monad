@@ -163,7 +163,10 @@ const PURE_NATIVES: &[&str] = &[
 /// `read_file`/`write_file`/`file_exists`/`is_dir`/`list_dir`/`get_env`/
 /// `exec_cmd` (filesystem/process IO), `fork_io`/`cancel_fiber`/
 /// `sleep_io`/`scope_new`/`scope_fork`/`scope_drop`/`await_fiber`
-/// (concurrency/shared mutable state).
+/// (concurrency/shared mutable state). Nothing here is a `tcp_*` native:
+/// this evaluator deliberately implements no TCP at all, so `std/io.mo`'s
+/// eight `tcp_*` defs are dispatched by the self-hosted backend alone
+/// (`runtime/src/runtime.c`) and reach this table never.
 pub fn is_pure_native(name: &str) -> bool {
   PURE_NATIVES.contains(&name)
 }
@@ -1566,13 +1569,13 @@ mod tests {
         option_none: Some(CtorTag { tag: 6, arity: 0 }),
         list_cons: Some(CtorTag { tag: 3, arity: 2 }),
         list_empty: Some(CtorTag { tag: 4, arity: 0 }),
-        io_io: None,
-        result_ok: None,
-        result_err: None,
         // Deliberately NOT tag 0: same rationale as the scrambled tags
         // above -- a native that hardcoded a literal instead of reading
         // `well_known` would still pass with the real numbering.
         array_mk: Some(CtorTag { tag: 9, arity: 0 }),
+        io_io: Some(CtorTag { tag: 11, arity: 1 }),
+        result_ok: Some(CtorTag { tag: 9, arity: 1 }),
+        result_err: Some(CtorTag { tag: 10, arity: 1 }),
       },
     )
   }

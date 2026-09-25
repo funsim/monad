@@ -309,13 +309,18 @@ naming the reference exactly as written (`unknown variable 'Map.get'`).
 
 ## Native Coverage
 
-There are 134 natives declared across `init/` and `std/`. The backend wires `I64` arithmetic and
+There are 146 natives declared across `init/` and `std/`. The backend wires `I64` arithmetic and
 comparison, string operations, `print_str`, the file and directory natives,
-`get_env`, `current_time`, `process_id`, and `exec_cmd`.
+`get_env`, `current_time`, `process_id`, `exec_cmd`, and the eight `tcp_*` socket
+natives.
 
 Not wired: the entire concurrency surface — see
 [Concurrency](./concurrency.md). A program that reaches one of those fails to
 compile with a clear message rather than producing a broken binary.
+
+The `tcp_*` natives are wired here and nowhere else. The Rust bootstrap host has
+no TCP implementation, so a socket test cannot run under `cargo run -- test`;
+`motes/moon` and `motes/moose` are exercised by the self-hosted runner.
 
 Three natives are declared but unimplemented in both implementations —
 `eq_rec`, `string_to_chars`, `string_from_chars` — and fail at run time with

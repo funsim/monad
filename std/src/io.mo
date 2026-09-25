@@ -1,7 +1,7 @@
-// OS-specific I/O: console output and the filesystem. The `IO` type
-// itself lives in init/io.mo (pure, portable); everything here is a
-// genuine side effect, hence std/. See AGENTS.md's "init vs std"
-// section.
+// OS-specific I/O: console output, the filesystem, and TCP networking.
+// The `IO` type itself lives in init/io.mo (pure, portable); everything
+// here is a genuine side effect, hence std/. See AGENTS.md's "init vs
+// std" section.
 
 // Qualified (not bare `use path {...}`) deliberately: the Rust
 // reference's module loader registers std/*.mo siblings under their
@@ -87,6 +87,68 @@ pub def IO.is_dir (path : Path) : IO Bool :=
 
 pub def IO.list_dir (path : Path) : IO (List String) :=
     IO.list_dir_native (Path.to_string path)
+
+// ── TCP networking ──────────────────────────────────────────────────────
+// Eight blocking `#[native "tcp_*"]` defs, implemented ONLY by the
+// self-hosted backend (`runtime/src/runtime.c`); the Rust evaluator
+// deliberately has no TCP implementation, so a second one cannot drift
+// away from this one.  These declarations are therefore the contract,
+// and `slow_tests/src/codegen_wired_natives_e2e_tests.mo` is what holds
+// the implementation to it:
+//
+//   tcp_connect      blocking; the host is resolved with `getaddrinfo`
+//                    (so a name works, not just a literal address) and
+//                    each address it returns is tried in turn
+//   tcp_listen       binds `0.0.0.0:port`; port `0u16` asks the OS for
+//                    one, read it back with `tcp_local_port`
+//   tcp_accept       blocking; the `Socket` is a NEW connection
+//   tcp_read         blocking, at most `max_bytes`; EOF (the peer
+//                    closed) is `Result.ok List.empty`, NOT an error —
+//                    read loops terminate on exactly that
+//   tcp_write        writes ALL of `data`; the ok payload is the full
+//                    length, not the last partial count
+//   tcp_close        never fails; closing a listener does not touch
+//   tcp_close_listener  connections already accepted from it
+//   tcp_local_port   the port the listener actually bound; a failure
+//                    returns 0 (the type has no `Result` channel)
+//
+// `Socket` and `Listener` are opaque: their single zero-arity
+// constructor exists only so the type checker has a type to name, and
+// the runtime value is never one of them.  Nothing may pattern-match,
+// compare or print these — that is what lets the implementation carry a
+// bare file descriptor instead of a handle.
+
+type Socket {
+  socket
+}
+
+type Listener {
+  listener
+}
+
+#[native "tcp_connect"]
+def IO.tcp_connect (host : String) (port : U16) : IO (Result String Socket)
+
+#[native "tcp_listen"]
+def IO.tcp_listen (port : U16) : IO (Result String Listener)
+
+#[native "tcp_accept"]
+def IO.tcp_accept (listener : Listener) : IO (Result String Socket)
+
+#[native "tcp_read"]
+def IO.tcp_read (sock : Socket) (max_bytes : U64) : IO (Result String (List U8))
+
+#[native "tcp_write"]
+def IO.tcp_write (sock : Socket) (data : List U8) : IO (Result String U64)
+
+#[native "tcp_close"]
+def IO.tcp_close (sock : Socket) : IO Unit
+
+#[native "tcp_close_listener"]
+def IO.tcp_close_listener (listener : Listener) : IO Unit
+
+#[native "tcp_local_port"]
+def IO.tcp_local_port (listener : Listener) : IO U16
 
 // TODO support constraints
 // def IO.fprintln [ToString A] (a: A) : IO Unit :=

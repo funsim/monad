@@ -76,6 +76,126 @@ There is no `getLine` — reading stdin is not implemented yet.
 > `open IO {println}`. This is a known bug in how instance resolution interacts
 > with non-empty `use` filters.
 
+## Sockets and TCP
+
+`std.io` also holds the whole TCP surface — two opaque types and eight blocking
+natives:
+
+| Function | Type |
+|----------|------|
+| `IO.tcp_connect` | `String -> U16 -> IO (Result String Socket)` |
+| `IO.tcp_listen` | `U16 -> IO (Result String Listener)` |
+| `IO.tcp_accept` | `Listener -> IO (Result String Socket)` |
+| `IO.tcp_read` | `Socket -> U64 -> IO (Result String (List U8))` |
+| `IO.tcp_write` | `Socket -> List U8 -> IO (Result String U64)` |
+| `IO.tcp_close` | `Socket -> IO Unit` |
+| `IO.tcp_close_listener` | `Listener -> IO Unit` |
+| `IO.tcp_local_port` | `Listener -> IO U16` |
+
+`Socket` and `Listener` are opaque. Each has a single zero-arity constructor so
+that the type checker has a name for the type; the runtime value is never one of
+them. That is what lets the implementation carry a bare file descriptor instead
+of a handle — so nothing may pattern-match, compare or print either.
+
+```monad
+use io {}
+use std::io {}
+
+/// Send one request over a fresh connection and return whatever comes back.
+/// Every step can fail, so each is matched on rather than discarded.
+def fetch (host : String) (port : U16) : IO (Result String String) := do {
+    let opened <- IO.tcp_connect host port;
+    match opened {
+        Result.err e => return (Result.err e),
+        Result.ok sock => do {
+            let sent <- IO.tcp_write sock (String.to_list "GET / HTTP/1.0\r\n\r\n");
+            match sent {
+                Result.err e => do {
+                    IO.tcp_close sock;
+                    return (Result.err e)
+                },
+                Result.ok _ => do {
+                    let got <- IO.tcp_read sock 4096u64;
+                    IO.tcp_close sock;
+                    match got {
+                        Result.err e => return (Result.err e),
+                        Result.ok bytes => return (Result.ok (String.from_list bytes))
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+`IO.tcp_listen 0u16` binds `0.0.0.0` on an OS-assigned port; read the port it
+actually settled on back with `IO.tcp_local_port`:
+
+```monad
+use io {}
+use std::io {}
+open IO {println}
+
+/// Listen on an OS-assigned port, print it, accept one connection, echo back
+/// what it sends, and close everything.
+def echo_once : IO Unit := do {
+    let bound <- IO.tcp_listen 0u16;
+    match bound {
+        Result.err e => println e,
+        Result.ok listener => do {
+            let port <- IO.tcp_local_port listener;
+            println (U16.to_string port);
+            let accepted <- IO.tcp_accept listener;
+            IO.tcp_close_listener listener;
+            match accepted {
+                Result.err e => println e,
+                Result.ok conn => do {
+                    let got <- IO.tcp_read conn 1024u64;
+                    match got {
+                        Result.err e => println e,
+                        Result.ok bytes => do {
+                            let written <- IO.tcp_write conn bytes;
+                            match written {
+                                Result.err e => println e,
+                                Result.ok n => println (U64.to_string n)
+                            }
+                        }
+                    };
+                    IO.tcp_close conn
+                }
+            }
+        }
+    }
+}
+```
+
+`IO.tcp_close_listener` closes the listening socket only; connections already
+accepted from it keep working, which is why the snippet above can close the
+listener and then talk on `conn`. `IO.tcp_write` writes *all* of the bytes it is
+given — the count it returns is the full length, never a partial one, so there
+is no write loop to write.
+
+### What is not there
+
+- **TCP is self-hosted only.** The eight natives are implemented by
+  `runtime/src/runtime.c`, which the self-hosted backend compiles; the Rust
+  bootstrap host deliberately has no TCP implementation at all, so under it any
+  of these fails at run time with `unknown native: tcp_listen` (or whichever was
+  called). A socket test therefore cannot run under `cargo run -- test`, and the
+  `examples/` HTTP entry is pure by design for exactly that reason.
+- **No read timeout, and no non-blocking mode.** `tcp_connect`, `tcp_accept` and
+  `tcp_read` block until they complete. A peer that connects and then sends
+  nothing holds the accepting fiber and its OS thread indefinitely; nothing in
+  the library breaks that. The mitigation in `motes/moon/src/server.mo` is a cap
+  on requests served per connection, which bounds an *idle keep-alive client*,
+  not a silent one. A real timeout is not implemented.
+- **EOF is not an error.** When the peer closes, `IO.tcp_read` returns
+  `Result.ok List.empty` rather than failing, and read loops terminate on exactly
+  that. `IO.tcp_close` never fails.
+
+A working server and client built on these live in `motes/moon/src/server.mo` and
+`motes/moose/src/client.mo`.
+
 ## Do Notation
 
 A `do` block sequences monadic actions. Two equivalent spellings:
@@ -162,10 +282,12 @@ and such a definition has no body. The name in the attribute is the runtime's
 identifier for the operation, which is not always the Monad-side name — the
 native behind `IO.println` is `print_str`.
 
-There are 134 natives declared across `init/` and `std/`. Three — `eq_rec`, `string_to_chars`, and
+There are 146 natives declared across `init/` and `std/`. Three — `eq_rec`, `string_to_chars`, and
 `string_from_chars` — are declared but not implemented anywhere, and calling one
 fails at run time with `unknown native`. The compiler backend wires a subset of
-the rest; see [Compiling and Running](./compiling.md#native-coverage).
+the rest; see [Compiling and Running](./compiling.md#native-coverage). The eight
+`tcp_*` natives above are among the wired ones, but only in the self-hosted
+backend — the Rust host has no TCP implementation at all.
 
 ## Running IO Programs
 

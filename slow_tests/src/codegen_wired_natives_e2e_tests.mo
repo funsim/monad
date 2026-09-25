@@ -292,3 +292,122 @@ def test_c_newline_and_trailing_char_scans : IO Bool :=
 }
 "# in
     compile_source_run_expect source "string_newline_scans" 7
+
+/// The four generated `u16` arithmetic emitters plus the C
+/// `monad_u16_to_string` (runtime.c). `motes/http`'s `uri.mo`/`wire.mo`
+/// reach `u16_add`/`u16_mul`/`u16_to_string` on every request, so these
+/// are what make `moon`/`moose` compile at all -- before them the
+/// reachability-gated `validate_no_unwired_natives` fail-fast rejected
+/// the motes outright.
+///
+/// The zero-divisor guard is asserted because the reference returns 0
+/// there rather than trapping, and `to_string` is asserted at BOTH ends
+/// of the range: 0 catches a sign/offset slip and 65535 catches a
+/// truncation to 8 bits, which is the mistake a "reuse the u8 emitter"
+/// shortcut would make.
+#[test]
+def test_generated_u16_ops : IO Bool :=
+    let source := r#"def main (args : List String) : IO I64 := do {
+    let a := U16.beq (U16.add 300u16 400u16) 700u16;
+    let s := U16.beq (U16.sub 700u16 300u16) 400u16;
+    let m := U16.beq (U16.mul 300u16 4u16) 1200u16;
+    let d := U16.beq (U16.div 1200u16 4u16) 300u16;
+    let d0 := U16.beq (U16.div 17u16 0u16) 0u16;
+    let lo := String.beq (U16.to_string 0u16) "0";
+    let hi := String.beq (U16.to_string 65535u16) "65535";
+    return (if a && s && m && d && d0 && lo && hi then 7 else 1)
+}
+"# in
+    compile_source_run_expect source "gen_u16_ops" 7
+
+/// The C TCP natives (runtime.c) end to end: listen on an OS-assigned
+/// port, read it back with `tcp_local_port`, connect, accept, write,
+/// read, see EOF, and read a closed handle. The Rust evaluator has no
+/// TCP implementation at all, so THIS is the family's only test that
+/// compiles, links and runs the real thing -- the deleted unit tests in
+/// core_native.rs used to cover the same contract.
+///
+/// Distinct non-7 exit codes name the failing step, because a failure
+/// here is otherwise just "the binary exited non-zero".
+///
+/// The sequence is deliberately write-BEFORE-read on a single thread:
+/// these natives block, so a read that came before the write would hang
+/// rather than fail (see the note in runtime.c's TCP section).
+#[test]
+def test_c_tcp_roundtrip : IO Bool :=
+    let source := r#"use std::io {Socket}
+def main (args : List String) : IO I64 := do {
+    let listen_res <- IO.tcp_listen 0u16;
+    match listen_res {
+        Result.err _ => return 1,
+        Result.ok listener => do {
+            let port <- IO.tcp_local_port listener;
+            let conn_res <- IO.tcp_connect "127.0.0.1" port;
+            match conn_res {
+                Result.err _ => do { let _ <- IO.tcp_close_listener listener; return 2 },
+                Result.ok client => do {
+                    let accept_res <- IO.tcp_accept listener;
+                    let _ <- IO.tcp_close_listener listener;
+                    match accept_res {
+                        Result.err _ => do { let _ <- IO.tcp_close client; return 3 },
+                        Result.ok server => do {
+                            let write_res <- IO.tcp_write client (String.to_list "hello");
+                            let wrote_five := match write_res {
+                                Result.err _ => false,
+                                Result.ok n => U64.beq n 5u64
+                            };
+                            let read_res <- IO.tcp_read server 1024u64;
+                            let got_hello := match read_res {
+                                Result.err _ => false,
+                                Result.ok bytes => String.beq (String.from_list bytes) "hello"
+                            };
+                            let _ <- IO.tcp_close client;
+                            let eof_res <- IO.tcp_read server 1024u64;
+                            let eof_is_empty := match eof_res {
+                                Result.err _ => false,
+                                Result.ok bytes => List.is_empty bytes
+                            };
+                            let closed_res <- IO.tcp_read client 16u64;
+                            let closed_handle_errs := match closed_res {
+                                Result.err _ => true,
+                                Result.ok _ => false
+                            };
+                            let _ <- IO.tcp_close server;
+                            if wrote_five && got_hello && eof_is_empty && closed_handle_errs
+                            then return 7
+                            else return 4
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+"# in
+    compile_source_run_expect source "c_tcp_roundtrip" 7
+
+/// Connecting to a port nothing listens on is `Result.err`, not a hang
+/// and not a bogus `Socket` -- the same negative the deleted Rust unit
+/// test `test_tcp_connect_to_closed_port_returns_err` covered. The port
+/// is obtained by binding port 0 and closing the listener again, so it
+/// is one the kernel just handed out and nothing holds.
+#[test]
+def test_c_tcp_connect_to_closed_port_errs : IO Bool :=
+    let source := r#"use std::io {Socket}
+def main (args : List String) : IO I64 := do {
+    let listen_res <- IO.tcp_listen 0u16;
+    match listen_res {
+        Result.err _ => return 1,
+        Result.ok listener => do {
+            let port <- IO.tcp_local_port listener;
+            let _ <- IO.tcp_close_listener listener;
+            let conn_res <- IO.tcp_connect "127.0.0.1" port;
+            match conn_res {
+                Result.err _ => return 7,
+                Result.ok client => do { let _ <- IO.tcp_close client; return 2 }
+            }
+        }
+    }
+}
+"# in
+    compile_source_run_expect source "c_tcp_closed_port" 7

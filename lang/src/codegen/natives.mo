@@ -366,6 +366,15 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             else if String.beq target "u16_eq" then Option.some (NativeWrapKind.bool_result "monad_u16_eq")
             else if String.beq target "u16_lt" then Option.some (NativeWrapKind.bool_result "monad_u16_lt")
             else if String.beq target "u16_gt" then Option.some (NativeWrapKind.bool_result "monad_u16_gt")
+            // The `U16` arithmetic, newly reachable from the HTTP motes
+            // (`motes/http/src/wire.mo`/`uri.mo`). `passthrough`, the
+            // same kind the `u8`/`u32`/`i64` arithmetic uses, and
+            // `runtime/src/natives.mo`'s own comment records why the
+            // emitters are unmasked: the reference masks `U32` alone.
+            else if String.beq target "u16_add" then Option.some (NativeWrapKind.passthrough "monad_u16_add")
+            else if String.beq target "u16_sub" then Option.some (NativeWrapKind.passthrough "monad_u16_sub")
+            else if String.beq target "u16_mul" then Option.some (NativeWrapKind.passthrough "monad_u16_mul")
+            else if String.beq target "u16_div" then Option.some (NativeWrapKind.passthrough "monad_u16_div")
             else if String.beq target "i8_eq" then Option.some (NativeWrapKind.bool_result "monad_i8_eq")
             else if String.beq target "i8_lt" then Option.some (NativeWrapKind.bool_result "monad_i8_lt")
             else if String.beq target "i8_gt" then Option.some (NativeWrapKind.bool_result "monad_i8_gt")
@@ -448,8 +457,12 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             else if String.beq target "i32_to_string" then Option.some (NativeWrapKind.passthrough "monad_i32_to_string")
             // Unsigned formatting: a U64 near the top of its range is a
             // NEGATIVE i64 in this backend's uniform representation, so
-            // these can't share `monad_i64_to_string`.
+            // these can't share `monad_i64_to_string`. `U16.to_string`
+            // joins them -- same reason (a 16-bit-truncated unsigned
+            // decimal), newly reached by the HTTP motes' URL rendering
+            // and `Wire.format_request`.
             else if String.beq target "u8_to_string" then Option.some (NativeWrapKind.passthrough "monad_u8_to_string")
+            else if String.beq target "u16_to_string" then Option.some (NativeWrapKind.passthrough "monad_u16_to_string")
             else if String.beq target "u64_to_string" then Option.some (NativeWrapKind.passthrough "monad_u64_to_string")
             // `exec_cmd` is THE load-bearing one for the ladder:
             // `llvm/src/link.mo` shells out to `llc`/`clang` through
@@ -486,6 +499,36 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             else if String.beq target "scope_new" then Option.some (NativeWrapKind.io_passthrough "monad_scope_new")
             else if String.beq target "scope_fork" then Option.some (NativeWrapKind.io_passthrough "monad_scope_fork")
             else if String.beq target "scope_drop" then Option.some (NativeWrapKind.io_passthrough "monad_scope_drop")
+            // The TCP family (`std/io.mo`'s eight `#[native "tcp_*"]`
+            // defs, reached by `motes/moon`'s server and `motes/moose`'s
+            // client). All eight are `IO`-returning C functions in
+            // `runtime.c`, so all eight are `io_passthrough`: call the
+            // runtime, then wrap the raw i64 result in `IO.io`.
+            //
+            // `Socket`/`Listener` are opaque here in the same sense
+            // `Fiber`/`Scope` are just above -- their type's single
+            // zero-arity constructor exists only so the checker can see
+            // a type, the value is never a constructor, and nothing in
+            // the corpus pattern-matches, compares or prints one. The
+            // runtime value is the file descriptor itself, which is why
+            // no `constructor_tag` lookup is needed and why
+            // `tcp_local_port : IO U16` is `io_passthrough` like
+            // `current_time : IO I64` rather than needing a kind of its
+            // own.
+            //
+            // There is no Rust-host half to mirror: the reference
+            // deliberately does not implement TCP (its maintenance cost
+            // was not worth a second implementation), so this backend is
+            // TCP's only implementation and `runtime/src/runtime.c`'s
+            // comments are its specification.
+            else if String.beq target "tcp_connect" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_connect")
+            else if String.beq target "tcp_listen" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_listen")
+            else if String.beq target "tcp_accept" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_accept")
+            else if String.beq target "tcp_read" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_read")
+            else if String.beq target "tcp_write" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_write")
+            else if String.beq target "tcp_close" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_close")
+            else if String.beq target "tcp_close_listener" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_close_listener")
+            else if String.beq target "tcp_local_port" then Option.some (NativeWrapKind.io_passthrough "monad_tcp_local_port")
             else Option.none,
     }
 
@@ -687,11 +730,35 @@ def runtime_declarations : List LLVMDeclaration :=
     let d61 := mk_decl "monad_scope_new" List.empty "i64" in
     let d62 := mk_decl "monad_scope_fork" (List.cons "i64" (List.cons "i64" List.empty)) "i64" in
     let d63 := mk_decl "monad_scope_drop" (List.cons "i64" List.empty) "i64" in
+    // `U16.to_string` (`runtime.c`), the u8/u64 siblings' shape
+    // (d37/d38). Same "no implicit declare" requirement as every native
+    // above; the `u16` ARITHMETIC next to it in the wiring needs no
+    // entry here because it is GENERATED (`runtime/src/natives.mo`),
+    // and a declare beside a define of one name is the invalid
+    // redefinition the comment above d32 warns about.
+    let d64 := mk_decl "monad_u16_to_string" (List.cons "i64" List.empty) "i64" in
+    // The TCP family (`runtime.c`). Same "no implicit declare"
+    // requirement as every native above -- without these the call-target
+    // gate (`gate_result`, `lang/codegen/emit.mo`) rejects the module
+    // with "call to undefined symbol(s): monad_tcp_connect". Every
+    // parameter and return is i64 under the CONVENTION at the head of
+    // this list: a String, a Socket/Listener handle and a file
+    // descriptor are all i64 here, and `tcp_write`'s `List U8` is one
+    // i64 pointer to the list's head, not a (pointer, length) pair.
+    let d65 := mk_decl "monad_tcp_connect" (List.cons "i64" (List.cons "i64" List.empty)) "i64" in
+    let d66 := mk_decl "monad_tcp_listen" (List.cons "i64" List.empty) "i64" in
+    let d67 := mk_decl "monad_tcp_accept" (List.cons "i64" List.empty) "i64" in
+    let d68 := mk_decl "monad_tcp_read" (List.cons "i64" (List.cons "i64" List.empty)) "i64" in
+    let d69 := mk_decl "monad_tcp_write" (List.cons "i64" (List.cons "i64" List.empty)) "i64" in
+    let d70 := mk_decl "monad_tcp_close" (List.cons "i64" List.empty) "i64" in
+    let d71 := mk_decl "monad_tcp_close_listener" (List.cons "i64" List.empty) "i64" in
+    let d72 := mk_decl "monad_tcp_local_port" (List.cons "i64" List.empty) "i64" in
     [d1, d2, d3, d4, d5, d6, d7, d7b, d7c, d7d, d7e, d8, d9, d10, d11, d12, d13,
      d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d23a, d23b, d24, d24b, d25, d26, d27, d28, d29, d30, d31,
      d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47,
      d48, d49, d50, d51, d52, d53, d54, d55, d56,
-     d57, d58, d59, d60, d61, d62, d63]
+     d57, d58, d59, d60, d61, d62, d63, d64,
+     d65, d66, d67, d68, d69, d70, d71, d72]
 
 /// `apply_closureN`'s own declared param list: the closure value itself
 /// plus `n` ordinary args, all i64 (matches every def's own uniform
