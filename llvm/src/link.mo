@@ -60,19 +60,37 @@ pub def map_dash_l (libs : List String) : List String := match libs {
     List.cons hd tl => List.cons (String.concat "-l" hd) (map_dash_l tl),
 }
 
+/// `MONAD_BUILD_COMMIT`, trimmed, or `""` when it is unset (or set to
+/// nothing but whitespace). A nix build's source is a store copy: no `.git`,
+/// so the probe below can only ever answer `unknown` there, and the flake
+/// exports the revision it is building instead.
+#[partial]
+def env_commit_hash (from_env : Option String) : String := match from_env {
+    Option.some s => String.trim s,
+    Option.none => ""
+}
+
 /// The git commit hash, to bake into the binary as a build-time constant.
 /// `exec_cmd` doesn't capture stdout, so this redirects to a temp file and
 /// reads it back.
+///
+/// The environment wins when it has something to say, which is what makes a
+/// packaged compiler report the revision it was built from rather than
+/// `unknown`.
 #[partial]
 def build_commit_hash : IO String := do {
-    let hash_path := "/tmp/monad_build_hash_" ++ I64.to_string process_id;
-    let _ <- exec_cmd "sh" ["-c", "git rev-parse --short HEAD 2>/dev/null > " ++ hash_path];
-    let hash_exists <- IO.file_exists (Path.path hash_path);
-    if hash_exists then do {
-        let raw <- IO.read_file (Path.path hash_path);
-        let _ <- exec_cmd "rm" ["-f", hash_path];
-        return (String.trim raw)
-    } else return "unknown"
+    let from_env <- IO.get_env "MONAD_BUILD_COMMIT";
+    let env_hash : String := env_commit_hash from_env;
+    if String.is_empty env_hash then do {
+        let hash_path := "/tmp/monad_build_hash_" ++ I64.to_string process_id;
+        let _ <- exec_cmd "sh" ["-c", "git rev-parse --short HEAD 2>/dev/null > " ++ hash_path];
+        let hash_exists <- IO.file_exists (Path.path hash_path);
+        if hash_exists then do {
+            let raw <- IO.read_file (Path.path hash_path);
+            let _ <- exec_cmd "rm" ["-f", hash_path];
+            return (String.trim raw)
+        } else return "unknown"
+    } else return env_hash
 }
 
 /// Write LLVM IR to disk and link it into a native binary via llc + clang.
