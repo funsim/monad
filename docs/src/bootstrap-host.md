@@ -122,42 +122,29 @@ so `fn(x : I64) => x` parses only self-hosted. No file in the corpus writes a
 bare `fn (x)`, so this is latent rather than live, and it predates the rewrite
 above; it is named here because "no construct left" was read as covering it.
 
-Two *behavioural* differences remain — code both compilers accept, which they
-then read differently. Neither is a syntax gap. A third, the un-inferable `_`,
-closed on this branch and is recorded below rather than deleted.
+One *behavioural* difference remains — code both compilers accept, which they
+then read differently. It is not a syntax gap. Two more, a discarded expected
+type and the un-inferable `_`, closed on this branch and are recorded below
+rather than deleted.
 
-**A wrong type in a match arm, when the expected type is a def-headed
-application.** The match-arm result is the one position the self-hosted checker
-is documented to enforce (see the section below), and it stops enforcing when
-the def's declared return type is an *application whose head is a def* rather
-than a rigid name or an inductive-headed application:
+**A wrong type in a lambda body under a polymorphic signature — closed.**
+Until this branch, `type_check_lam` matched the expected type with two arms —
+`Term.pi`, and a catch-all that *infers* — so a `forall`-headed expected type
+fell into the catch-all and the expectation was discarded. Since
+`elaborate_type` wraps a declared type in a `forall` for every name in it that
+is not a top-level decl, that covered **every polymorphic def**, and the body,
+including every match arm in it, was checked against `Term.hole`:
 
 ```monad,ignore
 type P { p0 }
-type Q { q0 }
-def idt (x : P) : Type := P
-def f (h : Q) : idt P.p0 := match h { Q.q0 => h }   // `Q`, not `P`
+def poly {A : Type} (h : P) (x : A) : A := match h { P.p0 => "s" }   // was accepted
+def mono (h : P) (x : I64) : I64 := match h { P.p0 => "s" }          // rejected
 ```
 
-Self-hosted `check` reports `ok`; the host reports
-`type mismatch: Q vs. (idt P.p0)`. It is *vacuous* rather than merely
-permissive — both directions of the same comparison are accepted, so a correct
-arm type is not being verified either:
-
-```monad,ignore
-def idt2 (x : P) : Type := I64
-def q4 (h : P) : idt2 P.p0 := match h { P.p0 => 1i64 }   // correct -> ok
-def q5 (h : P) : idt2 P.p0 := match h { P.p0 => "s" }    // wrong   -> ok
-```
-
-A rigid expectation (`: P`), a nullary def (`: alias0`) and an
-inductive-headed application (`: Box P`) are all enforced correctly, so this is
-narrow. The unit tests covering conversion checking do not catch it because
-`typecheck_source` builds a synthetic single-module scope rather than the
-whole-program scope `check` builds — which is why it belongs here and not only
-in a bug tracker. Root cause is not yet isolated;
-`plans/implementations/match-arm-conversion-vacuous-in-check.md` carries the
-reproduction matrix and the candidate mechanisms.
+The host rejected both. The arm now strips the `forall` and recurses, exactly as
+`unify_go` already did, and the two agree. It is recorded rather than deleted
+because it is the reason the paragraph below is careful about what a clean
+self-hosted `check` does and does not prove.
 
 **A missing `;` between `let` bindings.** Both parse it. Self-hosted, the
 binding's value expression is `atom (atom)*`, so it swallows the *next
@@ -271,8 +258,11 @@ branch, the self-hosted checker accepts a *concrete* type mismatch in nine of
 the ten positions probed — def body, application body, `return`, `if`/`else`
 branches, lambda argument, named-def-call argument, constructor argument,
 struct-literal field, class-method return — and enforces only the match-arm
-result — and even that only when the expected type is rigid or
-inductive-headed, per the divergence above. `unify` itself is sound; the comparison is
+result. **That measurement predates the discarded-expected-type fix above and
+has not been redone.** Most of those nine positions may not have been nine
+independent missing comparisons at all, but one expected type dropped upstream
+of all of them — the probe defs in that experiment were polymorphic. Re-measure
+before quoting the number. `unify` itself is sound; the comparison is
 simply never invoked at those boundaries, so **a clean self-hosted `check` is
 not evidence of type soundness.** (`def f : I64 := "s"` is the shortest way to
 see it: accepted self-hosted, one error under the host.) The
