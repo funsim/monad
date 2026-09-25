@@ -12,6 +12,11 @@
 use io {}
 open IO {println}
 
+// A one-field record for the unannotated-bind probes below.
+struct Counter {
+    count: I64,
+}
+
 // Do block syntax - simple expression
 // Equivalent to: def say_hello : IO Unit := println "Hello from do block!"
 def say_hello : IO Unit {
@@ -35,6 +40,46 @@ def greet_io (name : String) : IO Unit {
 
 // Traditional syntax for comparison
 def say_goodbye : IO Unit := println "Goodbye!"
+
+// An UNANNOTATED bind, then a field read THROUGH its binder.
+//
+// Regression cover for `implementations/do-bind-binder-untyped.md`: `let q <- e`
+// with no annotation used to leave `q` typed as a hole, so `q.count` -- which
+// desugars to a bare `{ count, .. }` field pattern -- failed with "cannot
+// resolve `{ .. }`: the matched value's type isn't known here". The read has to
+// be through the binder AND on the binder's own type. Reading it through a
+// named accessor def instead (`counter_count q`) does NOT discriminate and was
+// tried first: `try_type_check_def_call` runs ahead of the hole-based path in
+// `type_check_app` and checks the argument against the def's declared parameter
+// type, so the binder gets a real type from there whatever the callee is.
+// `IO.pure`/`Monad.bind` is a class method with no registered signature, so a
+// real do-bind has no such rescue.
+def count_through_bind (c : Counter) : IO I64 := do {
+  let q <- IO.pure c;
+  return q.count
+}
+
+// The annotated form the bug's workaround prescribed. Kept beside the above as
+// the control: this one took `type_check_lam`'s correct branch all along, so it
+// passed even with the defect.
+def count_through_annotated_bind (c : Counter) : IO I64 := do {
+  let q : Counter <- IO.pure c;
+  return q.count
+}
+
+#[test]
+def test_count_through_unannotated_bind : IO Bool := do {
+  let c : Counter := { count := 7 };
+  let n <- count_through_bind c;
+  IO.pure (I64.beq n 7)
+}
+
+#[test]
+def test_count_through_annotated_bind : IO Bool := do {
+  let c : Counter := { count := 9 };
+  let n <- count_through_annotated_bind c;
+  IO.pure (I64.beq n 9)
+}
 
 def main (args: List String) : IO Unit :=
   say_hello >>= fn _ =>

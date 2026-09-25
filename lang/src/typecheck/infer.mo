@@ -2706,7 +2706,7 @@ def type_check_app (f : Term) (a : Term) (expected_type : Term) (scope : Scope) 
     match infer_position_hole f a {
         Option.some e => err e,
         Option.none =>
-    let a_expected : Term := app_arg_expected_type f in
+    let a_expected : Term := app_arg_expected_type_from_callee f a scope local_types locals in
     match type_check a a_expected scope local_types locals {
         ok a_tt =>
             if not (struct_literal_arg_matches_expected a a_expected scope) then
@@ -2852,6 +2852,170 @@ def app_arg_expected_type (f : Term) : Term :=
     match f {
         Term.lam _dbg param_typ _body => param_typ,
         _ => Term.hole,
+    }
+
+// --- An unannotated lambda argument's parameter type (see the bug plan
+// `implementations/do-bind-binder-untyped.md`).
+//
+// `let x <- e;` desugars (`lang/src/parser/lower_parse.mo`) to
+// `Term.app (Term.app <Monad.bind> e) (Term.lam (named x) Term.hole <rest>)`
+// -- an argument that is a lambda whose WRITTEN param type is a hole, handed
+// to a callee that is not an inline lambda (`Monad.bind e`). Both conditions
+// defeat `app_arg_expected_type` above, so the lambda reaches
+// `type_check_lam`'s `_` arm (branch B), which stores the written hole as the
+// binder's type; `Term.hole` is a matches-anything wildcard here, never a
+// solvable meta (`lang/src/typecheck/whnf.mo`), so nothing downstream recovers
+// it and the first field read or `{ .. }` through the binder fails with
+// "cannot resolve `{ .. }`: the matched value's type isn't known here".
+//
+// The type is not MISSING, only late: the callee's domain is exactly what the
+// lambda needs. Recovering it here rather than reordering `type_check_app`
+// (callee before argument, as `core/src/core_check.rs`'s App arm does) is
+// deliberate: `resolve_class_method` derives a class method's carrier from the
+// Pi that `type_check_app_ordinary` synthesizes FROM THE ARGUMENT'S ALREADY
+// INFERRED TYPE (`carrier_from_expected_type`, stated in that pair's own doc
+// comments), so inferring the callee first would break carrier derivation for
+// every class method. This is additive instead -- it changes the argument's
+// expected type only for the shape above, and `Term.hole` otherwise.
+
+/// The type to check an application's ARGUMENT against. `app_arg_expected_type`
+/// handles the inline-lambda callee; this adds the one other shape whose
+/// answer is knowably useless -- an unannotated lambda argument to a non-lambda
+/// callee, i.e. a do-bind's continuation -- by asking the callee for its domain
+/// at this position. Every other argument keeps the old hole unchanged.
+#[terminating]
+def app_arg_expected_type_from_callee (f : Term) (a : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Term :=
+    let written : Term := app_arg_expected_type f in
+    if is_hole written && arg_is_unannotated_lam a then
+        match callee_arg_domain f scope local_types locals {
+            Option.some dom => lam_expected_of_domain dom,
+            Option.none => written,
+        }
+    else
+        written
+
+/// Is this argument a lambda whose written parameter type is a hole? Peeled,
+/// matching `infer_position_hole`'s own peeling, so a wrapped lambda still
+/// counts.
+def arg_is_unannotated_lam (a : Term) : Bool :=
+    match term_peel a {
+        Term.lam _dbg param_typ _body => is_hole (term_peel param_typ),
+        _ => false,
+    }
+
+/// Turn a callee's domain into the expected type for an unannotated lambda.
+///
+/// Only the DOMAIN is asserted, never the codomain: the lambda's real
+/// expected type here is `Term.pi dom ret`, and handing that over verbatim
+/// would make `type_check_lam`'s branch A check the continuation's body
+/// against a `ret` like `IO B` whose `B` is an unsolved free variable -- and
+/// with no metas there is nothing to solve it against, so every do-bind in the
+/// corpus would fail on a variable the checker cannot solve. The binder's type
+/// is what this bug is about, and it is what gets enforced; the codomain is
+/// left to the outer check that already handles it.
+def lam_expected_of_domain (dom : Term) : Term :=
+    match term_peel dom {
+        Term.pi binder_typ _ret => Term.pi binder_typ Term.hole,
+        _ => dom,
+    }
+
+/// The domain a callee expects at the position of an argument we are about to
+/// check. Two sources, cheapest first.
+#[terminating]
+def callee_arg_domain (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option Term :=
+    // A class method first: its own inference yields the class's ABSTRACT
+    // signature (a hole at this position) rather than an instance-solved Pi,
+    // so the declared signature in the class is the only source that has an
+    // answer -- and consulting it first also spares a do-bind the wasted
+    // `type_check` below.
+    match class_method_next_param f scope local_types locals {
+        Option.some dom => Option.some dom,
+        Option.none => inferred_callee_domain f scope local_types locals,
+    }
+
+/// The domain of the callee's own inferred type, for callees that are not
+/// class methods (a parameter bound to a function, say).
+#[terminating]
+def inferred_callee_domain (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option Term :=
+    match type_check f Term.hole scope local_types locals {
+        err _ => Option.none,
+        ok f_tt => pi_domain_of f_tt.typ,
+    }
+
+/// Peel a (possibly forall-wrapped) Pi chain down to its first domain, if that
+/// domain carries real information. A hole domain means the callee knows no
+/// more than we do, which is `Option.none` so the caller keeps its hole.
+#[partial]
+def pi_domain_of (t : Term) : Option Term :=
+    match term_peel t {
+        Term.pi dom _ret => if is_hole (term_peel dom) then Option.none else Option.some dom,
+        Term.forall _dbg _kind body => pi_domain_of body,
+        _ => Option.none,
+    }
+
+/// The parameter a CLASS METHOD declared for the argument position `f`'s spine
+/// has reached, with the method's type variables solved against the arguments
+/// already applied -- the domain the next argument must have.
+///
+/// Reads the class's own declared method signature (`class Monad` declares
+/// `bind (a : M A) (f : A -> M B) : M B`), split by `sig_tvars_params_ret` and
+/// solved with the same `def_call_check_args` the signature-driven def path
+/// uses, so `A` and `B` come out as the real types the call site implies
+/// rather than the free variables the registry signature stores.
+#[terminating]
+def class_method_next_param (f : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option Term :=
+    match flatten_call_spine f {
+        CallSpine.mk head args =>
+            match class_method_declared_sig head scope {
+                Option.none => Option.none,
+                Option.some sig =>
+                    match sig_tvars_params_ret sig {
+                        SigInfo.mk params _ret =>
+                            // The NEXT parameter is the one after as many
+                            // arguments as the spine has already applied.
+                            match nth_type (List.length args) params {
+                                Option.none => Option.none,
+                                Option.some next_param =>
+                                    match def_call_check_args args params List.empty scope local_types locals {
+                                        err _ => Option.none,
+                                        ok dcc => Option.some (subst_typevars_term next_param dcc.subst),
+                                    },
+                            },
+                    },
+            },
+    }
+
+/// The class method a bare reference names, or `Option.none` if `head` is not
+/// one. Mirrors `type_check_free_var`'s own class-method test -- `ref_names_
+/// class_method` for the qualifier rule (a qualifier naming an INDUCTIVE is a
+/// constructor reference, not a class method) plus the bare-name lookup, which
+/// is why the qualifier is stripped first: class methods are registered under
+/// their bare method name (`add_methods_go`, `lang/scope.mo`).
+#[partial]
+def class_method_declared_sig (head : Term) (scope : Scope) : Option Term :=
+    match term_peel head {
+        Term.var idx dbg =>
+            if I64.beq idx sentinel then
+                match dbg {
+                    DebugName.named id =>
+                        if ref_names_class_method id scope then
+                            let bare_id : Identifier :=
+                                match id { Identifier.id s => Identifier.id (last_dotted_segment s) } in
+                            match scope_find_class_def_by_name bare_id scope {
+                                err _ => Option.none,
+                                ok cd =>
+                                    match scope_find_class cd.class_name scope {
+                                        Option.none => Option.none,
+                                        Option.some cls => class_method_declared_type cls cd.name,
+                                    },
+                            }
+                        else
+                            Option.none,
+                    DebugName.unnamed => Option.none,
+                }
+            else
+                Option.none,
+        _ => Option.none,
     }
 
 /// Extract the return type from the function's type after application.

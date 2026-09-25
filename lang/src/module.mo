@@ -4449,6 +4449,94 @@ def test_field_pattern_monomorphic_read_is_unaffected : IO Bool := do {
     return (I64.beq (List.length diags) 0)
 }
 
+// --- An unannotated lambda argument's parameter type ---------------------
+//
+// Rows for `implementations/do-bind-binder-untyped.md`. `check_diags_of_source`
+// builds a scope from the source's OWN decls only (no prelude), so these pin
+// the MECHANISM -- a non-lambda callee, an argument that is an unannotated
+// lambda, and a field read through that lambda's binder -- rather than the
+// `do {}` spelling, which needs the real prelude and lives in
+// `examples/do_block.mo` (where the corpus `check` gate covers it).
+//
+// `apply_r`'s `k : R -> T` is the shape a do-bind's continuation arrives in:
+// `let x <- e` desugars to `Monad.bind e (fn x => <rest>)`, and the lambda is
+// checked as an ARGUMENT of a callee that is not itself an inline lambda.
+// `S` is a second struct declaring the same field `f`, so that a field name
+// alone does not determine a unique type -- a guard against the checker's
+// ambiguous-name fallback scan finding `R` and rescuing a lambda whose binder
+// is still a hole.
+//
+// The discriminating rows below take their callee through a LOCAL binding
+// (`k : (R -> T) -> T`), not `apply_r`, and that is not incidental: a call to a
+// def with a REGISTERED signature never reaches the defective path at all,
+// because `try_type_check_def_call` runs first and checks the lambda against
+// the parameter type `R -> T` directly. `Monad.bind` is a CLASS method with no
+// `def_sigs` entry, so a real do-bind gets no such rescue -- and the local
+// callee is the synthetic-scope shape with that same property. The `apply_r`
+// row below pins that rescued shape on purpose, so that the reason the
+// discriminating rows cannot use it stays visible.
+def hole_lam_arg_preamble : String :=
+    "type T { t }\nstruct R { f : T }\nstruct S { f : T }\ndef apply_r (k : R -> T) (r : R) : T := k r\n"
+
+def hole_lam_arg_src (row : String) : String := hole_lam_arg_preamble ++ row
+
+/// The reported shape: a callee with no registered signature, an unannotated
+/// lambda argument, and a field read through the lambda's binder. `q.f`
+/// desugars to a bare one-case field pattern, which before the fix reached
+/// `resolve_field_pattern_case` with `q`'s type a hole: "cannot resolve
+/// `{ .. }`: the matched value's type isn't known here".
+#[test]
+def test_hole_lam_arg_learns_its_param_type : IO Bool := do {
+    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe (k : (R -> T) -> T) (r : R) : T := k (fn q => q.f)") "probe";
+    return (I64.beq (List.length diags) 0 && diags_lack "cannot resolve" diags)
+}
+
+/// The same path spelled as the explicit pattern `q.f` desugars to, so the
+/// diagnosis is pinned to the surface the bug report used rather than to the
+/// projection sugar alone.
+#[test]
+def test_hole_lam_arg_via_field_pattern : IO Bool := do {
+    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe2 (k : (R -> T) -> T) (r : R) : T := k (fn q => match q { { f, .. } => f })") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
+/// The ANNOTATED control, on the same signature-less callee: this took
+/// `type_check_lam`'s correct branch all along, so it must be untouched by the
+/// new domain discovery. It is what fails if that discovery damages the path
+/// that already worked.
+#[test]
+def test_hole_lam_arg_annotated_still_checks : IO Bool := do {
+    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe3 (k : (R -> T) -> T) (r : R) : T := k (fn (q : R) => q.f)") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
+/// A callee with a REGISTERED signature, which the def-call path resolves
+/// before the defective one is reached. Kept as the control that explains why
+/// rows 1-2 cannot use `apply_r`: it passes with and without the fix, so a row
+/// written on this shape would pin nothing. Note the argument here is also the
+/// `apply_r` shape a reader is likeliest to reach for.
+#[test]
+def test_hole_lam_arg_named_callee_is_rescued_either_way : IO Bool := do {
+    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe5 (r : R) : T := apply_r (fn q => q.f) r") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
+/// The domain is REAL, not a wildcard: `q` is now `R`, and `R` has no field
+/// `g`. Without this row a "fix" that handed the lambda the hole in a
+/// different dress would pass the three above.
+///
+/// Measured: this row also FAILS before the fix, but for the other reason --
+/// with `q` a hole the message is "cannot resolve `{ .. }`", and with `q : R`
+/// it is "field pattern names a field the constructor doesn't have". So it is
+/// a second discriminator on the MESSAGE, not only a guard: it is the row that
+/// fails if the fix ever starts reporting the domain case via the
+/// unknown-type path again.
+#[test]
+def test_hole_lam_arg_enforces_the_domain : IO Bool := do {
+    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def bad (r : R) : T := apply_r (fn q => q.g) r") "probe";
+    return (diags_contain "doesn't have" diags && I64.beq (List.length diags) 1)
+}
+
 #[test]
 def test_check_file_reports_missing_file : Bool :=
     let empty_cache : ModuleInfoCache := module_info_cache_empty in
