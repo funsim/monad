@@ -113,6 +113,26 @@ def test_named_call_def_target_uses_declared_default : Bool :=
     // `factor` omitted entirely -- falls back to its own `:= 2` default.
     scale { p := 4 } == 8
 
+// A field read off a PARAMETERIZED type. `Pair`'s own `first`/`second`
+// (`init/src/prelude.mo`) are declared over its type PARAMETERS, so the
+// read only types at all once those are instantiated with the pair's
+// actual arguments -- regression cover, with the real prelude in scope,
+// for `plans/implementations/field-pattern-type-args-not-substituted.md`,
+// where `p.first` on a `Pair String I64` read as `A` and every site in the
+// corpus carried a workaround instead.
+//
+// The reads live in their own annotated defs rather than inline in the
+// `#[test]`: a `#[test]` whose body IS a field access takes the FIELD's
+// type as the def's own return type in the compiled runner
+// (`plans/implementations/...` -- a separate, open codegen defect).
+def pair_label (p : Pair String I64) : String := p.first
+def pair_count (p : Pair String I64) : I64 := p.second
+
+#[test]
+def test_generic_pair_field_reads : Bool :=
+    let p : Pair String I64 := Pair.pair "ok" 7 in
+    String.beq (pair_label p) "ok" && I64.beq (pair_count p) 7
+
 // Do notation works with a single expression
 def print_point (pt : Point) : IO Unit {
     match pt {

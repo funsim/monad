@@ -4362,6 +4362,93 @@ def test_check_module_with_scope_dotted_module_path_still_resolves : IO Bool := 
     }
 }
 
+// --- Tests: a field pattern's field types are substituted against the
+// scrutinee (`plans/implementations/field-pattern-type-args-not-
+// substituted.md`) ---
+//
+// A field read is not a projection: `field_access_chain` (`lang/src/
+// parser/lower_parse.mo`) desugars `p.first` into a one-case BARE field
+// pattern, so these rows drive the same `resolve_field_pattern_case` path
+// a written `P.mk { first, .. }` takes, from source, through the whole
+// parse -> scope -> check pipeline. They are source-level on purpose: the
+// unit rows in `lang/src/tests/infer_tests.mo` pin the field's TYPE
+// directly, and these pin what a program actually sees.
+//
+// `P`'s two parameters are instantiated with two DIFFERENT concrete types
+// so that substituting the wrong one is a visible failure rather than an
+// accident that still type-checks -- which is also what the `bad_first`
+// row below exists to prove: a substitution that made everything pass
+// would be no better than the defect.
+
+def field_pattern_preamble : String :=
+    "type T { t }\ntype U { u }\nstruct Mono { a : T, b : U }\ntype P A B { mk (first : A) (second : B) }\n"
+
+def field_pattern_src (row : String) : String := field_pattern_preamble ++ row
+
+/// The half that REPORTS: a generic field read meeting a declared return
+/// type. Before the fix `p.first` was typed with `P`'s own parameter `A`
+/// -- a free named sentinel nothing ever solves -- so this failed with
+/// "type mismatch: expected A, found T". The message is asserted as well
+/// as the count, so a rewording of the mismatch diagnostic cannot let
+/// this row pass while the defect is back.
+#[test]
+def test_field_pattern_generic_first_is_substituted : IO Bool := do {
+    let diags : List String <- check_diags_of_source (field_pattern_src "def first_of (p : P T U) : T := p.first") "probe";
+    return (I64.beq (List.length diags) 0 && diags_lack "expected A" diags)
+}
+
+/// The SECOND parameter, which is what says the substitution is
+/// positional in the right direction rather than mapping every parameter
+/// to the first type argument.
+#[test]
+def test_field_pattern_generic_second_is_substituted : IO Bool := do {
+    let diags : List String <- check_diags_of_source (field_pattern_src "def second_of (p : P T U) : U := p.second") "probe";
+    return (I64.beq (List.length diags) 0 && diags_lack "expected B" diags)
+}
+
+/// The half that was SILENT, and the row that actually catches it. Where
+/// no expected type is in play the wrong type was absorbed rather than
+/// reported, so a diagnostic row cannot see it directly -- but a field read
+/// THROUGH such a binding can: resolving `.a` needs `p.first`'s own type to
+/// be a known inductive, and `A` never is. Not `id_t p.first`, which was
+/// tried first and passes either way: an argument to a def with a
+/// registered signature is inferred against `Term.hole` and its type then
+/// SOLVED against the parameter (`def_call_check_args`/`solve_typevars`),
+/// so the parameter absorbs `A` exactly as a hole would.
+#[test]
+def test_field_pattern_generic_read_nests : IO Bool := do {
+    let diags : List String <- check_diags_of_source (field_pattern_src "def deep (p : P Mono U) : T := p.first.a") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
+/// The substitution must still REJECT a genuine mismatch: `p.first` is
+/// `T`, and this row declares `U`. Without this the three rows above
+/// would also pass for a "fix" that typed every field as a hole.
+#[test]
+def test_field_pattern_generic_wrong_field_type_is_rejected : IO Bool := do {
+    let diags : List String <- check_diags_of_source (field_pattern_src "def bad_first (p : P T U) : U := p.first") "probe";
+    return (diags_contain "type mismatch" diags && I64.beq (List.length diags) 1)
+}
+
+/// The NAMED spelling (`P.mk { first, .. }`), which reaches
+/// `resolve_field_pattern_case`'s other branch -- the bare form above goes
+/// through `resolve_bare_field_pattern`, so one row cannot cover both.
+#[test]
+def test_field_pattern_named_form_is_substituted : IO Bool := do {
+    let diags : List String <- check_diags_of_source (field_pattern_src "def named_of (p : P T U) : T := match p { P.mk { first, .. } => first }") "probe";
+    return (I64.beq (List.length diags) 0 && diags_lack "expected A" diags)
+}
+
+/// The monomorphic control: a struct with no type parameters at all, whose
+/// field types have nothing to substitute. This is the row that fails if
+/// the substitution damages the common case -- every corpus field read is
+/// this shape.
+#[test]
+def test_field_pattern_monomorphic_read_is_unaffected : IO Bool := do {
+    let diags : List String <- check_diags_of_source (field_pattern_src "def geta (m : Mono) : T := m.a\ndef getb (m : Mono) : U := m.b") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
 #[test]
 def test_check_file_reports_missing_file : Bool :=
     let empty_cache : ModuleInfoCache := module_info_cache_empty in

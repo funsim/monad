@@ -1111,7 +1111,7 @@ def type_check_match_case (case_ : MatchCase) (scrutinee_term : Term) (scrutinee
         MatchCase.mc name args body fp =>
             match fp {
                 Option.some field_pattern =>
-                    type_check_field_pattern_case name args body field_pattern maybe_ind expected_type scope local_types locals,
+                    type_check_field_pattern_case name args body field_pattern scrutinee_typ maybe_ind expected_type scope local_types locals,
                 Option.none =>
                     let wildcard_id : Identifier := Identifier.id "_" in
                     if Similar.similar name wildcard_id then
@@ -1170,8 +1170,8 @@ pub struct ResolvedFieldPattern {
 // `type_check_case_body_checked` only ever recurses on `body`'s own
 // (unchanged-in-size) subterms from there, same as any other case.
 #[terminating]
-def type_check_field_pattern_case (name : Identifier) (args : List Identifier) (body : Term) (fp : FieldPattern) (maybe_ind : Option Inductive) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError CheckedCase :=
-    match resolve_field_pattern_case name fp maybe_ind {
+def type_check_field_pattern_case (name : Identifier) (args : List Identifier) (body : Term) (fp : FieldPattern) (scrutinee_typ : Term) (maybe_ind : Option Inductive) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError CheckedCase :=
+    match resolve_field_pattern_case name fp scrutinee_typ maybe_ind {
         err e => err e,
         ok resolved =>
             match resolved {
@@ -1304,17 +1304,61 @@ def old_depths_of (written_to_declared : List I64) (old_n : I64) (w : I64) : Lis
 /// tolerates it by falling back to `Term.hole` field types), a
 /// field-pattern case has no way to resolve field order at all without
 /// a real inductive to resolve against.
-def resolve_field_pattern_case (case_name : Identifier) (fp : FieldPattern) (maybe_ind : Option Inductive) : Result TypeError ResolvedFieldPattern :=
+def resolve_field_pattern_case (case_name : Identifier) (fp : FieldPattern) (scrutinee_typ : Term) (maybe_ind : Option Inductive) : Result TypeError ResolvedFieldPattern :=
     match maybe_ind {
         Option.none => err (TypeError.custom "cannot resolve `{ .. }`: the matched value's type isn't known here"),
         Option.some ind =>
-            if String.beq (show_identifier case_name) "" then
-                resolve_bare_field_pattern fp ind
-            else
-                match find_constructor_in_inductive ind (NamePath.npath (List.cons case_name List.empty)) {
-                    Option.none => err (TypeError.custom "unknown constructor in field pattern"),
-                    Option.some ctor => resolve_field_pattern_against_constructor case_name ctor fp,
-                },
+            let resolved : Result TypeError ResolvedFieldPattern :=
+                if String.beq (show_identifier case_name) "" then
+                    resolve_bare_field_pattern fp ind
+                else
+                    match find_constructor_in_inductive ind (NamePath.npath (List.cons case_name List.empty)) {
+                        Option.none => err (TypeError.custom "unknown constructor in field pattern"),
+                        Option.some ctor => resolve_field_pattern_against_constructor case_name ctor fp,
+                    } in
+            // Both branches answer the constructor's DECLARED field types,
+            // still written over the inductive's own type parameters --
+            // instantiate them here, once, rather than in each branch.
+            match resolved {
+                err e => err e,
+                ok rfp => ok (rfp_substituted ind scrutinee_typ rfp),
+            },
+    }
+
+/// Instantiate a resolved field pattern's declared field types with the
+/// scrutinee's ACTUAL type arguments -- `p.first` on a `Pair String String`
+/// binds `String`, not `Pair`'s own declared `A`.
+///
+/// Reuses `substitute_inductive_type_params` wholesale, which is what the
+/// POSITIONAL sibling path has used since its own fix (`arg_types_for_case`,
+/// below): the two match spellings now instantiate through one rule instead
+/// of the field path having a second, subtly different one.
+///
+/// The one shape this does not reach is an INDEXED family: the substitution
+/// zips the inductive's own declared params against the scrutinee's
+/// application spine, so a scrutinee type argument that is not one of those
+/// params (`n` of a `Vec A n`) is left alone, and a constructor whose field
+/// type mentions it keeps that mention. The Rust reference solves those by
+/// unifying the constructor's declared RETURN type against the scrutinee
+/// (`match_case_field_types`, `core/src/core_check.rs`), which needs
+/// metavariables and a per-constructor return-index expression -- this
+/// checker has neither (`lang/src/typecheck/whnf.mo`'s header: `Term.hole`
+/// is a wildcard, not a solvable meta), and `n + 1 ~ 5` needs arithmetic in
+/// unification regardless. Recorded as the remaining gap in
+/// `plans/implementations/field-pattern-type-args-not-substituted.md`
+/// rather than approximated here.
+def rfp_substituted (ind : Inductive) (scrutinee_typ : Term) (rfp : ResolvedFieldPattern) : ResolvedFieldPattern :=
+    match rfp {
+        mk resolved_name declared_names declared_types written_to_declared =>
+            // Annotated local first -- see the matching comment in
+            // `resolve_field_pattern_against_constructor`.
+            let out : ResolvedFieldPattern := {
+                resolved_name := resolved_name,
+                declared_names := declared_names,
+                declared_types := substitute_inductive_type_params ind scrutinee_typ declared_types,
+                written_to_declared := written_to_declared,
+            } in
+            out,
     }
 
 /// `{ .. }` (no constructor name) requires the scrutinee's inductive to
@@ -1353,19 +1397,21 @@ def constructor_bare_name (np : NamePath) : Identifier :=
             },
     }
 
-// NOTE: unlike `arg_types_for_case`'s positional-pattern sibling (see its
-// own doc comment, `substitute_inductive_type_params`), `declared_types`
-// below is NOT substituted against the scrutinee's actual type
-// arguments -- a field-pattern case (`{ x, y } => ...`) over a GENERIC
-// inductive would bind its field vars to the raw, uninstantiated
-// declared param types, same latent bug `arg_types_for_case` had before
-// its fix. Not touched here: no confirmed failure in the corpus exercises
-// this path with a generic scrutinee (fast sweep + full `slow_tests/
-// typecheck_init_tests.mo` both green without it), and wiring `scrutinee_
-// typ` through here would also need threading it through `resolve_field_
-// pattern_case`/`resolve_bare_field_pattern`. Flagged as a known,
-// unconfirmed gap rather than spending the extra signature-threading on
-// a path with no observed break.
+// `declared_types` below is the constructor's own DECLARED field types,
+// expressed over the INDUCTIVE's type parameters (`A`/`B` for `Pair A B`)
+// -- deliberately, and only half the answer. `resolve_field_pattern_case`
+// instantiates them against the scrutinee's actual type arguments
+// (`rfp_substituted`) for both spellings at once, which is why neither this
+// function nor `resolve_bare_field_pattern` takes a scrutinee type.
+//
+// That instantiation used to be missing, and this comment used to record it
+// as an unconfirmed gap on the grounds that no corpus failure exercised the
+// path with a generic scrutinee. One did:
+// `plans/implementations/field-pattern-type-args-not-substituted.md` --
+// `p.first` on a `Pair String String` read as `A`, reported wherever an
+// expected type was in play and SILENTLY mistyping the binding wherever one
+// was not. Rows in `lang/src/module.mo` (`field_pattern_preamble`) and
+// `lang/src/tests/infer_tests.mo` (`pair_ind`) hold it closed now.
 def resolve_field_pattern_against_constructor (resolved_name : Identifier) (ctor : InductConstructor) (fp : FieldPattern) : Result TypeError ResolvedFieldPattern :=
     match ctor {
         InductConstructor.mk _ params _ =>

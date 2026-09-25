@@ -718,6 +718,110 @@ def test_field_pattern_missing_field_without_rest_is_an_error : Bool :=
         err _ => true,
     }
 
+// --- A GENERIC inductive: field types must be instantiated ---
+//
+// `point_ind` above declares `empty_params`, so no test built on it can
+// say whether a field pattern instantiates the inductive's own type
+// parameters -- which is exactly how
+// `plans/implementations/field-pattern-type-args-not-substituted.md`
+// stayed latent while the whole block above was green. `pair_ind`'s
+// constructor fields are declared over its OWN params (`first : A`,
+// `second : B`), the shape a generic inductive's constructor really has
+// once its own check has skolemized them into free named vars.
+//
+// These rows assert the field's TYPE, not the absence of a diagnostic:
+// the defect's dangerous half was silent (a bare binding absorbed the
+// wrong type instead of reporting it), so only a test that reads the
+// type back can fail if it returns. The source-level companions live in
+// `lang/src/module.mo` (`field_pattern_preamble`).
+
+def named_free_var (name : String) : Term := Term.var sentinel (DebugName.named (Identifier.id name))
+
+def term_is_named_var (t : Term) (name : String) : Bool :=
+    match t {
+        Term.var _idx dbg =>
+            match dbg {
+                DebugName.named nid => Similar.similar nid (Identifier.id name),
+                DebugName.unnamed => false,
+            },
+        _ => false,
+    }
+
+def pair_ind : Inductive :=
+    let type_name : NamePath := NamePath.npath [Identifier.id "P"] in
+    let a_param : Param := Param.mk (Identifier.id "A") (sort_n 1) Multiplicity.many Option.none List.empty in
+    let b_param : Param := Param.mk (Identifier.id "B") (sort_n 1) Multiplicity.many Option.none List.empty in
+    let first_param : Param := Param.mk (Identifier.id "first") (named_free_var "A") Multiplicity.many Option.none List.empty in
+    let second_param : Param := Param.mk (Identifier.id "second") (named_free_var "B") Multiplicity.many Option.none List.empty in
+    let ctor : InductConstructor := InductConstructor.mk (NamePath.npath [Identifier.id "mk"]) [first_param, second_param] (sort_n 1) in
+    Inductive.mk type_name [a_param, b_param] (sort_n 1) [ctor] List.empty Visibility.package_private
+
+def pair_scope : Scope :=
+    let mod_path : ModulePath := ModulePath.mp [Identifier.id "Test"] in
+    let sd : ScopeData := build_scope_from_decls mod_path [Decl.inductive_d pair_ind] in
+    {
+        module_id := mod_path,
+        scope := sd,
+        parent := Option.none,
+    }
+
+/// `P T U` -- two DIFFERENT concrete arguments, so substituting the wrong
+/// parameter is a visible failure and not an accident that still passes.
+def pair_scrutinee_typ : Term := Term.app (Term.app (named_free_var "P") (named_free_var "T")) (named_free_var "U")
+def pair_typed_local_types : List Term := List.cons pair_scrutinee_typ List.empty
+
+/// The arm's body IS the field binder, so the checked case's body type is
+/// the type the field pattern bound it to. `T` after the fix; `A` -- the
+/// inductive's own parameter, a free sentinel nothing ever solves -- before.
+#[test]
+def test_field_pattern_first_field_type_comes_from_the_scrutinee : Bool :=
+    let entry : FieldPatternEntry := FieldPatternEntry.mk (Identifier.id "first") (Identifier.id "first") in
+    let fp : FieldPattern := FieldPattern.mk (List.cons entry List.empty) true in
+    let args : List Identifier := List.cons (Identifier.id "first") List.empty in
+    let case_ : MatchCase := MatchCase.mc (Identifier.id "") args (Term.var 0 DebugName.unnamed) (Option.some fp) in
+    match type_check_match_case case_ (Term.var 0 DebugName.unnamed) pair_scrutinee_typ (Option.some pair_ind) Term.hole pair_scope pair_typed_local_types empty_locals {
+        err _ => false,
+        ok checked =>
+            match checked {
+                mk _resolved_case body_typ => term_is_named_var body_typ "T",
+            },
+    }
+
+/// The second field, which is what says the substitution pairs each
+/// parameter with its OWN argument rather than mapping both to the first.
+#[test]
+def test_field_pattern_second_field_type_comes_from_the_scrutinee : Bool :=
+    let entry : FieldPatternEntry := FieldPatternEntry.mk (Identifier.id "second") (Identifier.id "second") in
+    let fp : FieldPattern := FieldPattern.mk (List.cons entry List.empty) true in
+    let args : List Identifier := List.cons (Identifier.id "second") List.empty in
+    let case_ : MatchCase := MatchCase.mc (Identifier.id "") args (Term.var 0 DebugName.unnamed) (Option.some fp) in
+    match type_check_match_case case_ (Term.var 0 DebugName.unnamed) pair_scrutinee_typ (Option.some pair_ind) Term.hole pair_scope pair_typed_local_types empty_locals {
+        err _ => false,
+        ok checked =>
+            match checked {
+                mk _resolved_case body_typ => term_is_named_var body_typ "U",
+            },
+    }
+
+/// A scrutinee type carrying NO arguments at all (the bare head `P`, which
+/// is what an un-inferred scrutinee looks like): the substitution has
+/// nothing to zip, and must leave the declared types alone rather than
+/// erroring or dropping fields. Pins `substitute_inductive_type_params`'s
+/// documented partial-information fallback through this path too.
+#[test]
+def test_field_pattern_bare_scrutinee_head_leaves_declared_types : Bool :=
+    let entry : FieldPatternEntry := FieldPatternEntry.mk (Identifier.id "first") (Identifier.id "first") in
+    let fp : FieldPattern := FieldPattern.mk (List.cons entry List.empty) true in
+    let args : List Identifier := List.cons (Identifier.id "first") List.empty in
+    let case_ : MatchCase := MatchCase.mc (Identifier.id "") args (Term.var 0 DebugName.unnamed) (Option.some fp) in
+    match type_check_match_case case_ (Term.var 0 DebugName.unnamed) (named_free_var "P") (Option.some pair_ind) Term.hole pair_scope (List.cons (named_free_var "P") List.empty) empty_locals {
+        err _ => false,
+        ok checked =>
+            match checked {
+                mk _resolved_case body_typ => term_is_named_var body_typ "A",
+            },
+    }
+
 // --- Error tests: type mismatch in if ---
 
 #[test]
