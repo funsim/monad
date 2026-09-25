@@ -440,13 +440,24 @@ def Mote.table_keys (found : Option Toml.Value) : List String :=
     match found {
         Option.none => List.empty,
         Option.some v => match v {
-            Toml.Value.table sub => List.map Pair.first (BTreeMap.to_list sub),
+            // The lambda's parameter type is written; the field read needs
+            // it, because `p.first` desugars to a bare `{ .. }` field-pattern
+            // match. This replaced a monomorphic `def Pair.first` helper
+            // (`mote.mo`'s own un-workaround, after the field-pattern fix),
+            // and two spellings of that removal were tried and both fail --
+            // worth recording, because this is the corpus's only site with
+            // the shape. An UNANNOTATED lambda (`fn p => p.first`) leaves the
+            // parameter a hole: `List.map`'s type variable is solved from its
+            // SECOND argument, so the check of the first reports
+            // `cannot resolve `{ .. }`: the matched value's type isn't known
+            // here`. A GENERIC accessor passed as a value (`List.map
+            // Pair.first`) keeps its own type variables unsolved at the call
+            // and reports `type mismatch: expected (List ((Pair A) B)),
+            // found (List String)`. Neither is the field-pattern bug.
+            Toml.Value.table sub => List.map (fn (p : Pair String Toml.Value) => p.first) (BTreeMap.to_list sub),
             _ => List.empty
         }
     }
-
-def Pair.first (p : Pair String Toml.Value) : String :=
-    match p { Pair.pair k _ => k }
 
 // ─── The inline `#![mote { ... }]` annotation ────────────────────────
 //

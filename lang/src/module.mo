@@ -405,7 +405,7 @@ def mote_relative_file (mp : ModulePath) : String :=
 /// say), so `lang/../init/src/prelude.mo` resolves wherever the CWD is.
 #[partial]
 def resolve_ambient_file (base_dir : String) (mp : ModulePath) (candidate : String) : IO (Option String) := do {
-    let r : Option String <- first_existing [candidate];
+    let r <- first_existing [candidate];
     match r {
         Option.some p => return (Option.some p),
         Option.none => resolve_via_manifest base_dir mp
@@ -453,7 +453,7 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
         // probe served nothing once that landed: an example referring to a
         // SIBLING resolves through `relative_path` above, which is tried
         // first and always hit for a file in the same directory.
-        let found : Option String <- first_existing [
+        let found <- first_existing [
             relative_path, direct_path, mote_path, init_path, std_path, lang_path,
         ];
         match found {
@@ -487,7 +487,7 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
                 // go first would only add a failing stat to every bare-name
                 // lookup.
                 let in_motes_qualified := String.concat "motes/" (mote_relative_file mp);
-                let in_motes : Option String <- first_existing (List.append in_motes_cands (List.cons in_motes_qualified List.empty));
+                let in_motes <- first_existing (List.append in_motes_cands (List.cons in_motes_qualified List.empty));
                 match in_motes {
                     Option.some p => return (Option.some p),
                     Option.none => resolve_via_manifest base_dir mp
@@ -556,7 +556,7 @@ def motes_src_paths_go (entries : List String) (file_stem : String) : IO (List S
 /// MISS, so the manifest read costs nothing on the path everything takes.
 #[partial]
 def resolve_via_manifest (base_dir : String) (mp : ModulePath) : IO (Option String) := do {
-    let mote : Option MoteManifest <- Mote.discover base_dir;
+    let mote <- Mote.discover base_dir;
     match mote {
         Option.none => return Option.none,
         Option.some m => first_existing (manifest_candidates m mp)
@@ -649,7 +649,7 @@ def mote_path_within (m : MoteManifest) (mp : ModulePath) : Option String :=
 /// resolving twice caused.
 #[partial]
 def load_module_decls (base_dir : String) (mp : ModulePath) : IO (Option (List Decl)) {
-    let resolved : Option String <- resolve_module_file base_dir mp;
+    let resolved <- resolve_module_file base_dir mp;
     match resolved {
         Option.some file_path => load_module_decls_at file_path mp,
         Option.none => do { return Option.none }
@@ -740,7 +740,7 @@ def load_module_decls_at (file_path : String) (mp : ModulePath) : IO (Option (Li
 /// base_dir is the directory to resolve relative imports from
 #[partial]
 def load_module_scope (base_dir : String) (mp : ModulePath) : IO (Option ScopeData) {
-    let opt_decls : Option (List Decl) <- load_module_decls base_dir mp;
+    let opt_decls <- load_module_decls base_dir mp;
     match opt_decls {
         Option.some decl_list => do {
             let sd : ScopeData := build_scope_from_decls mp decl_list;
@@ -781,11 +781,11 @@ def extract_all_dependencies_go
             else do {
                 // Process this module
                 let new_visiting : List ModulePath := List.cons head visiting;
-                let dep_decls_opt : Option (List Decl) <- load_module_decls base_dir head;
+                let dep_decls_opt <- load_module_decls base_dir head;
                 match dep_decls_opt {
                     Option.some dep_decls => do {
                         // First, find the actual file path for this module
-                        let resolved_path_opt : Option String <- resolve_module_file base_dir head;
+                        let resolved_path_opt <- resolve_module_file base_dir head;
                         let new_base_dir : String :=
                             match resolved_path_opt {
                                 Option.some fp => extract_directory fp,
@@ -926,7 +926,7 @@ def collect_dep_module_infos (to_visit : List PendingModule) (visiting : List Mo
                 // dependency is reached once per importing file, and
                 // re-reading + re-parsing it each time is the dominant
                 // cross-file cost (see `ModuleInfoCache`'s own note).
-                let loaded : InfoAndCache <- load_module_with_info_cached pending.base_dir head cache;
+                let loaded <- load_module_with_info_cached pending.base_dir head cache;
                 match loaded.info {
                     Option.some info => do {
                         // This module's OWN directory is what its own
@@ -990,7 +990,7 @@ def load_dependency_entries {A : Type} (loader : ModulePath -> IO (Option A)) (n
             return (Result.ok acc)
         },
         List.cons head tail => do {
-            let entry_opt : Option A <- loader head;
+            let entry_opt <- loader head;
             match entry_opt {
                 Option.some entry => do {
                     let new_acc : List A := List.cons entry acc;
@@ -1009,7 +1009,7 @@ def load_dependency_entries {A : Type} (loader : ModulePath -> IO (Option A)) (n
 /// it can be partially applied (`load_scope_entry base_dir`) into
 /// `load_dependency_entries`'s `loader` parameter.
 def load_scope_entry (base_dir : String) (mp : ModulePath) : IO (Option ScopeData) := do {
-    let sd_opt : Option ScopeData <- load_module_scope base_dir mp;
+    let sd_opt <- load_module_scope base_dir mp;
     match sd_opt {
         Option.some sd => do { return (Option.some sd) },
         Option.none => load_module_scope_default mp
@@ -1143,11 +1143,7 @@ def list_append_go (xs : List A) (ys : List A) : List A :=
 /// `slow_tests/*.mo`'s own corpus-checking `#[test]`s.
 #[partial]
 pub def typecheck_module_with_scope (scope : Scope) (decl_list : List Decl) (locals : LocalScope) : IO Bool := do {
-    // Annotated bind: without the type, the self-hosted checker can't
-    // tell this match's `empty`/`cons` from `BTreeMap`'s own same-named
-    // constructors ("ambiguous constructor `empty`") -- an IO bind's
-    // result type isn't recoverable in pure infer mode.
-    let diags : List String <- check_module_with_scope scope decl_list locals Option.none false;
+    let diags <- check_module_with_scope scope decl_list locals Option.none false;
     match diags {
         List.empty => do { return true },
         List.cons _ _ => do {
@@ -1434,9 +1430,7 @@ def check_module_decls_with_scope (scope : Scope) (decl_list : List Decl) (local
 /// needs the whole module to build its call graph; appending its result here
 /// keeps the two gates in the one place the host has them.
 pub def check_module_with_scope (scope : Scope) (decl_list : List Decl) (locals : LocalScope) (path : Option String) (verbose : Bool) : IO (List String) := do {
-    // Annotated bind: an IO bind's result type isn't recoverable in pure
-    // infer mode, as at `typecheck_module_with_scope` below.
-    let diags : List String <- check_module_decls_with_scope scope decl_list locals path verbose;
+    let diags <- check_module_decls_with_scope scope decl_list locals path verbose;
     return (list_append diags (check_termination_all decl_list))
 }
 
@@ -2014,17 +2008,12 @@ pub def check_file_cached (cache : ModuleInfoCache) (file_path : String) (verbos
     let exists : Bool <- file_exists (Path.path file_path);
     if exists then do {
         if verbose then println ("checking " ++ file_path) else do { return unit };
-        let ec : ElaboratedAndCache <- elaborate_loaded_modules_cached file_path false cache verbose;
+        let ec <- elaborate_loaded_modules_cached file_path false cache verbose;
         let out_cache : ModuleInfoCache := ec.cache;
         match ec.elaborated {
             Result.ok em => do {
                 let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
-                // Annotated bind: an IO bind's result type isn't
-                // recoverable in pure infer mode, so without it the
-                // self-hosted checker can't tell this list's
-                // `empty`/`cons` from `BTreeMap`'s same-named
-                // constructors ("ambiguous constructor `empty`").
-                let diags : List String <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some file_path) verbose;
+                let diags <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some file_path) verbose;
                 // Each level bound with an explicit annotation rather
                 // than nested inline -- see `load_module_with_info`'s
                 // own note. `out_cache`, not `cache`: the walk extended
@@ -2057,7 +2046,7 @@ pub def check_file_cached (cache : ModuleInfoCache) (file_path : String) (verbos
 /// Recursively collect every `*.mo` file under `dir`.
 #[partial]
 def collect_mo_files (dir : String) : IO (List String) := do {
-    let entries : List String <- list_dir (Path.path dir);
+    let entries <- list_dir (Path.path dir);
     collect_mo_files_entries dir entries
 }
 
@@ -2453,7 +2442,7 @@ def load_module_with_info_cached (base_dir : String) (mp : ModulePath) (cache : 
             return out
         },
         Option.none => do {
-            let loaded : Option ModuleInfo <- load_module_with_info base_dir mp;
+            let loaded <- load_module_with_info base_dir mp;
             match loaded {
                 Option.some info => do {
                     let out : InfoAndCache := { info := Option.some info, cache := module_info_cache_insert mp info cache };
@@ -2645,7 +2634,7 @@ def resolve_lib_alias_decls (base_dir : String) (decls : List Decl) : IO (List D
         match inline_mote_of_decls base_dir decls {
             Option.some m => return (rewrite_lib_uses m.name decls),
             Option.none => do {
-                let mote : Option MoteManifest <- Mote.discover base_dir;
+                let mote <- Mote.discover base_dir;
                 match mote {
                     Option.some m => return (rewrite_lib_uses m.name decls),
                     // Outside any mote (script mode): `lib` names nothing,
@@ -2720,7 +2709,7 @@ def resolve_lib_alias_decls_opt (base_dir : String) (decls : Option (List Decl))
 
 #[partial]
 pub def load_module_with_info (base_dir : String) (mp : ModulePath) : IO (Option ModuleInfo) {
-    let resolved_path_opt : Option String <- resolve_module_file base_dir mp;
+    let resolved_path_opt <- resolve_module_file base_dir mp;
     match resolved_path_opt {
         Option.none => do { return Option.none },
         Option.some file_path => do {
@@ -2731,7 +2720,7 @@ pub def load_module_with_info (base_dir : String) (mp : ModulePath) : IO (Option
             // own note for the `prelude`-inside-a-mote defect this caused.
             let actual_base_dir : String := extract_directory file_path;
             let raw_decls : Option (List Decl) <- load_module_decls_at file_path mp;
-            let decl_list : Option (List Decl) <- resolve_lib_alias_decls_opt actual_base_dir raw_decls;
+            let decl_list <- resolve_lib_alias_decls_opt actual_base_dir raw_decls;
             match decl_list {
                 Option.some decl_list => do {
                     // Bound with an explicit annotation rather than written
@@ -2904,7 +2893,7 @@ def validate_module_deps (info : ModuleInfo) : IO (List String) := do {
     match validate_mote_attr info {
         List.cons e _ => return [e],
         List.empty => do {
-            let mote : Option MoteManifest <- mote_of_module info;
+            let mote <- mote_of_module info;
             match mote {
                 // Script mode -- a file outside any mote and with no inline
                 // annotation (a one-off). Nothing declared anything, so
@@ -2980,7 +2969,7 @@ def gate_declared_deps (r : Result String LoadedModules) : IO (Result String Loa
     match r {
         Result.err e => return (Result.err e),
         Result.ok loaded => do {
-            let errs : List String <- validate_declared_deps (get_loaded_all loaded);
+            let errs <- validate_declared_deps (get_loaded_all loaded);
             match errs {
                 List.empty => return (Result.ok loaded),
                 List.cons e _ => return (Result.err e)
@@ -3027,7 +3016,7 @@ def link_libs_of_module (info : ModuleInfo) : IO (List String) := do {
     // `mote_of_module`, not `Mote.discover`: an inline `#![mote { libs :=
     // [...] }]` declares the same `[link] libs` a manifest does, so a file
     // with no `mote.toml` must still reach the linker's flags through it.
-    let mote : Option MoteManifest <- mote_of_module info;
+    let mote <- mote_of_module info;
     match mote {
         Option.none => return List.empty,
         Option.some m => return m.link_libs
@@ -3070,7 +3059,7 @@ def load_file_modules_cached (file_path : String) (cache : ModuleInfoCache) (ver
     let module_name : String := module_name_from_path file_path;
     let mp : ModulePath := ModulePath.mp [Identifier.id module_name];
     module_line verbose module_name;
-    let module : Option ModuleInfo <- load_module_with_info base_dir mp;
+    let module <- load_module_with_info base_dir mp;
     match module {
         Option.some main_module =>
             match main_module {
@@ -3110,7 +3099,7 @@ def load_file_modules_cached (file_path : String) (cache : ModuleInfoCache) (ver
                     let direct_deps_with_prelude : List ModulePath := List.append [prelude_module_path, init_module_path, std_module_path] direct_deps;
                     let no_visited : List ModuleInfo := List.empty;
                     let no_visiting : List ModulePath := List.empty;
-                    let walked : InfosAndCache <- collect_dep_module_infos (pending_from main_base_dir direct_deps_with_prelude) no_visiting no_visited cache verbose;
+                    let walked <- collect_dep_module_infos (pending_from main_base_dir direct_deps_with_prelude) no_visiting no_visited cache verbose;
                     let all_modules : List ModuleInfo := List.cons main_module walked.infos;
                     // Each level bound with an explicit annotation
                     // rather than inlined as `Result.ok { ... }` inside
@@ -3137,7 +3126,7 @@ def load_file_modules_cached (file_path : String) (cache : ModuleInfoCache) (ver
 /// `verbose` forwards to the per-module trace (`std/src/log.mo`).
 #[partial]
 pub def load_file_modules (file_path : String) (verbose : Bool) : IO (Result String LoadedModules) := do {
-    let r : LoadedAndCache <- load_file_modules_cached file_path module_info_cache_empty verbose;
+    let r <- load_file_modules_cached file_path module_info_cache_empty verbose;
     return r.loaded
 }
 
@@ -3735,12 +3724,12 @@ def replace_main_decls (loaded : LoadedModules) (target_mp : ModulePath) (decls 
 #[partial]
 pub def elaborate_loaded_modules_cached (file_path : String) (check_deps : Bool) (cache : ModuleInfoCache) (verbose : Bool) : IO ElaboratedAndCache := do {
     let t_load : I64 <- Bench.now;
-    let lc : LoadedAndCache <- load_file_modules_cached file_path cache verbose;
+    let lc <- load_file_modules_cached file_path cache verbose;
     // Declared-dependency enforcement (package-system.md 5d) before any
     // elaboration work: a mote reaching into one it never declared is a
     // manifest error, and saying so beats letting it surface as whatever
     // name happens to go missing first.
-    let loaded_result : Result String LoadedModules <- gate_declared_deps lc.loaded;
+    let loaded_result <- gate_declared_deps lc.loaded;
     let out_cache : ModuleInfoCache := lc.cache;
     let _t_load_done : I64 <- bench_step verbose "  elab: load_file_modules (read+parse)" t_load 0;
     // Annotated local, never a bare literal in `return` position -- see
@@ -3937,7 +3926,7 @@ pub def elaborate_loaded_modules_cached (file_path : String) (check_deps : Bool)
 /// Backwards-compatible wrapper: elaborate with a fresh cache.
 #[partial]
 pub def elaborate_loaded_modules (file_path : String) (check_deps : Bool) (verbose : Bool) : IO (Result String ElaboratedModules) := do {
-    let r : ElaboratedAndCache <- elaborate_loaded_modules_cached file_path check_deps module_info_cache_empty verbose;
+    let r <- elaborate_loaded_modules_cached file_path check_deps module_info_cache_empty verbose;
     return r.elaborated
 }
 
@@ -3952,7 +3941,7 @@ def test_check_module_with_scope_all_pass : IO Bool := do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
             let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
-            let diags : List String <- check_module_with_scope scope decl_list locals Option.none false;
+            let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
                 List.empty => true,
                 List.cons _ _ => false
@@ -3978,7 +3967,7 @@ def test_check_module_with_scope_paramed_inductive : IO Bool := do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
             let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
-            let diags : List String <- check_module_with_scope scope decl_list locals Option.none false;
+            let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
                 List.empty => true,
                 List.cons _ _ => false
@@ -4221,7 +4210,7 @@ def test_hole_in_infer_position_accepts_annotated_lam_param : IO Bool := do {
 /// position. Accepted.
 #[test]
 def test_hole_in_infer_position_accepts_ascribed_arg : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_infer_src "def s3 : T -> T := (fn x => x) (_ : T -> T)") "probe";
+    let diags <- check_diags_of_source (hole_infer_src "def s3 : T -> T := (fn x => x) (_ : T -> T)") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4230,7 +4219,7 @@ def test_hole_in_infer_position_accepts_ascribed_arg : IO Bool := do {
 /// reference does. Accepted.
 #[test]
 def test_hole_in_infer_position_accepts_bare_hole_body : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_infer_src "def p2 : T -> T := _") "probe";
+    let diags <- check_diags_of_source (hole_infer_src "def p2 : T -> T := _") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4241,7 +4230,7 @@ def test_hole_in_infer_position_accepts_bare_hole_body : IO Bool := do {
 /// non-hole argument is untouched by the arm, whatever its shape.
 #[test]
 def test_hole_in_infer_position_accepts_non_hole_arg : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_infer_src "def r1 : T -> T := (fn x => x) (fn z => z)\ndef p8 : T -> T := (fn x => x) (fn z => z)") "probe";
+    let diags <- check_diags_of_source (hole_infer_src "def r1 : T -> T := (fn x => x) (fn z => z)\ndef p8 : T -> T := (fn x => x) (fn z => z)") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4251,7 +4240,7 @@ def test_hole_in_infer_position_accepts_non_hole_arg : IO Bool := do {
 /// inferred.
 #[test]
 def test_hole_in_infer_position_accepts_bare_lam_value : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_infer_src "def r3 : (T -> T) -> (T -> T) := (fn x => x)") "probe";
+    let diags <- check_diags_of_source (hole_infer_src "def r3 : (T -> T) -> (T -> T) := (fn x => x)") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4259,7 +4248,7 @@ def test_hole_in_infer_position_accepts_bare_lam_value : IO Bool := do {
 /// callee and r1's argument. Accepted.
 #[test]
 def test_hole_in_infer_position_accepts_named_callee_lam_arg : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_infer_src "def r4 : T -> T := apply (fn x => x) (fn z => z)") "probe";
+    let diags <- check_diags_of_source (hole_infer_src "def r4 : T -> T := apply (fn x => x) (fn z => z)") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4275,7 +4264,7 @@ def test_check_module_with_scope_accumulates_failures : IO Bool := do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
             let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
-            let diags : List String <- check_module_with_scope scope decl_list locals Option.none false;
+            let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
                 List.cons msg rest =>
                     String.contains msg "unknown variable" &&
@@ -4306,7 +4295,7 @@ def test_check_module_with_scope_dot_field_access_resolves : IO Bool := do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
             let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
-            let diags : List String <- check_module_with_scope scope decl_list locals Option.none false;
+            let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
                 List.empty => true,
                 List.cons _ _ => false
@@ -4329,7 +4318,7 @@ def test_check_module_with_scope_chained_dot_field_access_resolves : IO Bool := 
             let sd : ScopeData := build_scope_from_decls path decl_list;
             let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
-            let diags : List String <- check_module_with_scope scope decl_list locals Option.none false;
+            let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
                 List.empty => true,
                 List.cons _ _ => false
@@ -4352,7 +4341,7 @@ def test_check_module_with_scope_dotted_module_path_still_resolves : IO Bool := 
             let sd : ScopeData := build_scope_from_decls path decl_list;
             let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
-            let diags : List String <- check_module_with_scope scope decl_list locals Option.none false;
+            let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
                 List.empty => true,
                 List.cons _ _ => false
@@ -4487,7 +4476,7 @@ def hole_lam_arg_src (row : String) : String := hole_lam_arg_preamble ++ row
 /// `{ .. }`: the matched value's type isn't known here".
 #[test]
 def test_hole_lam_arg_learns_its_param_type : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe (k : (R -> T) -> T) (r : R) : T := k (fn q => q.f)") "probe";
+    let diags <- check_diags_of_source (hole_lam_arg_src "def probe (k : (R -> T) -> T) (r : R) : T := k (fn q => q.f)") "probe";
     return (I64.beq (List.length diags) 0 && diags_lack "cannot resolve" diags)
 }
 
@@ -4496,7 +4485,7 @@ def test_hole_lam_arg_learns_its_param_type : IO Bool := do {
 /// projection sugar alone.
 #[test]
 def test_hole_lam_arg_via_field_pattern : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe2 (k : (R -> T) -> T) (r : R) : T := k (fn q => match q { { f, .. } => f })") "probe";
+    let diags <- check_diags_of_source (hole_lam_arg_src "def probe2 (k : (R -> T) -> T) (r : R) : T := k (fn q => match q { { f, .. } => f })") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4506,7 +4495,7 @@ def test_hole_lam_arg_via_field_pattern : IO Bool := do {
 /// that already worked.
 #[test]
 def test_hole_lam_arg_annotated_still_checks : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe3 (k : (R -> T) -> T) (r : R) : T := k (fn (q : R) => q.f)") "probe";
+    let diags <- check_diags_of_source (hole_lam_arg_src "def probe3 (k : (R -> T) -> T) (r : R) : T := k (fn (q : R) => q.f)") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4517,7 +4506,7 @@ def test_hole_lam_arg_annotated_still_checks : IO Bool := do {
 /// `apply_r` shape a reader is likeliest to reach for.
 #[test]
 def test_hole_lam_arg_named_callee_is_rescued_either_way : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def probe5 (r : R) : T := apply_r (fn q => q.f) r") "probe";
+    let diags <- check_diags_of_source (hole_lam_arg_src "def probe5 (r : R) : T := apply_r (fn q => q.f) r") "probe";
     return (I64.beq (List.length diags) 0)
 }
 
@@ -4533,7 +4522,7 @@ def test_hole_lam_arg_named_callee_is_rescued_either_way : IO Bool := do {
 /// unknown-type path again.
 #[test]
 def test_hole_lam_arg_enforces_the_domain : IO Bool := do {
-    let diags : List String <- check_diags_of_source (hole_lam_arg_src "def bad (r : R) : T := apply_r (fn q => q.g) r") "probe";
+    let diags <- check_diags_of_source (hole_lam_arg_src "def bad (r : R) : T := apply_r (fn q => q.g) r") "probe";
     return (diags_contain "doesn't have" diags && I64.beq (List.length diags) 1)
 }
 
@@ -4598,7 +4587,7 @@ def test_dict_resolution_d4_concrete_instance_resolves : IO Bool := do {
         "type Dog { woof }\n" ++
         "instance Speak Dog { def say (a : Dog) : String := \"woof\" }\n" ++
         "def greet (d : Dog) : String := Speak.say d";
-    let diags : List String <- check_synthetic_source src;
+    let diags <- check_synthetic_source src;
     return (match diags { List.empty => true, List.cons _ _ => false })
 }
 
@@ -4619,7 +4608,7 @@ def test_dict_resolution_d5_forwarding_resolves : IO Bool := do {
         "type Dog { woof }\n" ++
         "instance Speak Dog { def say (a : Dog) : String := \"woof\" }\n" ++
         "def speak_twice [Speak A] (a : A) : String := Speak.say a";
-    let diags : List String <- check_synthetic_source src;
+    let diags <- check_synthetic_source src;
     return (match diags { List.empty => true, List.cons _ _ => false })
 }
 
@@ -4774,12 +4763,12 @@ def test_elaborate_loaded_modules_resolves_file_with_no_use_decls : IO Bool := d
         Option.some test_file => do {
             // Annotated bind -- `em.scope`/`em.target_decls` below desugar to
             // `{ .. }` field patterns, which need the matched value's own type.
-            let result : Result String ElaboratedModules <- elaborate_loaded_modules test_file false false;
+            let result <- elaborate_loaded_modules test_file false false;
             match result {
                 Result.err _ => return false,
                 Result.ok em => do {
                     let locals : LocalScope := { vars := List.empty, parent := Option.none };
-                    let diags : List String <- check_module_with_scope em.scope em.target_decls locals Option.none false;
+                    let diags <- check_module_with_scope em.scope em.target_decls locals Option.none false;
                     return (match diags {
                         List.empty => true,
                         List.cons _ _ => false,
