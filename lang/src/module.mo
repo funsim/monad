@@ -4761,8 +4761,6 @@ def test_elaborate_loaded_modules_resolves_file_with_no_use_decls : IO Bool := d
     match resolved {
         Option.none => return false,
         Option.some test_file => do {
-            // Annotated bind -- `em.scope`/`em.target_decls` below desugar to
-            // `{ .. }` field patterns, which need the matched value's own type.
             let result <- elaborate_loaded_modules test_file false false;
             match result {
                 Result.err _ => return false,
