@@ -144,7 +144,7 @@ def compile_ffi_fixture_exit_code : IO I64 := do {
     // A real mote, not a loose file: `collect_link_libs` walks up from
     // the source to the nearest `mote.toml`, so the fixture only gets
     // `-lm` if the manifest beside it actually declares it.
-    let _ <- exec_cmd "mkdir" ["-p", output_dir ++ "/src"];
+    exec_cmd "mkdir" ["-p", output_dir ++ "/src"];
     IO.write_file (Path.path (output_dir ++ "/mote.toml")) ffi_fixture_manifest;
     IO.write_file (Path.path src_path) ffi_fixture_source;
 
@@ -193,7 +193,7 @@ def compile_ffi_fixture_exit_code : IO I64 := do {
                                 // `strlen "hello"` -- a real value
                                 // round-tripped through the C boundary.
                                 let exec_result <- exec_cmd output_path [];
-                                let _ <- exec_cmd "rm" ["-rf", output_dir];
+                                exec_cmd "rm" ["-rf", output_dir];
                                 return exec_result
                             }
                         }
@@ -219,7 +219,7 @@ def compile_ffi_fixture_exit_code : IO I64 := do {
 def test_extern_f64_return_type_declares_double : IO Bool := do {
     let output_dir := "/tmp/monad_ffi_e2e_" ++ I64.to_string process_id;
     let src_path := output_dir ++ "/ffi_f64_decl_probe.mo";
-    let _ <- exec_cmd "mkdir" ["-p", output_dir];
+    exec_cmd "mkdir" ["-p", output_dir];
     IO.write_file (Path.path src_path) ffi_fixture_source;
 
     let loaded_result <- load_file_modules src_path false;
@@ -230,7 +230,7 @@ def test_extern_f64_return_type_declares_double : IO Bool := do {
         },
         Result.ok loaded => do {
             let mod_result <- compile_loaded_modules_to_ir loaded false;
-            let _ <- exec_cmd "rm" ["-f", src_path];
+            exec_cmd "rm" ["-f", src_path];
             match mod_result {
                 Result.err e => do {
                     println ("test_extern_f64_return_type_declares_double: codegen failed: " ++ e);
@@ -272,7 +272,7 @@ def test_extern_llvm_path_compiles_links_and_runs : IO Bool := do {
 def test_extern_link_libs_flag : IO Bool := do {
     let output_dir := "/tmp/monad_ffi_libs_" ++ I64.to_string process_id;
     let src_path := output_dir ++ "/src/ffi_link_libs_probe.mo";
-    let _ <- exec_cmd "mkdir" ["-p", output_dir ++ "/src"];
+    exec_cmd "mkdir" ["-p", output_dir ++ "/src"];
     IO.write_file (Path.path (output_dir ++ "/mote.toml")) ffi_fixture_manifest;
     IO.write_file (Path.path src_path) ffi_fixture_source;
 
@@ -284,7 +284,7 @@ def test_extern_link_libs_flag : IO Bool := do {
         },
         Result.ok loaded => do {
             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
-            let _ <- exec_cmd "rm" ["-rf", output_dir];
+            exec_cmd "rm" ["-rf", output_dir];
             let flags := map_dash_l link_libs;
             match flags {
                 List.empty => do {

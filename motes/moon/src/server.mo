@@ -1,0 +1,376 @@
+/// HTTP/1.1 server — `moon` mote, Layer 1 (sequential).
+///
+/// Listens on a port, accepts connections one at a time, parses each
+/// request, dispatches to a handler, formats the response, and closes.
+/// Concurrency (fiber-per-request) is Phase 7; the sequential server here
+/// keeps a connection open between requests and serves a pipelined request
+/// out of the bytes the previous read left behind.
+///
+/// Three API styles:
+///
+///   Production:  `Server.serve handler port` — infinite accept loop.
+///                Never returns. One connection at a time, kept alive.
+///
+///   Connection:  `Server.serve_connection handler sock carry served` —
+///                serve one socket until it must end. This is the loop the
+///                accept loop runs, and the one tests exercise directly when
+///                they need more than one request on a connection.
+///
+///   Testing:     `Server.handle_connection handler sock` — read exactly one
+///                request, respond, close. Tests interleave client-side writes
+///                and reads around this call in the same thread, which only
+///                terminates if it stops after the one request.
+///
+/// Static file serving: `Server.static root` returns a handler that reads
+/// files from `root` + request path. No path traversal protection in v1.
+///
+/// The read timeout is a known gap: a peer that opens a connection and then
+/// says nothing holds it until it closes. `Server.max_keep_alive_requests`
+/// bounds how many requests one connection may serve, which is a different
+/// thing -- it stops a *talking* client from holding the connection forever,
+/// not a silent one. A real fix means a socket read deadline, which the IO
+/// layer does not expose yet.
+
+use io {IO}
+use std::io {Socket, Listener}
+use std::concurrent::fiber {Fiber, await_fiber, forkIO}
+use http::types {Body, Headers, Request, Response}
+use http::wire {}
+
+// ── error responses ─────────────────────────────────────────────────────
+
+def Server.bad_request_response : Response :=
+  { status := Status.bad_request, headers := Headers.empty, version := HttpVersion.http1_1, body := Body.text "Bad Request" }
+
+def Server.not_found_response : Response :=
+  { status := Status.not_found, headers := Headers.empty, version := HttpVersion.http1_1, body := Body.text "Not Found" }
+
+def Server.internal_error_response : Response :=
+  { status := Status.internal_server_error, headers := Headers.empty, version := HttpVersion.http1_1, body := Body.text "Internal Server Error" }
+
+/// Serialise a response the server builds itself. These bodies are `Body.text`,
+/// which always serialises, so the fallback is unreachable -- but a total
+/// function has to answer something, and a bodiless 500 is a better answer
+/// than no bytes, which would leave the peer waiting until it gave up.
+def Server.canned_bytes (res : Response) : List U8 :=
+  match Wire.format_response (Server.with_connection_header true res) {
+    Result.ok bytes => bytes,
+    Result.err _ => String.to_list "HTTP/1.1 500 \r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+  }
+
+// ── reading one request ─────────────────────────────────────────────────
+//
+// Reading is frame-first: bytes are buffered until `Wire.frame_request` can
+// read a `Content-Length` off the head and see that many body bytes, and only
+// then is a message returned. The buffer is never truncated, because what is
+// left over after a frame is a pipelined request rather than garbage.
+
+/// Read one whole message: buffer from `sock` until `frame_of` sees a complete
+/// message in the buffer, then return it along with the remainder.
+///
+/// `frame_of` is the framing rule -- `Wire.frame_request` for a request,
+/// `Wire.frame_response bytes method` for a response -- so the loop is written
+/// once and a message is "what the framing says", not "what a particular
+/// reader guessed". It answers `ok none` while more bytes are needed and `err`
+/// when the buffer cannot be framed at all.
+///
+/// `Ok Option.none` means the peer closed without starting a message: the end
+/// of the connection, and not an error. EOF *inside* a message is an error --
+/// reporting a half-arrived message as a complete one is how a truncated
+/// request becomes a successful parse, and it is checked below.
+#[terminating]
+def Server.read_message (frame_of : List U8 -> Result String (Option I64)) (sock : Socket) (carry : List U8) : IO (Result String (Option (Pair (List U8) (List U8)))) := do {
+  let frame : Result String (Option I64) := frame_of carry;
+  match frame {
+    Result.err e => return (Result.err e),
+    Result.ok opt =>
+      match opt {
+        Option.some n => return (Result.ok (Option.some (Pair.pair (Wire.take_bytes n carry) (Wire.drop_bytes n carry)))),
+        Option.none => do {
+          let read_res <- IO.tcp_read sock 4096u64;
+          Server.read_message_step frame_of sock carry read_res
+        }
+      }
+  }
+}
+
+/// One `tcp_read` result, while the message is still incomplete.
+#[terminating]
+def Server.read_message_step (frame_of : List U8 -> Result String (Option I64)) (sock : Socket) (carry : List U8) (read_res : Result String (List U8)) : IO (Result String (Option (Pair (List U8) (List U8)))) :=
+  match read_res {
+    Result.err e => return (Result.err e),
+    Result.ok chunk =>
+      if List.is_empty chunk
+      then
+        // The peer closed. With nothing buffered that ends the connection;
+        // with an unfinished message in hand it is a truncation, and it must
+        // not be handed on as a short message.
+        if List.is_empty carry
+        then return (Result.ok Option.none)
+        else return (Result.err "connection closed mid-message")
+      else Server.read_message frame_of sock (List.append carry chunk)
+  }
+
+/// Read one whole request. The framing rule is `Wire.frame_request`, so a
+/// request body ends at its `Content-Length` and whatever follows it is kept
+/// for the next message rather than being read as part of this one.
+def Server.read_request (sock : Socket) (carry : List U8) : IO (Result String (Option (Pair (List U8) (List U8)))) :=
+  Server.read_message (fn bytes => Wire.frame_request bytes) sock carry
+
+// ── keep-alive ──────────────────────────────────────────────────────────
+
+/// The most requests one connection will serve before the server closes it.
+/// A bound on a chatty client, not a read timeout -- see the module note.
+def Server.max_keep_alive_requests : I64 := 100
+
+/// True when a header carries `token` as a value, compared case-insensitively.
+/// A comma-separated list is not split, so `Connection: close, Foo` is not
+/// recognised as a close; a single token is what clients send.
+def Server.header_has_token (name : String) (token : String) (headers : Headers) : Bool :=
+  Server.list_has_token (Headers.get_all name headers) token
+
+def Server.list_has_token (values : List String) (token : String) : Bool :=
+  match values {
+    List.empty => false,
+    List.cons v rest =>
+      if String.beq (String.to_lowercase (String.trim v)) token
+      then true
+      else Server.list_has_token rest token
+  }
+
+/// Whether the connection may serve another request after this one. `served`
+/// counts this request.
+///
+/// HTTP/1.1 keeps the connection unless the peer says otherwise; HTTP/1.0
+/// closes it unless the peer asks for keep-alive. An explicit
+/// `Connection: close` wins in either version, and the request cap closes
+/// regardless.
+def Server.keep_alive (req : Request) (served : I64) : Bool :=
+  if Bool.not (I64.gt Server.max_keep_alive_requests served)
+  then false
+  else if Server.header_has_token "connection" "close" req.headers
+  then false
+  else
+    match req.version {
+      HttpVersion.http1_1 => true,
+      HttpVersion.http1_0 => Server.header_has_token "connection" "keep-alive" req.headers
+    }
+
+/// Mark a response as the last one on its connection.
+///
+/// Worth saying explicitly rather than letting the close imply it: a response
+/// framed without a `Content-Length` ends at the connection's end, so a peer
+/// that assumed keep-alive would wait for a message that is not coming.
+def Server.with_connection_header (closing : Bool) (res : Response) : Response :=
+  if closing
+  then { status := res.status, headers := Headers.set "Connection" "close" res.headers, version := res.version, body := res.body }
+  else res
+
+// ── connection handling ─────────────────────────────────────────────────
+
+/// Parse and serve one framed request, reporting whether the connection should
+/// stay open. A request that does not parse gets a 400 and reports `false`:
+/// the framing of whatever follows a malformed message cannot be trusted, so
+/// the connection ends there rather than being read as more requests.
+def Server.serve_one (handler : Request -> IO Response) (sock : Socket) (bytes : List U8) (served : I64) : IO Bool :=
+  match Wire.parse_request bytes {
+    Result.err _ => do {
+      Server.send_error sock;
+      return false
+    },
+    Result.ok req => do {
+      let closing := Bool.not (Server.keep_alive req served);
+      let res <- handler req;
+      Server.write_response sock closing res
+    }
+  }
+
+/// Write a response and report whether the connection stays open.
+///
+/// A response that cannot be serialised -- a `Body.stream`, which has no pure
+/// byte form -- becomes a 500 and ends the connection. Ending it is the point:
+/// the peer was promised a body and there is none, so a response it could read
+/// as complete would be a claim about bytes that do not exist.
+def Server.write_response (sock : Socket) (closing : Bool) (res : Response) : IO Bool :=
+  match Wire.format_response (Server.with_connection_header closing res) {
+    Result.err _ => do {
+      IO.tcp_write sock (Server.canned_bytes Server.internal_error_response);
+      return false
+    },
+    Result.ok bytes => do {
+      IO.tcp_write sock bytes;
+      return (Bool.not closing)
+    }
+  }
+
+/// Serve one socket until it must end, starting from `carry` -- whatever the
+/// previous read left over -- with `served` counting the request about to be
+/// served.
+///
+/// The remainder matters: those bytes are a request the peer already put on
+/// the wire, so re-reading would block waiting for something already delivered,
+/// and discarding them would silently drop it.
+#[terminating]
+def Server.serve_connection (handler : Request -> IO Response) (sock : Socket) (carry : List U8) (served : I64) : IO Unit := do {
+  let msg_res <- Server.read_request sock carry;
+  match msg_res {
+    Result.err _ => do {
+      Server.send_error sock;
+      IO.tcp_close sock
+    },
+    Result.ok msg =>
+      match msg {
+        Option.none => IO.tcp_close sock,
+        Option.some pr =>
+          match pr {
+            Pair.pair bytes rest => do {
+              let keep : Bool <- Server.serve_one handler sock bytes served;
+              if keep
+              then Server.serve_connection handler sock rest (I64.add served 1)
+              else IO.tcp_close sock
+            }
+          }
+      }
+  }
+}
+
+/// Read exactly one request, dispatch it, write the response, and close.
+/// This is the testable entry point -- tests interleave client writes and
+/// reads around it in the same thread, which terminates only because it stops
+/// after the one request. Anything pipelined after it is dropped with the
+/// socket; `Server.serve_connection` is the loop that keeps it.
+def Server.handle_connection (handler : Request -> IO Response) (sock : Socket) : IO Unit := do {
+  let msg_res <- Server.read_request sock List.empty;
+  match msg_res {
+    Result.err _ => do {
+      Server.send_error sock;
+      IO.tcp_close sock
+    },
+    Result.ok msg =>
+      match msg {
+        Option.none => IO.tcp_close sock,
+        Option.some pr =>
+          match pr {
+            Pair.pair bytes _rest => do {
+              let _keep <- Server.serve_one handler sock bytes 1;
+              IO.tcp_close sock
+            }
+          }
+      }
+  }
+}
+
+/// Write a 400 Bad Request. The caller closes: a malformed request ends the
+/// connection, so this always says so.
+def Server.send_error (sock : Socket) : IO Unit := do {
+  IO.tcp_write sock (Server.canned_bytes Server.bad_request_response);
+  return unit
+}
+
+// ── serve loop ──────────────────────────────────────────────────────────
+
+/// Listen on `port` and serve connections forever. One connection at a
+/// time, kept alive across requests. Never returns.
+#[terminating]
+def Server.serve (handler : Request -> IO Response) (port : U16) : IO Unit := do {
+  let listen_res <- IO.tcp_listen port;
+  match listen_res {
+    Result.err _ => return unit,
+    Result.ok listener => Server.serve_loop handler listener
+  }
+}
+
+/// Accept one connection, serve it to completion, then recurse.
+#[terminating]
+def Server.serve_loop (handler : Request -> IO Response) (listener : Listener) : IO Unit := do {
+  let accept_res <- IO.tcp_accept listener;
+  match accept_res {
+    Result.err _ => IO.tcp_close_listener listener,
+    Result.ok sock => do {
+      Server.serve_connection handler sock List.empty 1;
+      Server.serve_loop handler listener
+    }
+  }
+}
+
+// ── static file serving ─────────────────────────────────────────────────
+
+/// Build a handler that serves files from `root` + request path.
+/// Returns 200 with file content if the file exists, 404 otherwise.
+/// No path traversal protection in v1 — callers must sanitize paths.
+def Server.static (root : String) (req : Request) : IO Response := do {
+  let path := String.concat root req.uri.path;
+  let exists <- IO.file_exists_native path;
+  Server.static_respond path exists
+}
+
+/// Respond with file content if it exists, 404 otherwise.
+def Server.static_respond (path : String) (exists : Bool) : IO Response :=
+  if Bool.not exists
+  then return Server.not_found_response
+  else do {
+    let content <- IO.read_file_native path;
+    return (Server.static_ok content)
+  }
+
+/// Build a 200 response with text content.
+def Server.static_ok (content : String) : Response :=
+  { status := Status.ok, headers := Headers.empty, version := HttpVersion.http1_1, body := Body.text content }
+
+// ── concurrent server (Phase 7) ────────────────────────────────────────
+//
+// Fiber-per-request dispatch using forkIO. `forkIO` is NOT lazy: it starts
+// the fiber immediately, so the accept loop really does run handlers
+// concurrently with the next accept. `serve_concurrent_loop` still drains by
+// batch rather than waiting for handlers at the end, which is the backpressure
+// bound: at most `max_in_flight` connections are open at once.
+
+/// Fork a fiber to handle one connection.
+def Server.handle_connection_fiber (handler : Request -> IO Response) (sock : Socket) : IO (Fiber Unit) :=
+  forkIO (fn _ => Server.handle_connection handler sock)
+
+/// Await all pending fibers in order.
+#[terminating]
+def Server.drain_fibers (fibers : List (Fiber Unit)) : IO Unit :=
+  match fibers {
+    List.empty => return unit,
+    List.cons f rest => do {
+      await_fiber f;
+      Server.drain_fibers rest
+    }
+  }
+
+/// Listen on `port` and serve connections with fiber-per-request dispatch.
+/// Accepts up to `max_in_flight` connections, forking a handler fiber for
+/// each, then drains all fibers before accepting more. Never returns.
+#[terminating]
+def Server.serve_concurrent (handler : Request -> IO Response) (port : U16) (max_in_flight : I64) : IO Unit := do {
+  let listen_res <- IO.tcp_listen port;
+  match listen_res {
+    Result.err _ => return unit,
+    Result.ok listener => Server.serve_concurrent_loop handler listener max_in_flight 0 List.empty
+  }
+}
+
+/// Internal accept loop: collect fibers until `max_in_flight`, then drain.
+#[terminating]
+def Server.serve_concurrent_loop (handler : Request -> IO Response) (listener : Listener) (max_in_flight : I64) (count : I64) (pending : List (Fiber Unit)) : IO Unit := do {
+  let accept_res <- IO.tcp_accept listener;
+  match accept_res {
+    Result.err _ => do {
+      Server.drain_fibers pending;
+      IO.tcp_close_listener listener
+    },
+    Result.ok sock => do {
+      let fiber <- Server.handle_connection_fiber handler sock;
+      let new_pending := List.cons fiber pending;
+      let new_count := I64.add count 1;
+      if Bool.not (I64.lt new_count max_in_flight)
+      then do {
+        Server.drain_fibers new_pending;
+        Server.serve_concurrent_loop handler listener max_in_flight 0 List.empty
+      }
+      else Server.serve_concurrent_loop handler listener max_in_flight new_count new_pending
+    }
+  }
+}
