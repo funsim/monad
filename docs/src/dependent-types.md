@@ -147,7 +147,14 @@ is correspondingly small. Today there is:
   built but not consumed.
 - **No tactics, no proof automation, no `Decidable`.** Proofs are written by
   hand as terms.
-- **No universe polymorphism.** Levels are concrete numbers.
+- **Universe polymorphism is partial.** `Sort u` parses and a level variable is a
+  real thing self-hosted (`SortLevel` carries `var`/`max`/`succ`), generalized once
+  per def boundary, so `def idu (A : Sort u) (x : A) : A := x` checks and is usable
+  at both `Prop` and `Type` with its result type tracked. What is missing: the
+  `{u : Universe}` binder spelling, `Sort (max u v)` and `Sort (u + 1)`, level
+  instantiation at call sites, and `imax` (so impredicative `Prop` rules are not
+  expressible). The **host** still carries concrete levels only — it accepts the
+  `Sort u` spelling but reads `u` as an ordinary type variable at `Sort 1`.
 - **No definitional unfolding controls** (`@[reducible]` and friends).
 
 See the [Maturity Matrix](./maturity.md) for where this sits relative to the
