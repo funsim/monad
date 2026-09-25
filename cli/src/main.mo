@@ -151,7 +151,7 @@ def compile_target (path : String) (out_name : String) (verbose : Bool) (debug :
     if Bool.not is_a_dir
     then compile_file path default_output_dir (Path.path out_name) verbose debug
     else do {
-        let m : Option MoteManifest <- Mote.discover path;
+        let m <- Mote.discover path;
         match m {
             Option.none => do {
                 println ("error: " ++ path ++ " is a directory, and no mote.toml was found in it or above it");
@@ -212,7 +212,7 @@ def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (
     println <| "compiling: " ++ file_path ++ " to " ++ Path.to_string (Path.join output_dir output_name);
     stage verbose "load + elaborate modules";
     let t_elaborate : I64 <- Bench.now;
-    let elaborated_result : Result String ElaboratedModules <- elaborate_loaded_modules file_path false verbose;
+    let elaborated_result <- elaborate_loaded_modules file_path false verbose;
     if verbose then do {
         Bench.report_since "elaborate_loaded_modules" t_elaborate;
         return unit
@@ -223,7 +223,7 @@ def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (
                     let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
                     stage verbose "typecheck target";
                     let t_check : I64 <- Bench.now;
-                    let diags : List String <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some file_path) verbose;
+                    let diags <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some file_path) verbose;
                     if verbose then do {
                         Bench.report_since "check_module_with_scope" t_check;
                         return unit
@@ -291,7 +291,7 @@ def run_file (file_path : String) (output_dir : Path) (verbose : Bool) (debug : 
 #[partial]
 def eval_file (file_path : String) (verbose : Bool) : IO I64 {
     stage verbose "load + elaborate modules";
-    let elaborated_result : Result String ElaboratedModules <- elaborate_loaded_modules file_path false verbose;
+    let elaborated_result <- elaborate_loaded_modules file_path false verbose;
     match elaborated_result {
         Result.err e => do {
             fail_line ("FAILED at stage: load (could not load dependencies: " ++ e ++ ")");
@@ -300,7 +300,7 @@ def eval_file (file_path : String) (verbose : Bool) : IO I64 {
         Result.ok em => do {
             let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
             stage verbose "typecheck target";
-            let diags : List String <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some file_path) verbose;
+            let diags <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some file_path) verbose;
             match diags {
                 List.cons _ _ => do {
                     fail_line "FAILED at stage: typecheck (target file did not typecheck cleanly)";
@@ -442,7 +442,7 @@ def compile_file_codegen (file_path : String) (output_dir : Path) (output_name :
         println ("error: file not found: " ++ file_path);
         return 1
     } else do {
-    let res : Result String LoadedModules <-
+    let res <-
         match preloaded {
             Option.some already => do { return (Result.ok already) },
             Option.none => load_file_modules file_path verbose,
@@ -551,7 +551,7 @@ def run_check_loop (cache : ModuleInfoCache) (files : List String) (checked : I6
             return (if I64.gt errors 0 then 1 else 0)
         },
         List.cons f rest => do {
-            let checked_and_cache : FileCheckAndCache <- check_file_cached cache f verbose;
+            let checked_and_cache <- check_file_cached cache f verbose;
             match checked_and_cache {
                 FileCheckAndCache.mk result updated_cache =>
                     match result {
@@ -658,10 +658,7 @@ def resolve_target_paths (verb : String) (subcommand : String) (files : List Str
             return (Option.some List.empty)
         } else return (Option.some members)
     } else do {
-        // Annotated like lang/module.mo's own `Mote.discover` call
-        // sites: the checker only knows the bind's type from the
-        // annotation, and the match below needs the scrutinee's type.
-        let m : Option MoteManifest <- Mote.discover "";
+        let m <- Mote.discover "";
         match m {
             Option.none => return Option.none,
             Option.some manifest => do {
@@ -915,7 +912,7 @@ def run_test_loop (files : List String) (out_dir : String) (bin_idx : I64) (test
             // `SKIP`, not `FAIL` -- matching the existing "no #[test]s"
             // SKIP convention just below (a pre-existing problem with the
             // file, not a new test failure this run introduced).
-            let ec : ElaboratedAndCache <- elaborate_loaded_modules_cached f false cache verbose;
+            let ec <- elaborate_loaded_modules_cached f false cache verbose;
             // `out_cache`, not `cache`: this file's load extended it, and
             // every later file in the run needs the extended one.
             let out_cache : ModuleInfoCache := ec.cache;
@@ -932,7 +929,7 @@ def run_test_loop (files : List String) (out_dir : String) (bin_idx : I64) (test
                 Result.ok em =>
                     do {
                             let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
-                            let diags : List String <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some f) verbose;
+                            let diags <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some f) verbose;
                             match diags {
                                 List.cons _ _ => do {
                                     print_diagnostics diags;
@@ -962,7 +959,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
             // anything itself (that's what `preloaded` is for), it only
             // has to hand the whole-run cache back to `run_test_loop`
             // for the NEXT file.
-            let res : Result String LoadedModules <-
+            let res <-
                 match preloaded {
                     Option.some already => do { return (Result.ok already) },
                     Option.none => load_file_modules f verbose,
@@ -983,7 +980,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                     // leaves either no file or its OWN missing one --
                     // never a sibling's count.
                     let result_path : String := out_dir ++ "/monad_test_result_" ++ I64.to_string bin_idx ++ ".txt";
-                    let ir_res : Result String TestIrResult <- compile_loaded_modules_to_test_ir loaded result_path;
+                    let ir_res <- compile_loaded_modules_to_test_ir loaded result_path;
                     match ir_res {
                         err e => do {
                             // Three outcomes, not two. A driver that
@@ -1070,6 +1067,15 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                                 // parent too.
                                 let exit_code <- exec_cmd bin_path [];
                                 let exists : Bool <- file_exists (Path.path result_path);
+                                // Annotated, and the sweep that removed this
+                                // file's other 11 do-bind annotations kept
+                                // this one: the RHS is an `if` with two `do`
+                                // branches, whose `IO` carrier is not resolved
+                                // at this call, so without the annotation the
+                                // bind below has no type and the checker
+                                // reports `type mismatch: expected A, found
+                                // I64 in run_test_loop_codegen`. Measured; the
+                                // annotation is load-bearing, not historical.
                                 let parsed : Option I64 <- if exists then do {
                                     let raw : String <- read_file (Path.path result_path);
                                     return (parse_driver_result raw)
@@ -1320,7 +1326,7 @@ def main (args : List String) : IO I64 {
             let base_dir : String := extract_directory file_path;
             let module_name : String := module_name_from_path file_path;
             let mp : ModulePath := ModulePath.mp [Identifier.id module_name];
-            let module_opt : Option ModuleInfo <- load_module_with_info base_dir mp;
+            let module_opt <- load_module_with_info base_dir mp;
             match module_opt {
                 Option.some mi => do {
                     let decls := mi.decl_list;
