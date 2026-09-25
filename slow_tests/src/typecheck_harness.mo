@@ -37,10 +37,7 @@ pub def empty_local_scope : LocalScope := {
 /// `plans/bootstrapping/check-deps-memory-blowup.md`.
 #[partial]
 pub def typecheck_file (file_path : String) : IO Bool := do {
-    // Annotated the same way cli/src/main.mo annotates its own
-    // `elaborate_loaded_modules` bind: the checker needs the bind's
-    // type stated to type the match below.
-    let result : Result String ElaboratedModules <- elaborate_loaded_modules file_path false false;
+    let result <- elaborate_loaded_modules file_path false false;
     match result {
         Result.ok em => typecheck_module_with_scope em.scope em.target_decls empty_local_scope,
         Result.err e => do {
