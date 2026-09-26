@@ -1001,7 +1001,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                                 let exit_code <- exec_cmd bin_path [];
                                 let exists : Bool <- file_exists (Path.path result_path);
                                 // Annotated, and the sweep that removed this
-                                // file's other 11 do-bind annotations kept
+                                // file's other 13 do-bind annotations kept
                                 // this one: the RHS is an `if` with two `do`
                                 // branches, whose `IO` carrier is not resolved
                                 // at this call, so without the annotation the
