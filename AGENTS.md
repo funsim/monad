@@ -943,7 +943,15 @@ cargo run -- test std/   # runs all std/ tests including new ones
 ### Readability and Ease of Refactoring (Monad code)
 
 Optimize for a reader who has to change this code later, not just for it
-to typecheck once. Concretely, in order of how often each comes up:
+to typecheck once. Concretely, in order of how often each comes up.
+
+Cite these as **style rule 1**..**7**; a lint rule that enforces one names it
+in its own doc comment, and
+`plans/implementations/code-style-and-lint-enforcement.md` maps each rule to
+the tier that checks it (fail-fast validator / `check` warning / linter mote)
+and to its current corpus count. `scripts/style-metrics.sh` prints those
+counts; `scripts/style-baseline.txt` is the ratchet, so a rule with a backlog
+still blocks new violations.
 
 1. **Every single-constructor type should be a `struct`, not a `type`.**
    `type X { mk (f1:T1) (f2:T2) ... }` with exactly one constructor gives
@@ -955,9 +963,14 @@ to typecheck once. Concretely, in order of how often each comes up:
    call sites and only improves construction/access sites. When adding a
    *new* type, reach for `struct` first and only fall back to `type` if
    it genuinely needs more than one constructor.
-   _(TODO: this should eventually be a `check` warning — "single-
-   constructor `type` could be a `struct`" — rather than something to
-   remember by convention. Not implemented yet.)_
+   _(Claimed: `plans/implementations/code-style-and-lint-enforcement.md`
+   owns this as the Tier 2 `single_ctor_type` warning. Measured
+   2026-09-26 by `scripts/style-metrics.sh`: 76 single-constructor `type`
+   declarations, of which **58 are convertible** — the other 18 are 11
+   field-less markers (`Unit { unit }`, `True { trivial }`) and 7 with
+   unnamed fields (`ModulePath { mp (List Identifier) }`), neither of which
+   a `struct` improves. Not implemented yet; the counter is ratcheted in
+   `scripts/style-baseline.txt` meanwhile.)_
 2. **Prefer struct-literal + dot-notation + named-args over positional
    construction/destructuring** once a type is a `struct`: `{ f1 := v1,
    f2 := v2 }` to build, `value.field` to read a single field, and
@@ -1044,9 +1057,12 @@ to typecheck once. Concretely, in order of how often each comes up:
    names the `-l<name>` flag shape, not `List.map`), when it enforces an
    invariant, when it is genuinely polymorphic, or when it is measured to
    matter on a hot path.
-   _(TODO: this should eventually be a `check` warning — "a monomorphic
-   forwarder to a standard def" — rather than something to remember by
-   convention. Not implemented yet.)_
+   _(Claimed: `plans/implementations/code-style-and-lint-enforcement.md`
+   owns this as the `monomorphic_forwarder` rule. It needs cross-mote name
+   resolution plus signature comparison to tell a forwarder from a wrapper
+   that names a concept, so it lands in the self-hosted linter mote rather
+   than in `check` — the four exceptions listed just above are why it needs
+   per-decl `#[allow]`. Not implemented yet.)_
 
 **A known pitfall when applying rule 1 to an *existing* type with many
 call sites**: the type-checker doesn't always desugar a bare struct
@@ -3229,7 +3245,20 @@ Key patterns when writing self-hosted Monad code:
     `monad-rs run cli/src/main.mo check <file>`, which reports
     `did not fully parse (stopped before end of file)` and prints the
     offending text.
-    Write the literal character instead. And note what found it: the
+    **RESOLVED -- `\u{XXXX}` is supported self-hosted; this entry is history,
+    not guidance.** `unicode_escape`/`unicode_escape_digits`
+    (`lang/src/parser/string.mo:99-117`) decode up to six hex digits into a
+    `U32` in pure Monad -- the "needs a hex-to-codepoint native" premise was
+    wrong, no native is used -- and `string_body_escape_char:268` dispatches
+    `u` to it before `escape_replacement` is consulted. Write the escape or
+    the literal character, whichever reads better. `escape_replacement`'s own
+    doc comment (`string.mo:25-36`) already records the gap as closed; this
+    entry's "write the literal character instead" outlived it and was
+    corrected 2026-09-26 (see
+    `plans/implementations/code-style-and-lint-enforcement.md` Phase 0 --
+    stale prose asserting a removed restriction costs a reader what a wrong
+    comment costs).
+    And note what found the original bug: the
     `elaborate_module_decls_reporting` line added in item 42 went from 1
     un-elaborated decl to 15 and NAMED them -- `render_parse_error`,
     `build_loc_table`, `location_of_span`, all consumers of the broken
