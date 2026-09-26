@@ -467,6 +467,25 @@ def toolchain_first_existing (root : Option String) (segs : List String) : IO (O
     }
 }
 
+/// Does this machine's toolchain root actually CARRY the ambient motes?
+/// Probes `init/src/prelude.mo`, the one file every ambient resolution
+/// needs and the same one `resolve_module_file` reads it from -- so this
+/// answers the question resolution asks rather than an approximation of it.
+///
+/// The answer is what `Mote.toolchain_missing_hint` turns into a sentence,
+/// and the distinction it draws is the useful one: a root that is THERE but
+/// has no `init/src` (a `MONAD_ROOT` pointed at the wrong checkout, or at a
+/// directory that is not one) needs different advice from a machine with no
+/// root at all. `none` root is `false` here, since a root that does not
+/// exist cannot carry anything.
+def toolchain_has_ambient_sources (root : Option String) : IO Bool := do {
+    let found <- toolchain_first_existing root ["init", "src", "prelude.mo"];
+    match found {
+        Option.some _ => return true,
+        Option.none => return false
+    }
+}
+
 /// The workspace ROOT above `dir`: the directory whose `mote.toml` carries
 /// `[workspace] members`. `find_workspace_members` (`cli/src/main.mo`) is
 /// the same walk, and it answers with that root's expanded MEMBERS; a caller
@@ -2946,21 +2965,56 @@ def is_ambient_mote (name : String) : Bool :=
     else if String.beq name "init" then true
     else String.beq name "std"
 
-/// Does a mote actually go by `name`? Both places one can live are probed,
-/// because both are real resolution paths: beside the working directory
-/// under its own name (`mote_relative_file`'s convention, which is how
-/// every top-level mote here resolves), and one level down under `motes/`
-/// (`motes_src_paths`' convention, which is how `use example::greet`
-/// reaches `motes/example/src/greet.mo`).
+/// The directory a mote called `name` was FOUND in, working-directory-
+/// relative, or `none` when no mote goes by that name. All three places one
+/// can live are probed, because all three are real layouts a manifest can
+/// point at:
 ///
-/// Missing the second is not cosmetic: it is exactly the case where a `use`
-/// on a `motes/*` mote would go UNREPORTED when its `deps := [...]` entry
-/// is deleted, because the head would look like a plain module name.
+///   * beside the working directory under its own name
+///     (`mote_relative_file`'s convention, which is how every top-level mote
+///     here resolves) -> `foo`;
+///   * one level down under `motes/` (`motes_src_paths`' convention, which
+///     is how `use example::greet` reaches `motes/example/src/greet.mo`)
+///     -> `motes/foo`;
+///   * one level UP, the sibling convention this repo's own manifests use
+///     (`std/mote.toml`'s `path = "../init"`) -> `../foo`. Probed last
+///     because it is the only one of the three whose answer is not already
+///     under the working directory.
+///
+/// Each of the three exists because a layout exists that needs it, and the
+/// third was found the way the first two were: by running `monad check` in a
+/// nested mote at `nest/greet` whose dependency sits at `nest/foo` and
+/// watching the hint not fire at all -- the message fell back to the
+/// unnamed `unresolved module` and said nothing about a missing declaration.
+/// `scripts/check-external-mote.sh`'s configuration 6 is that layout, kept.
+///
+/// Missing the `motes/` probe is not cosmetic either: it is exactly the case
+/// where a `use` on a `motes/*` mote would go UNREPORTED when its
+/// `deps := [...]` entry is deleted, because the head would look like a
+/// plain module name.
+///
+/// Answers with the DIRECTORY rather than a `Bool`, and the caller is why:
+/// the undeclared-dependency hint has to name a path the user can paste
+/// into their manifest, and the only path that is certainly right is one
+/// derived from where the mote actually is. A `Bool` here is what made that
+/// hint hardcode `../<name>`, which is right for the sibling layout and
+/// wrong for the flat one (where the manifest value is `foo`) -- both cases
+/// are asserted end to end in that same configuration, and both are rows
+/// over `undeclared_mote_error` below.
 #[partial]
-def is_mote_named (name : String) : IO Bool := do {
+def mote_named_at (name : String) : IO (Option String) := do {
     let direct <- file_exists (Path.path (String.concat name "/mote.toml"));
-    if direct then return true
-    else file_exists (Path.path (String.concat "motes/" (String.concat name "/mote.toml")))
+    if direct then return (Option.some name)
+    else do {
+        let nested : String := String.concat "motes/" name;
+        let nested_exists <- file_exists (Path.path (String.concat nested "/mote.toml"));
+        if nested_exists then return (Option.some nested)
+        else do {
+            let sibling : String := String.concat "../" name;
+            let sibling_exists <- file_exists (Path.path (String.concat sibling "/mote.toml"));
+            if sibling_exists then return (Option.some sibling) else return Option.none
+        }
+    }
 }
 
 /// Does this machine's toolchain root PROVIDE a mote called `name`?
@@ -3142,11 +3196,15 @@ def check_one_use_declared (m : MoteManifest) (info : ModuleInfo) (u : ModulePat
                 else do {
                     // Only complain about names that really are motes -- a
                     // head segment naming nothing is an ordinary
-                    // module-not-found, reported where it happens.
-                    let is_mote <- is_mote_named head;
-                    if is_mote
-                    then return [undeclared_mote_error m info u head]
-                    else return List.empty
+                    // module-not-found, reported where it happens. The
+                    // WHERE is carried into the message: it is the one
+                    // thing that turns the hint's path into the right
+                    // path (see `dep_path_hint`).
+                    let found <- mote_named_at head;
+                    match found {
+                        Option.none => return List.empty,
+                        Option.some found_dir => return [undeclared_mote_error m info u head found_dir]
+                    }
                 }
             }
     }
@@ -3167,15 +3225,92 @@ def use_head_mote (u : ModulePath) : Option String :=
             }
     }
 
-def undeclared_mote_error (m : MoteManifest) (info : ModuleInfo) (u : ModulePath) (head : String) : String :=
-    String.concat "error: mote `" (String.concat head
-    (String.concat "` is not a declared dependency of `" (String.concat m.name
-    (String.concat "`\n  `use " (String.concat (module_path_to_string u)
-    (String.concat "` in " (String.concat info.file_path
-    (String.concat " requires mote `" (String.concat head
-    (String.concat "`\n  hint: add [dependencies." (String.concat head
-    (String.concat "] path = \"../" (String.concat head
-    (String.concat "\" to " (String.concat m.dir "/mote.toml")))))))))))))))
+/// The `[dependencies.<head>] path` value to suggest, written relative to
+/// the directory the MANIFEST lives in (`mote_dir`) -- which is what a
+/// manifest's paths are relative to, and the only reason this is a
+/// computation rather than the literal it used to be.
+///
+/// `mote_dir` is the manifest's directory as `Mote.discover` spells it
+/// (working-directory-relative), and `found_dir` is where `mote_named_at`
+/// found the mote -- so the answer is the mote's own spelling with one
+/// `../` per real segment of `mote_dir` in front of it:
+///
+///   * `("", "foo")` -> `foo` -- the mote beside the working directory,
+///     which is where the bare-and-flat layout puts it;
+///   * `("greet", "foo")` -> `../foo` -- the sibling convention this repo
+///     itself uses (`std/mote.toml`'s `path = "../init"`), and the one the
+///     hardcoded answer happened to be right for;
+///   * `("greet/src", "motes/foo")` -> `../../motes/foo`;
+///   * `(".", "foo")` -> `foo` -- a `.` names no level, so it contributes no
+///     `../` (a bare `monad check` reaches the manifest as `.` in some
+///     paths, `""` in others).
+///
+/// `none` for the two shapes the two strings cannot be related across:
+/// a `..` segment in `mote_dir`, and an absolute `mote_dir` (which is
+/// reachable -- `monad check /abs/src/lib.mo` discovers an absolute manifest
+/// while the mote probe beside it is working-directory-relative). Both are
+/// a formality rather than a live path: `Mote.discover` walks UP from the
+/// file's own directory by stripping components, so its answer is a chain
+/// of real directory names, `""` or a `.` -- never `..`. The caller says
+/// where the mote is in that case instead of inventing a path, because a
+/// wrong `path` value is worse than none: it sends the user somewhere that
+/// looks plausible and opens nothing.
+def dep_path_hint (mote_dir : String) (found_dir : String) : Option String :=
+    if String.starts_with "/" mote_dir then Option.none
+    else dep_path_hint_go (path_segments_go mote_dir 0 0 List.empty) found_dir
+
+def dep_path_hint_go (segs : List String) (found_dir : String) : Option String :=
+    match segs {
+        List.empty => Option.some found_dir,
+        List.cons s rest =>
+            if String.beq s "." then dep_path_hint_go rest found_dir
+            else if String.beq s ".." then Option.none
+            else match dep_path_hint_go rest found_dir {
+                Option.none => Option.none,
+                Option.some inner => Option.some (raw_path_join ".." inner)
+            }
+    }
+
+/// The hint's `path` clause, with the no-path form spelled out as a
+/// placeholder rather than dropped: a hint that stops after
+/// `[dependencies.foo]` reads as if the entry needed no path at all.
+def undeclared_mote_path_clause (mote_dir : String) (found_dir : String) : String :=
+    match dep_path_hint mote_dir found_dir {
+        Option.some p => String.concat "path = \"" (String.concat p "\""),
+        Option.none => String.concat "path = \"<path to " (String.concat found_dir ">\"")
+    }
+
+/// The undeclared-dependency message, with BOTH paths computed from where
+/// things actually are.
+///
+/// What it said before: a hardcoded `path = "../<head>"`, and the manifest
+/// as `m.dir ++ "/mote.toml"`. The second is broken outright when the
+/// manifest is the working directory's own (`m.dir` is `""`, so it rendered
+/// `/mote.toml`); the first is broken whenever the mote is beside the
+/// working directory rather than beside the manifest, which is the flat
+/// layout `mote_named_at`'s own probe finds -- there the value a manifest
+/// needs is `foo`, and `../foo` resolves one directory too high. The flat
+/// layout and the sibling one are both driven end to end by
+/// `scripts/check-external-mote.sh`'s configuration 6, and both are rows
+/// over this def (`test_undeclared_mote_error_names_working_directory_paths`,
+/// `..._names_a_nested_manifest`).
+///
+/// `found_dir` doubles as the second line's evidence -- "which is at `foo`"
+/// is what tells a reader which of the two `foo` directories the path is
+/// supposed to point at. It is spelled with its delimiters on BOTH sides
+/// because the missing one is exactly how this line first shipped: a
+/// backtick opened around the mote name in the first clause and never
+/// closed, so the line read "which is there at foo" followed by a stray
+/// backtick.
+def undeclared_mote_error (m : MoteManifest) (info : ModuleInfo) (u : ModulePath)
+    (head : String) (found_dir : String) : String :=
+    String.concat_all [
+        "error: mote `", head, "` is not a declared dependency of `", m.name, "`\n",
+        "  `use ", module_path_to_string u, "` in ", info.file_path,
+        " requires mote `", head, "`, which is at `", found_dir, "`\n",
+        "  hint: add [dependencies.", head, "] ", undeclared_mote_path_clause m.dir found_dir,
+        " to ", raw_path_join m.dir "mote.toml",
+    ]
 
 /// Turn the first undeclared-mote error, if any, into the load's own
 /// failure. One error, not all of them: the loader's `Result` carries a
@@ -3259,6 +3394,42 @@ def link_lib_seen (needle : String) (xs : List String) : Bool :=
         List.cons hd tl => if String.beq hd needle then true else link_lib_seen needle tl
     }
 
+/// ONE line saying why, printed BEFORE the walk that says what.
+///
+/// The failure this exists for is the out-of-the-box one: an external mote
+/// with no installed toolchain. `prelude` is seeded into every file's
+/// closure, so if it does not resolve from the target file's own directory,
+/// nothing that file `use`s will resolve either -- and the run that follows
+/// opens with one `unresolved module:` line per module and then a wall of
+/// `unknown variable` for the names those modules would have supplied. Both
+/// name the SYMPTOM and neither names `monadup`, which is the thing the user
+/// has to type. This line goes first so it is the one that gets read.
+///
+/// Fired on the RESOLUTION of `prelude` rather than on any missing module,
+/// which is what makes it once per run instead of once per ambient miss
+/// (the trio all miss together, four lines in the ordinary case) -- and it
+/// is the same resolution `resolve_module_file` then performs for the walk,
+/// not a second opinion about it.
+///
+/// Silent when `prelude` resolves. A run where prelude is found and some
+/// other module is not has a named culprit already (`unresolved module:
+/// <that one>`, plus whatever the manifest gate says about it), and is not
+/// the case this is for.
+def report_missing_toolchain (base_dir : String) : IO Unit := do {
+    let found <- resolve_module_file base_dir prelude_module_path;
+    match found {
+        Option.some _ => return unit,
+        Option.none => do {
+            let root <- Mote.toolchain_root;
+            let has_sources <- toolchain_has_ambient_sources root;
+            match Mote.toolchain_missing_hint root has_sources {
+                Option.none => return unit,
+                Option.some line => println line
+            }
+        }
+    }
+}
+
 /// `cache` carries `ModuleInfo`s already loaded earlier in this same
 /// run; the returned `LoadedAndCache` hands back the extended one so a
 /// multi-file caller (`run_check_loop`) can reuse it for the next file.
@@ -3313,6 +3484,11 @@ def load_file_modules_cached (file_path : String) (cache : ModuleInfoCache) (ver
                     // exact file (`new_to_visit` above) for the identical
                     // purpose -- use it here too instead of `++`.
                     let direct_deps_with_prelude : List ModulePath := List.append [prelude_module_path, init_module_path, std_module_path] direct_deps;
+                    // Said HERE, before the walk, and only when the ambient
+                    // tier is unresolvable -- see
+                    // `report_missing_toolchain`'s own note on why the one
+                    // line that names `monadup` goes above the wall.
+                    report_missing_toolchain main_base_dir;
                     let no_visited : List ModuleInfo := List.empty;
                     let no_visiting : List ModulePath := List.empty;
                     let walked <- collect_dep_module_infos (pending_from main_base_dir direct_deps_with_prelude) no_visiting no_visited cache verbose;
@@ -5417,7 +5593,7 @@ def test_toolchain_first_existing_probes_the_root : IO Bool := do {
 
 /// A mote the machine's toolchain root provides: a hit, and the shape it is
 /// keyed on is the mote DIRECTORY holding a `mote.toml` -- the same thing
-/// `is_mote_named` probes beside the working directory, said against the
+/// `mote_named_at` probes beside the working directory, said against the
 /// root instead. Pid-named and written by this row for the same reason the
 /// probe above is.
 #[test]
@@ -5449,6 +5625,116 @@ def test_installed_mote_at_requires_the_manifest : IO Bool := do {
     let manifestless <- installed_mote_at (Option.some dir) "bare";
     return (Bool.not absent && Bool.not manifestless)
 }
+
+/// The sibling convention, and the one the hardcoded `../<name>` happened to
+/// be right for: the manifest's own directory is one level below the working
+/// directory, so the mote beside it is `../foo`. This repo is that layout
+/// (`std/mote.toml` -> `path = "../init"`), which is why the old literal
+/// survived -- it is wrong only for the layouts nothing here uses.
+#[test]
+def test_dep_path_hint_beside_the_manifest_dir : Bool :=
+    match dep_path_hint "greet" "foo" {
+        Option.none => false,
+        Option.some p => String.beq p "../foo"
+    }
+
+/// The case that literal got wrong: the mote is beside the WORKING
+/// directory while the manifest IS the working directory, so the value is
+/// the mote's own name. `monad check` in a flat external layout is exactly
+/// this, and `mote_named_at` finds the mote there first -- measured before
+/// this changed, in `scripts/check-external-mote.sh`.
+#[test]
+def test_dep_path_hint_from_the_working_directory : Bool :=
+    match dep_path_hint "" "foo" {
+        Option.none => false,
+        Option.some p => String.beq p "foo"
+    }
+
+/// Every real segment of the manifest's directory costs one `../`, and a
+/// `motes/<name>` find keeps its own directory prefix -- one rule for both,
+/// so a nested workspace and the repo's own `motes/` layout are the same
+/// computation.
+#[test]
+def test_dep_path_hint_counts_every_level_down : Bool :=
+    match dep_path_hint "greet/src" "motes/foo" {
+        Option.none => false,
+        Option.some p => String.beq p "../../motes/foo"
+    }
+
+/// A `.` names no level, so it contributes no `../`. Both spellings reach
+/// the manifest in practice (a bare `monad check` passes `.` on some paths
+/// and `""` on others), and the hint must not depend on which.
+#[test]
+def test_dep_path_hint_of_a_dot_dir_is_the_working_directory : Bool :=
+    match dep_path_hint "." "foo" {
+        Option.none => false,
+        Option.some p => String.beq p "foo"
+    }
+
+/// The two shapes the two strings cannot be related across: a `..` segment,
+/// and an absolute manifest directory (`monad check /abs/src/lib.mo`
+/// discovers one). Refusing beats guessing here -- the caller says where the
+/// mote is instead, since a plausible path that opens nothing is the one
+/// failure a resolution hint must not have.
+#[test]
+def test_dep_path_hint_refuses_the_shapes_it_cannot_relate : Bool :=
+    match dep_path_hint ".." "foo" {
+        Option.none => match dep_path_hint "/abs/greet" "foo" {
+            Option.none => true,
+            Option.some _ => false
+        },
+        Option.some _ => false
+    }
+
+/// The undeclared message, rendered from the flat layout that used to print
+/// `/mote.toml` and `../foo`: the manifest is the working directory's own
+/// `mote.toml`, and the path is the mote's own name.
+///
+/// The locator half is asserted **whole** (`which is at `foo``), not by
+/// substring: the two rows below once checked only "does it mention
+/// mote.toml" and "does it mention the path", so a message that rendered as
+/// `which is there at foo`` -- a stray backtick, and no opening one -- passed
+/// this row and shipped. That defect was found by running the compiler in the
+/// layout, not by reading it, which is what this assertion is here to spare
+/// the next reader.
+#[test]
+def test_undeclared_mote_error_names_working_directory_paths : Bool :=
+    match Mote.parse_manifest "" bare_depender_manifest_fixture {
+        Option.none => false,
+        Option.some m =>
+            let info : ModuleInfo :=
+                ModuleInfo.mk (ModulePath.mp [Identifier.id "lib"]) "src/lib.mo" List.empty in
+            let u : ModulePath := ModulePath.mp [Identifier.id "foo", Identifier.id "lib"] in
+            let msg : String := undeclared_mote_error m info u "foo" "foo" in
+            if String.contains msg "to mote.toml"
+            then (if String.contains msg "which is at `foo`"
+                  then (if String.contains msg "path = \"foo\""
+                        then Bool.not (String.contains msg "/mote.toml")
+                        else false)
+                  else false)
+            else false
+}
+
+/// The sibling layout through the same renderer: the manifest's own
+/// directory in the hint, so the two halves agree about where the file is.
+#[test]
+def test_undeclared_mote_error_names_a_nested_manifest : Bool :=
+    match Mote.parse_manifest "greet" bare_depender_manifest_fixture {
+        Option.none => false,
+        Option.some m =>
+            let info : ModuleInfo :=
+                ModuleInfo.mk (ModulePath.mp [Identifier.id "lib"]) "greet/src/lib.mo" List.empty in
+            let u : ModulePath := ModulePath.mp [Identifier.id "foo", Identifier.id "lib"] in
+            let msg : String := undeclared_mote_error m info u "foo" "foo" in
+            if String.contains msg "to greet/mote.toml"
+            then String.contains msg "path = \"../foo\""
+            else false
+    }
+
+/// The depender's manifest, in its own shape: a lib target and no
+/// dependencies -- which is what makes the `use foo::lib` above undeclared.
+def bare_depender_manifest_fixture : String :=
+  "[mote]\nname = \"game\"\nversion = \"0.1.0\"\n\n[lib]\npath = \"src/lib.mo\"\n"
 
 /// `init`'s own manifest, in its real shape: `std` as a DEV-dependency
 /// and, being the pure core, nothing else -- least of all itself.

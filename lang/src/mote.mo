@@ -655,6 +655,49 @@ def join_segments (base : String) (segs : List String) : String :=
         List.cons s rest => join_segments (raw_path_join base s) rest
     }
 
+/// The line to print when an AMBIENT module (`prelude`/`init`/`std`) misses
+/// because this machine has no usable toolchain root, or `none` when there
+/// is nothing to say.
+///
+/// This is the out-of-the-box failure an external mote hits: with no
+/// checkout above the working directory and no install, resolution has no
+/// anchor for `init`/`std` at all, and what the user sees is one
+/// `unresolved module:` line per module followed by a wall of `unknown
+/// variable` for every name those modules would have provided -- none of
+/// which names `monadup`, `MONAD_ROOT` or `MONAD_HOME`. Naming the three
+/// ways out is the whole function.
+///
+/// Pure -- the root and whether that root carries the ambient motes are
+/// both ARGUMENTS -- so the wording is assertable from a row and the IO
+/// half is one caller (`lang/src/module.mo`'s `report_missing_toolchain`).
+///
+/// It takes both facts rather than the root alone because the two failure
+/// shapes need different sentences: "no toolchain on this machine" is
+/// answered by installing one, while "the root you pointed at has no
+/// `init/src`" is answered by correcting it. Advice to install a toolchain
+/// the user already has is worse than no advice, which is exactly what a
+/// `root`-only signature could not avoid saying.
+///
+/// `root_has_sources` is not consulted for the `none` arm: a machine with
+/// no root has nothing for it to describe.
+def Mote.toolchain_missing_hint (root : Option String) (root_has_sources : Bool) : Option String :=
+    match root {
+        Option.none => Option.some (String.concat_all [
+            "hint: this machine has no monad toolchain, and `init`/`std` come from one -- ",
+            "`monadup install` (latest nightly), or point MONAD_ROOT at a monad checkout ",
+            "(MONAD_HOME at an install home), or declare them as [dependencies.<name>] ",
+            "path entries in mote.toml",
+        ]),
+        Option.some r =>
+            if root_has_sources then Option.none
+            else Option.some (String.concat "hint: MONAD_ROOT=" (String.concat r
+                (String.concat_all [
+                    " has no init/src -- point it at a monad checkout or an unpacked toolchain ",
+                    "root (what `monadup` installs), or declare the motes as ",
+                    "[dependencies.<name>] path entries in mote.toml",
+                ])))
+    }
+
 // ─── The inline `#![mote { ... }]` annotation ────────────────────────
 //
 // A file outside any mote can declare its own inline instead of shipping a
@@ -1386,3 +1429,43 @@ def test_toolchain_candidates_from_a_relative_root : Bool :=
 #[test]
 def test_toolchain_candidates_with_no_segments : Bool :=
     candidate_is "/tc" [] "/tc"
+
+/// The out-of-the-box failure, as a row: no root anywhere, so the hint has
+/// to name all three ways out. Asserted on the three NAMES rather than the
+/// sentence, because the point is that a user who has never installed a
+/// toolchain learns what to type -- a rewording that keeps naming them is
+/// still a pass.
+#[test]
+def test_missing_toolchain_hint_names_the_ways_out : Bool :=
+    match Mote.toolchain_missing_hint Option.none false {
+        Option.none => false,
+        Option.some line =>
+            if String.contains line "monadup"
+            then (if String.contains line "MONAD_ROOT" then String.contains line "MONAD_HOME"
+                  else false)
+            else false
+    }
+
+/// A root that is there but has no `init/src` is a DIFFERENT sentence: the
+/// name the user typed is what is wrong, so the hint repeats it back rather
+/// than telling them to install what they already have.
+#[test]
+def test_missing_toolchain_hint_names_a_root_without_sources : Bool :=
+    match Mote.toolchain_missing_hint (Option.some "/opt/monad") false {
+        Option.none => false,
+        Option.some line =>
+            if String.contains line "/opt/monad"
+            then Bool.not (String.contains line "monadup install")
+            else false
+    }
+
+/// A root that carries the ambient motes is the working case: nothing to
+/// say. (The caller reaches this arm only when a module resolved as ambient
+/// failed, so a silent hint here means the failure had another cause and is
+/// named by its own `unresolved module:` line.)
+#[test]
+def test_missing_toolchain_hint_is_silent_for_a_usable_root : Bool :=
+    match Mote.toolchain_missing_hint (Option.some "/opt/monad") true {
+        Option.none => true,
+        Option.some _ => false
+    }
