@@ -54,18 +54,32 @@ jobs:
 
   test:
     runs-on: [self-hosted, linux]
-    # Hang guard, not a deadline: expected ~10 min cold build + test run.
+    # Hang guard, not a deadline: a sandbox rung-1 build (~10-20 min, measured
+    # on a dev machine rather than on this runner) plus the sweep, which is
+    # ~50 min of the 56 min this step took on run 36197461023.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
 
-      # Build the release binary first so a Rust compile error fails under
-      # a step named "Build release binary" rather than surfacing deep
-      # inside check-monad-tests.sh's cargo run --release. Each job builds
-      # into its own cleaned target/ (actions/checkout runs git clean -ffdx
-      # at the start of every job), so this costs no extra wall clock.
-      - name: Build release binary
-        run: nix develop --no-pure-eval --accept-flake-config -c cargo build --release --workspace
+      # The compiler this job sweeps comes from the flake. `packages.monad` IS
+      # rung 1 -- the host interpreting cli/src/main.mo, from this commit's
+      # tree, inside a nix sandbox -- wrapped so bare llc/clang/sh and boehmgc
+      # are reachable, so the sweep runs the artifact the flake SHIPS rather
+      # than a compiler this job happened to build. MONAD_BIN (which
+      # scripts/check-monad-tests.sh honours) short-circuits its own rung-1
+      # build, and this step replaces the old "Build release binary" rather
+      # than joining it: `.#monad` takes `packages.monadHost` as a native
+      # input, so a Rust compile error still fails HERE, in a step named for
+      # the build, which is the property that step existed for.
+      #
+      # No `--no-pure-eval`, unlike every other nix invocation in this file:
+      # this is an ordinary package build, and evaluating it purely is part of
+      # what the flake is for. `--no-link --print-out-paths` so no `result`
+      # symlink is left in the checkout for later steps to trip over.
+      - name: Build the compiler from the flake
+        run: |
+          monad="$(nix build --no-link --print-out-paths --accept-flake-config .#monad)"
+          echo "MONAD_BIN=$monad/bin/monad" >> "$GITHUB_ENV"
 
       # The script is called directly rather than through
       # `devenv tasks run monad:test` (its local equivalent): devenv-tasks
@@ -80,19 +94,30 @@ jobs:
     runs-on: [self-hosted, linux]
     # Hang guard, not a compile deadline: the interpreted self-compile is
     # ~320s best case but stretches under load from the runner's own
-    # parallel jobs; ~10 min cold cargo build + a slow compile still fits
+    # parallel jobs; the host build (~4 min) plus two slow compiles still fits
     # far inside 90 min. A healthy run is never killed by this.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 
-      # Build the release binary first so a Rust compile error fails under
-      # a step named "Build release binary" rather than surfacing deep
-      # inside bootstrap-compile.sh's cargo run --release. Each job builds
-      # into its own cleaned target/ (actions/checkout runs git clean -ffdx
-      # at the start of every job), so this costs no extra wall clock.
-      - name: Build release binary
-        run: nix develop --no-pure-eval --accept-flake-config -c cargo build --release --workspace
+      # The host that runs this job's two rung-1 builds comes from the flake:
+      # `packages.monadHost` is `cargo build -p monad-cli`, hermetically, and
+      # MONAD_HOST_BIN is the knob scripts/build-self-hosted.sh already takes
+      # for exactly this -- nix/monad.nix passes the same package the same way
+      # (`lib.getExe`), and it is what removes `cargo run --release --`'s cold
+      # fat-LTO build from this job. Nothing else here runs cargo, so the old
+      # "Build release binary" step is gone rather than joined.
+      #
+      # The COMPILER is deliberately not taken from the flake here, unlike in
+      # the `test` job: both rung-1 builds below assert the
+      # interpreted-vs-compiled comparison, which needs the `.ll` the
+      # interpreter writes beside its output, and a store compiler has none
+      # beside it (nix/monad.nix does not install one). Only the host is
+      # packaged; the ladder stays a from-source build, in both build modes.
+      - name: Build the host from the flake
+        run: |
+          host="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
+          echo "MONAD_HOST_BIN=$host/bin/monad-rs" >> "$GITHUB_ENV"
 
       # Both steps call their script directly rather than through
       # `devenv tasks run monad:bootstrap-compile` / `monad:debug-oracle` (the

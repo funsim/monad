@@ -1,9 +1,19 @@
 # The `test` job from .github/workflows/ci.yml.
 #
-# One step: scripts/check-monad-tests.sh sweeps every mote plus slow_tests/.
-# Called directly rather than through `devenv tasks run monad:test` (its local
-# equivalent), as the GitHub job does, so the per-file verdicts reach this log
-# -- devenv-tasks captures a task's stdout and shows it only on failure.
+# Two steps: the flake builds the compiler this job sweeps (`packages.monad` --
+# rung 1, from this commit's tree; see the GitHub job for what taking it from
+# the flake buys and what it costs), then scripts/check-monad-tests.sh runs
+# that binary over the corpus. Called directly rather than through
+# `devenv tasks run monad:test` (its local equivalent), as the GitHub job does,
+# so the per-file verdicts reach this log -- devenv-tasks captures a task's
+# stdout and shows it only on failure.
+#
+# The path cannot be carried in `environment:` above -- it does not exist until
+# the first step has built it -- and Spindle has no GITHUB_ENV equivalent, so
+# the consuming step resolves it itself: by then the build is in this microVM's
+# store, so the second `nix build` is an evaluation and a cache hit rather than
+# a second build. A leading `VAR=...` assignment is what puts it in the child's
+# environment, which is what the GitHub job's `$GITHUB_ENV` write does too.
 #
 # The GitHub job carries `timeout-minutes: 120` as a hang guard. Spindle has no
 # per-workflow timeout field -- the spindle operator sets one default
@@ -26,7 +36,11 @@ dependencies:
   - git
 
 steps:
+  - name: Build the compiler from the flake
+    command: nix build --no-link --accept-flake-config .#monad
+
   - name: Run tests
     command: |
-      nix develop --no-pure-eval --accept-flake-config -c \
-        scripts/check-monad-tests.sh
+      MONAD_BIN="$(nix build --no-link --print-out-paths --accept-flake-config .#monad)/bin/monad" \
+        nix develop --no-pure-eval --accept-flake-config -c \
+          scripts/check-monad-tests.sh

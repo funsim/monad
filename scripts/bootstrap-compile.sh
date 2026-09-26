@@ -44,17 +44,25 @@ ulimit -s 131072 || true
 out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
 # No timeout, by design: the interpreted self-compile measured ~320s
 # (2026-09-09) but stretches 2-4x when the runner's other jobs and local
-# sessions share this machine, and `cargo run`'s own build phase is ~10 min
-# cold (fat-LTO profile; actions/checkout runs git clean -ffdx at the start
-# of every job, wiping target/, .devenv/ and the config -- so every job
-# cold-builds what it needs). That cold build is now this script's dominant
-# cost, since the entry-time sweep that used to pre-pay it is suppressed
-# (DEVENV_SKIP_TASKS=1 in ci.yml); the "Build release binary" step in the
-# bootstrap job warms target/ first. A fixed `timeout` here was killing
-# healthy runs; the job-level `timeout-minutes` is the hang guard. Progress
-# is visible instead: --verbose streams a per-module and per-stage trace
+# sessions share this machine. A fixed `timeout` here was killing healthy
+# runs; the job-level `timeout-minutes` is the hang guard. Progress is
+# visible instead: --verbose streams a per-module and per-stage trace
 # (std/src/log.mo), so a genuinely wedged run shows exactly which stage
 # stalled.
+#
+# The interpreter the two builds below run is the job's `MONAD_HOST_BIN`,
+# which CI's `bootstrap` job sets to the flake's packaged host
+# (`nix build .#monadHost`); unset, scripts/build-self-hosted.sh falls back to
+# `cargo run --release --`, whose cold fat-LTO build was ~10 minutes here
+# (actions/checkout runs git clean -ffdx at the start of every job, wiping
+# target/, .devenv/ and the config, so it was cold every time). What is
+# deliberately NOT taken from the flake is the compiler: both rung-1 builds
+# below assert the interpreted-vs-compiled comparison, which needs the `.ll`
+# the interpreter writes beside its output, and a store compiler has none
+# beside it (nix/monad.nix does not install one). The ladder stays a
+# from-source build here, in both modes; only its host is packaged. CI's
+# `test` job has no such comparison to make, so it does sweep the packaged
+# compiler -- see its step.
 # --release: debug info is on by default; DWARF emission costs ~30s on this
 # workload and the binary this job tests does not need it.
 # rm -rf forces a from-scratch build rather than trusting a stale binary;

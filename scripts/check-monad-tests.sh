@@ -18,10 +18,20 @@
 # reuse an existing binary, but rebuild when any source compiled INTO
 # it is newer, since a stale compiler reports failures that are really
 # its own age. All four motes, not just lang/: cli/ holds the compile
-# target, llvm/ and runtime/ the backend. The cold cargo build is now
-# this script's dominant cost, since the entry-time sweep that used to
-# pre-pay it is suppressed (DEVENV_SKIP_TASKS=1 in ci.yml); the "Build
-# release binary" step in the `test` job warms target/ first.
+# target, llvm/ and runtime/ the backend.
+#
+# `MONAD_BIN` replaces that build when the caller already has the compiler.
+# CI's `test` job points it at the flake's `packages.monad` -- rung 1 built
+# from this commit's tree in a nix sandbox and wrapped so llc/clang/boehmgc
+# are reachable -- so the sweep runs the artifact the flake SHIPS instead of
+# one this job happened to build. What that replaces is the interpreter's
+# ~5 minute turn, and it removes the last cargo build from this job as well:
+# `packages.monad` builds the host for it (nix/monad.nix takes
+# packages.monadHost as a native input), so a Rust compile error still fails
+# the job, under a step named for the build. MONAD_BIN is the repo's existing
+# name for "the self-hosted compiler to run" (scripts/check-docs.sh,
+# tools/debug_transparency_oracle.sh); build-self-hosted.sh's own header says
+# why the HOST override it takes is spelled differently.
 #
 # ONE runner, one corpus: the self-hosted runner tests every .mo file in it
 # and there is ONE total to read. That is where the mechanism was always
@@ -323,10 +333,19 @@ cd "$root"
 # then measured through the self-hosted runner with a binary rebuilt from
 # the change, and both report a clean run.
 out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
+mkdir -p "$out"
 # All four motes, not just lang/: cli/ holds the compile target, llvm/ and
 # runtime/ the backend. The staleness check and the build command live in
 # scripts/build-self-hosted.sh so all three CI scripts share one definition.
-scripts/build-self-hosted.sh "$out" --release
+# `MONAD_BIN` short-circuits it -- see the header for what CI points it at.
+# The directory is made here either way, because the check log below lands
+# in it and the build is the only thing that used to create it.
+if [ -n "${MONAD_BIN:-}" ]; then
+  monad="$MONAD_BIN"
+else
+  scripts/build-self-hosted.sh "$out" --release
+  monad="$out/monad"
+fi
 
 # The self-hosted sweep: the whole corpus, with no exclusions at all.
 # `host_only` was the last registry and it is deleted above, so the loop
@@ -345,7 +364,7 @@ while IFS= read -r f; do
 done < <(find init std examples lang cli llvm runtime motes slow_tests bench proofs -name '*.mo' | sort)
 
 self_hosted_rc=0
-"$out/monad" test "${self_hosted_targets[@]}" || self_hosted_rc=$?
+"$monad" test "${self_hosted_targets[@]}" || self_hosted_rc=$?
 if [ "$self_hosted_rc" -ne 0 ]; then
   # Deliberately NOT fatal: `set -e` used to abort here, which dropped the
   # whole check phase (and, before Phase 12, the Rust fallback) whenever a
@@ -437,7 +456,7 @@ done < <(find init std examples lang cli llvm runtime motes slow_tests bench pro
 
 check_log="$out/check.log"
 check_rc=0
-"$out/monad" check "${check_targets[@]}" > "$check_log" 2>&1 || check_rc=$?
+"$monad" check "${check_targets[@]}" > "$check_log" 2>&1 || check_rc=$?
 check_fails=$(grep -cE '^FAIL ' "$check_log" || true)
 if [ "$check_rc" -ne 0 ] || [ "$check_fails" != 0 ]; then
   echo "self-hosted check: ${check_fails} failure(s), exit ${check_rc} -- no check-gap file is registered any more" >&2
