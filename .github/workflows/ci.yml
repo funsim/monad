@@ -108,6 +108,15 @@ jobs:
       # fat-LTO build from this job. Nothing else here runs cargo, so the old
       # "Build release binary" step is gone rather than joined.
       #
+      # A packaged host is not self-sufficient the way `cargo run` was: the
+      # path it reads its stdlib from is compiled IN (core/src/term/module.rs's
+      # `stdlib_dir()`), so a store host carries a `/build/<src>-source/init/src`
+      # path that exists only while the build that made it runs. The script
+      # therefore points it at THIS checkout via MONAD_STDLIB -- which is what
+      # the rung should mean anyway: the interpreter reads the tree the
+      # self-compile reads. Run 36236800752 is what happens without it:
+      # `failed to read /build/qkmvxrw…-source/init/src/prelude.mo`.
+      #
       # The COMPILER is deliberately not taken from the flake here, unlike in
       # the `test` job: both rung-1 builds below assert the
       # interpreted-vs-compiled comparison, which needs the `.ll` the

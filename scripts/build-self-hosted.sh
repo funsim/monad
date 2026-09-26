@@ -6,6 +6,9 @@
 # The host is `cargo run --release --`, or whatever MONAD_HOST_BIN names --
 # for a builder that has a built host rather than a cargo tree:
 #   MONAD_HOST_BIN=/nix/store/.../bin/monad-rs scripts/build-self-hosted.sh ...
+# A packaged host needs its stdlib pointed at this checkout as well -- its
+# compiled-in default is a path that exists only in the build that made it; see
+# the MONAD_STDLIB note at the definition below.
 # Deliberately NOT spelled MONAD_BIN: that name already means "the
 # self-hosted compiler to run" here (tools/debug_transparency_oracle.sh,
 # check-docs.sh), and an exported value quietly swapping rung 1 is the same
@@ -42,6 +45,20 @@ ulimit -s 131072 2>/dev/null ||
   echo "NOTE: RLIMIT_STACK left at $(ulimit -s) KB -- the ceiling is the builder's own, not this script's"
 
 MONAD_HOST_BIN=${MONAD_HOST_BIN:-"cargo run --release --"}
+
+# ... and that host finds its stdlib at a path compiled INTO it: `init/src`
+# next to cargo's CARGO_MANIFEST_DIR (core/src/term/module.rs's `stdlib_dir()`,
+# which honours MONAD_STDLIB). A `cargo run` host baked this checkout and
+# resolves correctly; a host built by nix baked `/build/<src>-source/init/src`,
+# which is true only for the duration of that build. Every flake-side build
+# worked anyway -- their working directory IS that path -- and CI's bootstrap
+# job, the first place a packaged host ran in a checkout, died on
+# `failed to read .../init/src/prelude.mo` (run 36236800752).
+# Pointing the host at THIS checkout is also what the rung is supposed to mean:
+# the interpreter must read the same tree the self-compile below compiles.
+# An explicit MONAD_STDLIB still wins.
+MONAD_STDLIB=${MONAD_STDLIB:-"$root/init/src"}
+export MONAD_STDLIB
 
 out="$1"; shift
 mkdir -p "$out"

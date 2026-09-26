@@ -20,7 +20,13 @@
 # What this job takes from the flake is the HOST, not the compiler: the first
 # step builds `packages.monadHost` and the two steps below name it through
 # MONAD_HOST_BIN, which is what removes `cargo run --release --`'s cold build
-# from the ladder. The compiler itself stays a from-source build here, unlike in
+# from the ladder. A packaged host cannot find its stdlib the way `cargo run`
+# did -- that path is compiled in, and a nix build's is a `/build/...` one -- so
+# scripts/build-self-hosted.sh points it at the checkout through MONAD_STDLIB,
+# which is the only reason this job works at all (run 36236800752 failed on
+# `failed to read /build/...-source/init/src/prelude.mo` before that line
+# existed; the GitHub job's step comment says it in full).
+# The compiler itself stays a from-source build here, unlike in
 # the `test` job, because both rung-1 builds assert the
 # interpreted-vs-compiled comparison and a store compiler has no
 # interpreter-produced `.ll` beside it -- the GitHub job's step comment says it
