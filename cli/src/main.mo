@@ -7,7 +7,7 @@ use llvm::ir {LLVMModule, emit_module}
 use llvm::link {link_ir}
 use runtime {}
 use lang::codegen::emit {compile_db_module_with_debug, compile_loaded_modules_to_ir_with_debug, ok}
-use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, ElaboratedModules, FileCheckAndCache, LoadedModules, ModuleInfo, ModuleInfoCache, bench_step, check_file_cached, check_module_with_scope, elaborate_loaded_modules, elaborate_loaded_modules_cached, elaborate_module_decls_best_effort, expand_check_paths, extract_directory, load_file_modules, load_module_with_info, module_name_from_path, module_info_cache_empty, try_parse_decls, try_parse_decls_strict}
+use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, ElaboratedModules, FileCheckAndCache, LoadedModules, ModuleInfo, ModuleInfoCache, bench_step, check_file_cached, check_module_with_scope, elaborate_loaded_modules, elaborate_loaded_modules_cached, elaborate_module_decls_best_effort, expand_check_paths, extract_directory, load_file_modules, load_module_with_info, module_name_from_path, module_info_cache_empty, resolve_runtime_src, try_parse_decls, try_parse_decls_strict}
 use lang::scope {resolve_class_calls_decls}
 use lang::mote {MoteManifest}
 use std::map {}
@@ -45,7 +45,7 @@ def default_output_dir : Path := Path.path ("/tmp/monad_out_" ++ I64.to_string p
 /// is enough here (the `--verbose` compile pipeline prints the precise
 /// stage names too).
 #[partial]
-def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : List String) (output_dir : Path) (output_name : Path) (verbose : Bool) : IO I64 :=
+def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : List String) (base_dir : String) (output_dir : Path) (output_name : Path) (verbose : Bool) : IO I64 :=
     match mod_result {
         Result.err e => do {
             println ("FAILED at stage: compile_loaded_modules_to_ir (" ++ e ++ ")");
@@ -62,7 +62,7 @@ def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : Li
             let t_emit : I64 <- Bench.now;
             let ir_text : String := emit_module mod_;
             let _t_emit : I64 <- bench_step verbose "emit_module (render .ll)" t_emit (String.length ir_text);
-            let runtime_src : String <- resolve_runtime_src;
+            let runtime_src : String <- resolve_runtime_src base_dir;
             link_ir runtime_src ir_text output_dir output_name link_libs verbose
         },
     }
@@ -77,7 +77,7 @@ def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : Li
 /// extra flag required (confirmed directly -- a `-g`-style flag doesn't
 /// exist on `llc`, unlike `clang`'s own C-source `-g`).
 #[partial]
-def compile_parsed_decls (decl_list : List Decl) (output_dir : Path) (output_name : Path) (verbose: Bool) (source_path : Option String) : IO I64 {
+def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir : Path) (output_name : Path) (verbose: Bool) (source_path : Option String) : IO I64 {
     let mod_ : LLVMModule := compile_db_module_with_debug decl_list source_path List.empty;
     let ir_text := emit_module mod_;
     // This is the module-loading-FAILURE fallback: there is no
@@ -85,7 +85,7 @@ def compile_parsed_decls (decl_list : List Decl) (output_dir : Path) (output_nam
     // from. A program that needs `-l` flags cannot reach here anyway --
     // its `use` lines are what failed to load.
     println <| "Writing LLVM IR to: " ++ Path.to_string (Path.with_suffix (Path.join output_dir output_name) ".ll");
-    let runtime_src : String <- resolve_runtime_src;
+    let runtime_src : String <- resolve_runtime_src base_dir;
     link_ir runtime_src ir_text output_dir output_name List.empty verbose
 }
 
@@ -469,7 +469,7 @@ def compile_file_codegen (file_path : String) (output_dir : Path) (output_name :
             // a package-level build property, read from the manifests
             // rather than from any `#[extern "c"]` attribute.
             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
-            link_compiled_module mod_result link_libs output_dir output_name verbose
+            link_compiled_module mod_result link_libs (extract_directory file_path) output_dir output_name verbose
         },
         Result.err e => do {
             println ("Failed to parse dependencies: " ++ e);
@@ -481,7 +481,7 @@ def compile_file_codegen (file_path : String) (output_dir : Path) (output_name :
             match try_parse_decls source {
                 Option.some decl_list => do {
                     let source_path : Option String := if debug then Option.some file_path else Option.none;
-                    compile_parsed_decls decl_list output_dir output_name verbose source_path
+                    compile_parsed_decls decl_list (extract_directory file_path) output_dir output_name verbose source_path
                 },
                 Option.none => do {
                     // `try_parse_decls` (leniently truncate-and-succeed) just
@@ -775,73 +775,6 @@ def find_workspace_members (dir : String) (depth : I64) : IO (List String) := do
     }
 }
 
-/// The workspace ROOT above `dir`: the directory whose `mote.toml` carries
-/// `[workspace] members`. `find_workspace_members` is the same walk, and it
-/// answers with that root's expanded MEMBERS; a caller looking for a file
-/// that is not one of them (see `resolve_runtime_src`) needs the root
-/// itself, which is the one thing the expansion throws away.
-///
-/// `Option.some ""` means the working directory is the root -- the same
-/// case `find_workspace_members ""` already handles, where `dir` is `""`
-/// and every path the caller builds from it stays CWD-relative.
-#[partial]
-def find_workspace_root (dir : String) (depth : I64) : IO (Option String) := do {
-    if I64.lt depth 1 then do { return Option.none }
-    else do {
-        let here : List String <- Mote.workspace_members dir;
-        if Bool.not (List.is_empty here) then do { return (Option.some dir) }
-        else if String.beq dir "" then find_workspace_root ".." (depth - 1)
-        else if String.beq dir "/" then do { return Option.none }
-        else find_workspace_root (raw_path_join dir "..") (depth - 1)
-    }
-}
-
-/// The runtime C source, located from the workspace root above the working
-/// directory.
-///
-/// `Runtime.c_path` is the checkout-root-relative literal for it
-/// (`runtime/src/lib.mo`), and that is the right answer exactly when the
-/// working directory IS that root. Everything else about a `monad test`
-/// from inside `cli/` resolves from the mote now, and this argument was the
-/// one input left that was still CWD-relative: the typecheck passed, the
-/// driver compiled, and then `clang: error: no such file or directory:
-/// 'runtime/src/runtime.c'`, `compiling runtime failed`.
-///
-/// The working directory is the only correct anchor here, and not as a
-/// convenience: `clang` resolves this argument against the COMPILER's own
-/// CWD, so any other base -- `runtime/src/lib.mo`'s own resolved path, say,
-/// which is the anchor module resolution uses -- would name a file that
-/// clang then goes looking for somewhere else entirely. Walking up from
-/// `""` for the workspace root is the anchor `--workspace` already uses,
-/// and the root is what makes the answer portable: `../runtime/src/
-/// runtime.c` holds from inside `cli/`, where `runtime/src/runtime.c` does
-/// not.
-///
-/// Falls back to `Runtime.c_path` when there is no workspace root above the
-/// working directory (a single-mote checkout, a file outside the workspace),
-/// which is the behaviour that existed before this. The candidate is
-/// existence-checked first for the same reason: at the root the walk answers
-/// `""` and the candidate IS `Runtime.c_path`, so nothing about the root
-/// path changes.
-///
-/// Deliberately NOT passed through `lang.module.mo`'s `normalize_path`,
-/// even though the walk leaves the `..` in: that spelling is valid only
-/// relative to the CWD it was walked from, so collapsing it to
-/// `runtime/src/runtime.c` would name a file that does not exist from
-/// inside `cli/`. `normalize_path` is safe for module resolution because
-/// the resolved path is read in the same process that resolved it; this one
-/// is handed to a child process.
-def resolve_runtime_src : IO String := do {
-    let root <- find_workspace_root "" 32;
-    match root {
-        Option.none => return Runtime.c_path,
-        Option.some r => do {
-            let candidate := raw_path_join r "runtime/src/runtime.c";
-            let exists <- file_exists (Path.path candidate);
-            return (if exists then candidate else Runtime.c_path)
-        }
-    }
-}
 
 #[partial]
 def run_test (files : List String) (out_dir : String) (verbose : Bool) : IO I64 := do {
@@ -1036,7 +969,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                             // `run`/`compile` path passes, instead of an
                             // `undefined reference` at link.
                             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
-                            let runtime_src : String <- resolve_runtime_src;
+                            let runtime_src : String <- resolve_runtime_src (extract_directory f);
                             let link_result <- link_ir runtime_src ir_text (Path.path out_dir) (Path.path bin_name) link_libs verbose;
                             if not (link_result == 0) then do {
                                 // A file-level failure, counted as such:

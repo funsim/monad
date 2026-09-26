@@ -4,6 +4,7 @@
 use io {IO}
 use std::io {file_exists, is_dir, list_dir, println, read_file}
 use std::bench {now, report, report_since, since}
+use std::process {exec_cmd, process_id}
 use lib::elaborate {free_vars, names_of_decls, elaborate_def}
 use lib::types {
   module_path_to_string_colon,
@@ -58,6 +59,10 @@ use std::show {Show}
 // `lang/scope.mo`'s own `use std.map {}` doc comment for why the import
 // is empty).
 use std::map {}
+// `Runtime.c_path` is the last tier of `resolve_runtime_src` below -- the
+// checkout-root-relative literal, kept in the mote that owns the C file
+// rather than repeated here.
+use runtime {}
 
 open IO {file_exists, is_dir, list_dir, println, read_file}
 open ParseResult {fail, success}
@@ -253,8 +258,8 @@ pub def module_name_from_path (file_path : String) : String :=
 
 /// Join two path components with a separator
 /// Delegates to `std/path.mo`'s `raw_path_join` -- the single shared
-/// implementation of this empty-component/trailing-slash-handling
-/// logic (was duplicated here before `Path` existed).
+/// implementation of this empty-component/trailing-slash/absolute-second-
+/// argument logic (was duplicated here before `Path` existed).
 def path_join (a : String) (b : String) : String :=
     raw_path_join a b
 
@@ -362,10 +367,34 @@ def first_existing (candidates : List String) : IO (Option String) := do {
     }
 }
 
-/// Read a module path as a MOTE-relative one: the first segment names a mote,
-/// whose sources live under its `src/`, and the rest is the module path within
-/// it. `llvm.ir` -> `llvm/src/ir.mo`; a lone `std` -> that
-/// mote's library root, `std/src/lib.mo`.
+/// Read a module path as MOTE-relative SEGMENTS: the first segment names a
+/// mote, whose sources live under its `src/`, and the rest is the module
+/// path within it. `llvm.ir` -> `["llvm", "src", "ir.mo"]`; a lone `std` ->
+/// that mote's library root, `["std", "src", "lib.mo"]`.
+///
+/// Segments rather than the joined string, because this reading has two
+/// consumers with different roots to anchor it at: `mote_relative_file`
+/// below (joined, at the working directory) and the installed-toolchain
+/// tier (`Mote.toolchain_candidates`, joined at a toolchain root). One
+/// reading, so the two cannot drift -- and the same reason the ambient
+/// trio's `resolve_ambient_file` takes segments rather than a literal.
+def mote_segments (mp : ModulePath) : List String :=
+    match mp {
+        ModulePath.mp ids =>
+            match ids {
+                List.empty => List.empty,
+                List.cons hd rest =>
+                    let mote : String := identifier_to_string hd in
+                    match rest {
+                        List.empty => [mote, "src", "lib.mo"],
+                        List.cons _ _ =>
+                            [mote, "src",
+                             String.concat (module_path_to_file (ModulePath.mp rest)) ".mo"]
+                    }
+            }
+    }
+
+/// `mote_segments` joined with single `/`s -- `llvm/src/ir.mo`.
 ///
 /// This is what makes `use llvm.ir` find the file at all now that every
 /// mote keeps its modules under `src/` (`plans/packaging/package-system.md`
@@ -373,48 +402,198 @@ def first_existing (candidates : List String) : IO (Option String) := do {
 /// about motes. The mote NAMES are still a fixed list here; the manifest-driven
 /// table (and the "not a declared dependency" error that comes with it) is §5c.
 def mote_relative_file (mp : ModulePath) : String :=
-    match mp {
-        ModulePath.mp ids =>
-            match ids {
-                List.empty => "",
-                List.cons hd rest =>
-                    let mote_src : String := String.concat (identifier_to_string hd) "/src/" in
-                    match rest {
-                        List.empty => String.concat mote_src "lib.mo",
-                        List.cons _ _ =>
-                            String.concat mote_src
-                                (String.concat (module_path_to_file (ModulePath.mp rest)) ".mo")
-                    }
-            }
-    }
+    join_path_segments (mote_segments mp) ""
 
 /// The ambient trio's (`prelude`/`init`/`std`) own resolution: its
-/// CWD-relative candidate first, then the manifest.
+/// CWD-relative candidate first, then the manifest, then an installed
+/// toolchain root.
 ///
 /// The fall-through is the whole point of the helper, and it is what makes
-/// resolution key off the MOTES rather than the working directory. `candidate`
-/// is spelled relative to the checkout root, so it is only the answer when the
-/// CWD *is* that root -- which is why `monad check src/main.mo` from inside
-/// `cli/` used to report a wall of "unknown variable '++'" rather than loading
-/// its own prelude: `first_existing` missed, the trio returned `none`, and no
-/// manifest was ever consulted. From the root nothing changes, because the
-/// first candidate always hits.
+/// resolution key off the MOTES rather than the working directory. The
+/// joined candidate is spelled relative to the checkout root, so it is only
+/// the answer when the CWD *is* that root -- which is why `monad check
+/// src/main.mo` from inside `cli/` used to report a wall of "unknown
+/// variable '++'" rather than loading its own prelude: `first_existing`
+/// missed, the trio returned `none`, and no manifest was ever consulted.
+/// From the root nothing changes, because the first candidate always hits.
 ///
-/// The manifest half reaches the same three files through each mote's OWN
-/// declared path (`lang/mote.toml` declares `init = { path = "../init" }`,
-/// say), so `lang/../init/src/prelude.mo` resolves wherever the CWD is.
+/// Takes SEGMENTS rather than the joined string, so that the CWD-relative
+/// spelling and the toolchain-relative one are built from ONE list:
+/// `["init", "src", "prelude.mo"]` reads as `init/src/prelude.mo` under the
+/// working directory and as `<root>/init/src/prelude.mo` under an installed
+/// toolchain. It is also where the `prelude` alias lives -- `prelude`
+/// belongs to `init`, and no module path can say so.
 #[partial]
-def resolve_ambient_file (base_dir : String) (mp : ModulePath) (candidate : String) : IO (Option String) := do {
-    let r <- first_existing [candidate];
+def resolve_ambient_file (base_dir : String) (mp : ModulePath) (segs : List String) : IO (Option String) := do {
+    let r <- first_existing [join_path_segments segs ""];
     match r {
         Option.some p => return (Option.some p),
-        Option.none => resolve_via_manifest base_dir mp
+        Option.none => resolve_installed_or_manifest base_dir mp segs
     }
 }
+
+/// The last two tiers of EVERY resolution, in this order: the importing
+/// mote's own manifest, then an installed toolchain root.
+///
+/// The manifest is first because it is EXPLICIT -- the mote declared this
+/// dependency and said where it lives -- while a toolchain root is a
+/// convention about the machine. A `std` vendored next to an external mote
+/// therefore wins over the one in `~/.monad`, which is what pinning a
+/// dependency means.
+///
+/// This pair is the whole answer for a mote in its own repository, which
+/// has no checkout to resolve `init`/`std` out of: the manifest covers it
+/// when it declared `path` dependencies, the toolchain root covers it when
+/// it declared none and a nightly is installed.
+#[partial]
+def resolve_installed_or_manifest (base_dir : String) (mp : ModulePath) (segs : List String) : IO (Option String) := do {
+    let via_manifest <- resolve_via_manifest base_dir mp;
+    match via_manifest {
+        Option.some p => return (Option.some p),
+        Option.none => do {
+            let root <- Mote.toolchain_root;
+            toolchain_first_existing root segs
+        }
+    }
+}
+
+/// The installed-toolchain tier's own probe: `none` when this machine has
+/// no toolchain root at all, else the first of the root's candidates for
+/// `segs` that exists. Factored out so that "no root" is a miss rather than
+/// a list of candidate paths built off a root that is not there.
+#[partial]
+def toolchain_first_existing (root : Option String) (segs : List String) : IO (Option String) := do {
+    match root {
+        Option.none => return Option.none,
+        Option.some r => first_existing (Mote.toolchain_candidates r segs)
+    }
+}
+
+/// The workspace ROOT above `dir`: the directory whose `mote.toml` carries
+/// `[workspace] members`. `find_workspace_members` (`cli/src/main.mo`) is
+/// the same walk, and it answers with that root's expanded MEMBERS; a caller
+/// looking for a file that is not one of them (see `resolve_runtime_src`)
+/// needs the root itself, which is the one thing the expansion throws away.
+///
+/// Lives here rather than beside `find_workspace_members` because
+/// `resolve_runtime_src` is its only caller, and that has to sit at this
+/// level: the codegen harnesses (`lang/src/codegen/test/e2e_harness.mo`,
+/// `compile_tests.mo`, `test_link_e2e.mo`) compile the C runtime through the
+/// same resolver, and they are modules of THIS mote -- so the resolver
+/// cannot live in `cli/`, which is above them.
+///
+/// `Option.some ""` means the working directory is the root -- the same case
+/// `find_workspace_members ""` already handles, where `dir` is `""` and
+/// every path the caller builds from it stays CWD-relative.
+#[partial]
+def find_workspace_root (dir : String) (depth : I64) : IO (Option String) := do {
+    if I64.lt depth 1 then do { return Option.none }
+    else do {
+        let here : List String <- Mote.workspace_members dir;
+        if Bool.not (List.is_empty here) then do { return (Option.some dir) }
+        else if String.beq dir "" then find_workspace_root ".." (depth - 1)
+        else if String.beq dir "/" then do { return Option.none }
+        else find_workspace_root (raw_path_join dir "..") (depth - 1)
+    }
+}
+
+/// The first candidate that is present on disk, WITHOUT normalizing the
+/// winner -- unlike `first_existing` above, and for the reason
+/// `resolve_runtime_src`'s own doc comment gives: the winner may be a
+/// walk-relative spelling whose `..` has to survive into the child process
+/// that opens it.
+#[partial]
+def first_on_disk (candidates : List String) : IO (Option String) := do {
+    match candidates {
+        List.empty => return Option.none,
+        List.cons path rest => do {
+            let exists <- file_exists (Path.path path);
+            if exists then return (Option.some path) else first_on_disk rest
+        }
+    }
+}
+
+/// The runtime C source, located from the first candidate that exists: the
+/// target mote's own declared `[dependencies.runtime] path`, an installed
+/// toolchain root, the workspace root above the working directory, and
+/// finally `Runtime.c_path`.
+///
+/// The first two are ABSOLUTE by construction -- a manifest `path` may be
+/// absolute, a toolchain root is -- and that matters because `clang`
+/// resolves this argument against the COMPILER's own CWD. Only a relative
+/// spelling is CWD-sensitive, so an absolute candidate sidesteps the
+/// question the last two exist to answer. Those two stay relative: the
+/// walk's answer is spelled from the working directory it walked from
+/// (`../runtime/src/runtime.c` from inside `cli/`, where
+/// `runtime/src/runtime.c` does not exist), and `Runtime.c_path` is the
+/// checkout-root-relative literal, which is the right answer exactly when
+/// the working directory IS that root.
+///
+/// The winner is deliberately NOT passed through `normalize_path`, even
+/// though a walked spelling still carries its `..`: that spelling is valid
+/// only relative to the CWD it was walked from, so collapsing it would name
+/// a file that does not exist from inside `cli/`. `normalize_path` is safe
+/// for module resolution because the resolved path is read in the same
+/// process that resolved it; this one is handed to a CHILD process.
+///
+/// Falls back to `Runtime.c_path` when no candidate exists, rather than
+/// reporting a miss here: the child is what knows how to say "no such file
+/// or directory", and its message names the path it could not open.
+///
+/// `base_dir` is the directory of the file being compiled or tested, which
+/// is what the manifest tier needs -- the mote whose `[dependencies.runtime]`
+/// says where the C runtime lives. That is the tier an EXTERNAL mote relies
+/// on (one in its own repository, with no checkout to walk up into), and it
+/// is why this no longer takes the working directory as its only anchor.
+///
+/// `pub` because `cli` is a different mote from `lang` and its `compile`/`run`
+/// paths are the callers: this moved here from `cli/src/main.mo` when the
+/// codegen harnesses below needed the same resolver, and a def that crosses a
+/// mote boundary has to say so.
+#[partial]
+pub def resolve_runtime_src (base_dir : String) : IO String := do {
+    let manifest <- Mote.discover base_dir;
+    let declared := match manifest {
+        Option.none => List.empty,
+        Option.some m => match MoteManifest.dep_dir_of m "runtime" {
+            Option.none => List.empty,
+            Option.some dep_dir => runtime_c_in dep_dir
+        }
+    };
+    let root <- Mote.toolchain_root;
+    let installed := match root {
+        Option.none => List.empty,
+        Option.some r => Mote.toolchain_candidates r ["runtime", "src", "runtime.c"]
+    };
+    let ws <- find_workspace_root "" 32;
+    let walked := match ws {
+        Option.none => List.empty,
+        Option.some r => [raw_path_join r "runtime/src/runtime.c"]
+    };
+    let found <- first_on_disk (List.append declared (List.append installed walked));
+    match found {
+        Option.none => return Runtime.c_path,
+        Option.some p => return p
+    }
+}
+
+/// `<dep dir>/src/runtime.c` -- the one file a `[dependencies.runtime]`
+/// `path` contributes. `raw_path_join` rather than `++`, so an absolute
+/// `path` (which is what an external mote writes) stays absolute instead of
+/// being appended to the mote's own directory as `./<abs>`.
+def runtime_c_in (dep_dir : String) : List String :=
+    [raw_path_join (raw_path_join dep_dir "src") "runtime.c"]
 
 /// Resolve a module path to a file path, trying different directories
 /// First tries relative to base_dir, then the mote layout, then falls back to
 /// the stdlib/lang roots for bare (un-mote-qualified) names.
+///
+/// Every convention above is anchored at the WORKING DIRECTORY, so all of
+/// them miss for a mote in its own repository. What answers there is the
+/// cascade's last two tiers (`resolve_installed_or_manifest`): the mote's
+/// own declared `path` dependencies, then an installed toolchain root --
+/// which is what lets an external mote `use std::map` with no checkout
+/// anywhere and nothing declared.
 ///
 /// There is no `examples/` fallback: an example is a mote like any other
 /// now (`#![mote { ... }]`), so nothing resolves it by directory name.
@@ -422,7 +601,7 @@ def resolve_ambient_file (base_dir : String) (mp : ModulePath) (candidate : Stri
 def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option String) {
     let mp_str := module_path_to_file mp;
     let with_extension := String.concat mp_str ".mo";
-    let prelude_path := "init/src/prelude.mo";
+    let prelude_segs := ["init", "src", "prelude.mo"];
     let relative_path := path_join base_dir with_extension;
     let direct_path := with_extension;
     let mote_path := mote_relative_file mp;
@@ -431,7 +610,7 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
     let lang_path := String.concat "lang/src/" with_extension;
 
     if String.beq mp_str "prelude"
-    then resolve_ambient_file base_dir mp prelude_path
+    then resolve_ambient_file base_dir mp prelude_segs
     // Bare `init`/`std` are ambient re-export hubs (`init/src/lib.mo`/
     // `std/src/lib.mo`) -- their own module NAME no longer matches their
     // FILE name (unlike every other bare top-level module), so they
@@ -441,9 +620,9 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
     // "that mote's lib root" -- spelling it out keeps the ambient trio
     // together and independent of that rule.)
     else if String.beq mp_str "init"
-    then resolve_ambient_file base_dir mp "init/src/lib.mo"
+    then resolve_ambient_file base_dir mp ["init", "src", "lib.mo"]
     else if String.beq mp_str "std"
-    then resolve_ambient_file base_dir mp "std/src/lib.mo"
+    then resolve_ambient_file base_dir mp ["std", "src", "lib.mo"]
     else do {
         // `examples/` used to be a candidate here (`examples/<stem>.mo`).
         // It is gone: every example now carries a `#![mote { ... }]`
@@ -459,7 +638,8 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
         match found {
             Option.some p => return (Option.some p),
             // Still only when every convention missed: the `motes/*/src`
-            // search path, then the manifest.
+            // search path, then the manifest, then an installed toolchain
+            // root.
             //
             // `mote_path` assumes a mote's directory is its name, sitting
             // at the working directory -- true for every mote in this
@@ -490,7 +670,7 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
                 let in_motes <- first_existing (List.append in_motes_cands (List.cons in_motes_qualified List.empty));
                 match in_motes {
                     Option.some p => return (Option.some p),
-                    Option.none => resolve_via_manifest base_dir mp
+                    Option.none => resolve_installed_or_manifest base_dir mp (mote_segments mp)
                 }
             }
         }
@@ -2786,6 +2966,40 @@ def is_mote_named (name : String) : IO Bool := do {
     else file_exists (Path.path (String.concat "motes/" (String.concat name "/mote.toml")))
 }
 
+/// Does this machine's toolchain root PROVIDE a mote called `name`?
+///
+/// A fourth category beside the ambient trio, the declared dependencies and
+/// the motes visible from the working directory -- and the one that matters
+/// for a mote in its own repository, which has no checkout and may declare
+/// nothing. Resolution does not need a declaration for these (the toolchain
+/// tier of `resolve_installed_or_manifest` answers by NAME, which is what
+/// `use std::map` in an external repo relies on), so the declared-dependency
+/// gate must not demand one either: its hint says `path = "../<name>"`,
+/// and a path pointing INTO the toolchain is precisely the dependency this
+/// whole route exists to remove.
+///
+/// Not folded into `is_ambient_mote`: that predicate is about the
+/// LANGUAGE's own trio, which is fixed and name-matched. This one is about
+/// one machine's install and is answered by the filesystem.
+///
+/// Split as a pure decision over the root, then the env read, for the same
+/// reason `Mote.toolchain_candidates` is: there is no `set_env` native, so
+/// only the half that does not read the environment can be rowed in-process.
+#[partial]
+def installed_mote_at (root : Option String) (name : String) : IO Bool := do {
+    let found <- toolchain_first_existing root [name, "mote.toml"];
+    match found {
+        Option.some _ => return true,
+        Option.none => return false
+    }
+}
+
+#[partial]
+def is_installed_mote (name : String) : IO Bool := do {
+    let root <- Mote.toolchain_root;
+    installed_mote_at root name
+}
+
 #[partial]
 def validate_declared_deps (infos : List ModuleInfo) : IO (List String) :=
     match infos {
@@ -2925,13 +3139,20 @@ def check_one_use_declared (m : MoteManifest) (info : ModuleInfo) (u : ModulePat
             if is_ambient_mote head then return List.empty
             else if MoteManifest.declares m head then return List.empty
             else do {
-                // Only complain about names that really are motes -- a
-                // head segment naming nothing is an ordinary
-                // module-not-found, reported where it happens.
-                let is_mote <- is_mote_named head;
-                if is_mote
-                then return [undeclared_mote_error m info u head]
-                else return List.empty
+                // ...nor about a mote the toolchain provides: the install
+                // pins it, resolution finds it by name, and the hint below
+                // would ask for a `path` into the install.
+                let installed <- is_installed_mote head;
+                if installed then return List.empty
+                else do {
+                    // Only complain about names that really are motes -- a
+                    // head segment naming nothing is an ordinary
+                    // module-not-found, reported where it happens.
+                    let is_mote <- is_mote_named head;
+                    if is_mote
+                    then return [undeclared_mote_error m info u head]
+                    else return List.empty
+                }
             }
     }
 }
@@ -4900,7 +5121,7 @@ def test_mote_dep_files_is_empty_for_an_undeclared_mote : Bool :=
 /// own tests below rather than by pinning a CWD's spelling here.
 #[test]
 def test_resolve_ambient_file_falls_through_to_the_manifest : IO Bool := do {
-    let r <- resolve_ambient_file "lang/src" prelude_module_path "init/src/__no_such_module__.mo";
+    let r <- resolve_ambient_file "lang/src" prelude_module_path ["init", "src", "__no_such_module__.mo"];
     match r {
         Option.none => return false,
         Option.some p => do {
@@ -4923,11 +5144,138 @@ def test_resolve_ambient_file_falls_through_to_the_manifest : IO Bool := do {
 /// stops, from any working directory.
 #[test]
 def test_resolve_ambient_file_miss_outside_any_mote_stays_a_miss : IO Bool := do {
-    let r <- resolve_ambient_file "/__no_such_mote_dir__" prelude_module_path "init/src/__no_such_module__.mo";
+    let r <- resolve_ambient_file "/__no_such_mote_dir__" prelude_module_path ["init", "src", "__no_such_module__.mo"];
     match r {
         Option.none => return true,
         Option.some _ => return false
     }
+}
+
+/// Exactly three segments, spelled out. Every `mote_segments` answer is
+/// three (a mote, `src`, a file), so this asserts the count as well as the
+/// spelling.
+def segments_are_three (segs : List String) (x : String) (y : String) (z : String) : Bool :=
+    match segs {
+        List.empty => false,
+        List.cons a rest => match rest {
+            List.empty => false,
+            List.cons b rest2 => match rest2 {
+                List.cons c rest3 => match rest3 {
+                    List.empty => String.beq a x && String.beq b y && String.beq c z,
+                    List.cons _ _ => false
+                },
+                List.empty => false
+            }
+        }
+    }
+
+/// The one reading of a module path as mote-relative segments -- shared by
+/// the CWD-relative cascade (`mote_relative_file`) and the installed-
+/// toolchain tier (`Mote.toolchain_candidates`), so a row here is a row
+/// about both.
+#[test]
+def test_mote_segments_read_a_qualified_module : Bool :=
+    let mp : ModulePath := ModulePath.mp [Identifier.id "std", Identifier.id "map"] in
+    segments_are_three (mote_segments mp) "std" "src" "map.mo"
+
+/// A lone name is that mote's LIBRARY root, not `<name>.mo` -- the rule
+/// `mote_relative_file` already had, now stated in one place.
+#[test]
+def test_mote_segments_of_a_bare_name_is_its_lib_root : Bool :=
+    segments_are_three (mote_segments init_module_path) "init" "src" "lib.mo"
+
+/// The JOINED spelling is unchanged by that refactor, which is what makes
+/// it behavior-preserving for `motes/<name>/src/...` and the cascade's own
+/// `mote_path` candidate.
+#[test]
+def test_mote_relative_file_joins_the_segments : Bool :=
+    let ir : ModulePath := ModulePath.mp [Identifier.id "llvm", Identifier.id "ir"] in
+    if String.beq (mote_relative_file ir) "llvm/src/ir.mo"
+    then String.beq (mote_relative_file init_module_path) "init/src/lib.mo"
+    else false
+
+/// The ambient trio's segment lists REPRODUCE the literals they replaced --
+/// which is what keeps every working directory the old literals resolved in
+/// resolving the same way now.
+#[test]
+def test_ambient_segments_join_to_the_old_literals : Bool :=
+    if String.beq (join_path_segments ["init", "src", "prelude.mo"] "") "init/src/prelude.mo"
+    then if String.beq (join_path_segments ["init", "src", "lib.mo"] "") "init/src/lib.mo"
+        then String.beq (join_path_segments ["std", "src", "lib.mo"] "") "std/src/lib.mo"
+        else false
+    else false
+
+/// The installed-toolchain tier with no root at all: a miss. That is the
+/// ordinary state of a machine with no `~/.monad`, and the tier must not
+/// build candidate paths off a root that is not there.
+#[test]
+def test_toolchain_first_existing_without_a_root_is_a_miss : IO Bool := do {
+    let r <- toolchain_first_existing Option.none ["init", "src", "prelude.mo"];
+    match r {
+        Option.none => return true,
+        Option.some _ => return false
+    }
+}
+
+/// ...and with a root, it is the root's candidates that are probed: the
+/// segments joined onto it, first existing wins.
+///
+/// The probe file is written by this row rather than named from the corpus,
+/// because the spelling it is looked up under is root-relative and these
+/// rows run from more than one working directory -- `<cwd>/init/src/
+/// prelude.mo` would pass from the checkout root and fail from inside a
+/// mote. `/tmp` is absolute, and the harness already depends on it
+/// (`${TMPDIR:-/tmp}`).
+///
+/// Its NAME carries the pid, like every other file a test writes here: a
+/// fixed `/tmp/monad_toolchain_probe.mo` is one name shared by every
+/// concurrent `monad test` on the machine, so a sibling run's leftover file
+/// would satisfy this row's lookup even if its own write never happened --
+/// and the row would pass without having probed anything.
+#[test]
+def test_toolchain_first_existing_probes_the_root : IO Bool := do {
+    let name := "monad_toolchain_probe_" ++ I64.to_string process_id ++ ".mo";
+    IO.write_file (Path.path ("/tmp/" ++ name)) "// written by lang/src/module.mo's toolchain-root row\n";
+    let r <- toolchain_first_existing (Option.some "/tmp") [name];
+    match r {
+        Option.none => return false,
+        Option.some p => return (String.ends_with p name)
+    }
+}
+
+/// A mote the machine's toolchain root provides: a hit, and the shape it is
+/// keyed on is the mote DIRECTORY holding a `mote.toml` -- the same thing
+/// `is_mote_named` probes beside the working directory, said against the
+/// root instead. Pid-named and written by this row for the same reason the
+/// probe above is.
+#[test]
+def test_installed_mote_at_finds_a_provided_mote : IO Bool := do {
+    let dir := "/tmp/monad_installed_" ++ I64.to_string process_id;
+    exec_cmd "mkdir" ["-p", dir ++ "/probe"];
+    IO.write_file (Path.path (dir ++ "/probe/mote.toml")) "[mote]\nname = \"probe\"\nversion = \"0.1.0\"\n";
+    let found <- installed_mote_at (Option.some dir) "probe";
+    return found
+}
+
+/// No root, no provided motes: the ordinary state of a machine with no
+/// `~/.monad`, where the gate must fall back to the working-directory probe
+/// and its hint (rather than exempting every name as "installed").
+#[test]
+def test_installed_mote_at_without_a_root_is_a_miss : IO Bool := do {
+    let found <- installed_mote_at Option.none "init";
+    return (Bool.not found)
+}
+
+/// A root is not enough -- the manifest is what makes a directory a mote.
+/// A name with no directory under the root (and a directory with no
+/// manifest) must miss, or "provided" would mean "anything you can spell".
+#[test]
+def test_installed_mote_at_requires_the_manifest : IO Bool := do {
+    let dir := "/tmp/monad_installed_" ++ I64.to_string process_id;
+    exec_cmd "mkdir" ["-p", dir ++ "/bare"];
+    let absent <- installed_mote_at (Option.some dir) "not_a_mote";
+    let manifestless <- installed_mote_at (Option.some dir) "bare";
+    return (Bool.not absent && Bool.not manifestless)
 }
 
 /// `init`'s own manifest, in its real shape: `std` as a DEV-dependency

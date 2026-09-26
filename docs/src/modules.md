@@ -218,8 +218,16 @@ Three keys are accepted: `name`, `deps` and `libs` (the last mirroring a
 manifest's `[link] libs`). Anything else is an `unknown_mote_key_error` — an
 inline annotation never silently swallows a misspelled key.
 
-There is no search-path flag and no environment variable; those belong to the
-[bootstrap host](./bootstrap-host.md#packages-motes).
+There is still no search-path *flag*; that belongs to the
+[bootstrap host](./bootstrap-host.md#packages-motes). Resolution itself does
+have an install root, though, because a mote in its own repository has no
+checkout to read `init`/`std` out of: after the importing mote's own directory,
+its declared `[dependencies.X] path` entries and the working-directory
+conventions, the self-hosted resolver probes an installed toolchain root — the
+directory `$MONAD_ROOT` names, else `$MONAD_HOME/downloads/<tag>` for the tag in
+`$MONAD_HOME/active` (`$MONAD_HOME` defaulting to `$HOME/.monad`). `monadup`
+lays a nightly out in exactly that shape. See
+[Compiling and testing](./compiling.md) for the install walkthrough.
 
 ## Visibility
 

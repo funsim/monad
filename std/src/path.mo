@@ -29,8 +29,15 @@ def Path.of (s : String) : Result String Path :=
 def Path.to_string (p : Path) : String :=
     match p { Path.path s => s }
 
+/// Absolute in the only sense this corpus needs: a leading `/`.
+/// `Path.is_absolute` delegates here rather than repeating the test, so
+/// the `String`-level join below and the `Path`-level one above cannot
+/// disagree about what counts as absolute.
+def raw_path_is_absolute (s : String) : Bool :=
+    String.starts_with "/" s
+
 def Path.is_absolute (p : Path) : Bool :=
-    String.starts_with "/" (Path.to_string p)
+    raw_path_is_absolute (Path.to_string p)
 
 /// Low-level, unvalidated join -- the same empty-component/trailing-
 /// slash-handling logic `lang/module.mo`'s own `path_join` used to
@@ -39,24 +46,36 @@ def Path.is_absolute (p : Path) : Bool :=
 /// empty `a`/`b` behaving as a no-op, and forcing that through the
 /// validating constructor would change that existing, working
 /// behavior -- out of scope for this type.
+///
+/// An absolute `b` replaces `a` entirely (`os.path.join`-style
+/// semantics). This is THE fix for the bug the `Path` type was
+/// introduced to prevent -- the case that produced a mangled
+/// `/tmp//tmp/monad_v2.ll` when `cli/src/main.mo`'s own `link_ir`
+/// joined a hardcoded `/tmp` output directory with an already-absolute
+/// user-supplied output name via plain `++`. It used to live in
+/// `Path.join` alone, which left every DIRECT caller of this function
+/// with the bug: `Mote.dep_dir_entries_go` joins a manifest
+/// `[dependencies.X] path` onto the mote's own directory, and a bare
+/// `monad check` sets that directory to `"."`, so an absolute path dep
+/// came out as `".//home/.../init"` and the dependency silently failed
+/// to resolve. Fixing it here rather than at that one call site is
+/// deliberate -- a rule kept in one place is inherited by callers that
+/// do not exist yet, which is what `Path.join`'s old comment was
+/// asking for.
 def raw_path_join (a : String) (b : String) : String :=
     if String.beq a "" then b
     else if String.beq b "" then a
+    else if raw_path_is_absolute b then b
     else if String.ends_with a "/" then String.concat a b
     else String.concat (String.concat a "/") b
 
-/// THE fix for the bug this type was introduced to prevent: an
-/// absolute `b` replaces `a` entirely instead of naively concatenating
-/// (`os.path.join`-style semantics) -- exactly the case that produced
-/// a mangled `/tmp//tmp/monad_v2.ll` when `cli/src/main.mo`'s own
-/// `link_ir` joined a hardcoded `/tmp` output directory with an
-/// already-absolute user-supplied output name via plain `++`. Operates
-/// on already-validated `Path` values, so the non-empty invariant
-/// holds without re-validating (concatenating two non-empty strings
-/// can't be empty).
+/// Delegates to `raw_path_join`, which owns the absolute-`b` rule for
+/// both spellings. Operates on already-validated `Path` values, so the
+/// non-empty invariant holds without re-validating (an absolute `b` is
+/// returned as-is and is non-empty by validation; concatenating two
+/// non-empty strings can't be empty either).
 def Path.join (a : Path) (b : Path) : Path :=
-    if Path.is_absolute b then b
-    else Path.path (raw_path_join (Path.to_string a) (Path.to_string b))
+    Path.path (raw_path_join (Path.to_string a) (Path.to_string b))
 
 /// Append a literal suffix (extension, filename tail) -- no separator
 /// inserted. Targets `output_dir ++ "/" ++ name ++ ".ll"`-style code.

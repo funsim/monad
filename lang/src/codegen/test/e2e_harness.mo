@@ -20,7 +20,7 @@
 use io {IO}
 open IO {println}
 use std::process {exec_cmd, process_id}
-use lib::module {LoadedModules, load_file_modules}
+use lib::module {LoadedModules, load_file_modules, resolve_runtime_src}
 use llvm::ir {emit_module}
 use llvm::link {compile_ir_to_obj, compile_runtime_obj, link_objects}
 use runtime {}
@@ -60,7 +60,8 @@ pub def compile_source_run_expect (source : String) (basename : String) (expecte
                         println (basename ++ ": llc failed");
                         return false
                     } else do {
-                        let rt_result <- compile_runtime_obj Runtime.c_path [] runtime_obj;
+                        let runtime_src <- resolve_runtime_src (extract_directory src_path);
+                        let rt_result <- compile_runtime_obj runtime_src [] runtime_obj;
                         if not (rt_result == 0) then do {
                             println (basename ++ ": compiling runtime failed");
                             return false

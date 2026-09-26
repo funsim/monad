@@ -33,6 +33,43 @@ def test_path_is_absolute : Bool :=
         },
     }
 
+// `raw_path_join` at the `String` level. The absolute-rhs rule used to
+// live only in `Path.join`, so every direct caller of the raw join kept
+// the bug the `Path` type exists to prevent -- most visibly
+// `Mote.dep_dir_entries_go`, which joins a manifest `[dependencies.X]
+// path` onto the mote's own directory. With a bare invocation that
+// directory is ".", so an absolute path dep came out as "./<abs>" and
+// the dependency silently did not resolve.
+
+/// The exact shape the bare-invocation bug produced.
+#[test]
+def test_raw_path_join_absolute_rhs_discards_lhs : Bool :=
+    String.beq (raw_path_join "." "/home/x/init") "/home/x/init"
+
+#[test]
+def test_raw_path_join_absolute_rhs_with_empty_lhs : Bool :=
+    String.beq (raw_path_join "" "/home/x/init") "/home/x/init"
+
+/// A relative rhs must still concatenate -- the fix must not make every
+/// join absolute-ish.
+#[test]
+def test_raw_path_join_relative_rhs_concatenates : Bool :=
+    String.beq (raw_path_join "." "init") "./init"
+
+#[test]
+def test_raw_path_join_relative_rhs_under_absolute_lhs : Bool :=
+    String.beq (raw_path_join "/tmp" "monad_v2") "/tmp/monad_v2"
+
+#[test]
+def test_raw_path_join_empty_components_are_noop : Bool :=
+    String.beq (raw_path_join "" "init") "init"
+    && String.beq (raw_path_join "/tmp" "") "/tmp"
+    && String.beq (raw_path_join "" "") ""
+
+#[test]
+def test_raw_path_join_trailing_slash_lhs : Bool :=
+    String.beq (raw_path_join "a/" "b") "a/b"
+
 #[test]
 def test_path_of_rejects_empty : Bool :=
     match Path.of "" { err _ => true, ok _ => false }

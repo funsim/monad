@@ -481,6 +481,18 @@ echo "self-hosted check: 0 failures over ${#check_targets[@]} file(s)"
 # asserts below.
 echo "rust runner: no files left -- the self-hosted runner covers the corpus alone"
 
+# The external-mote end-to-end check last, because it is the one thing here
+# that does not run over the corpus: it builds a mote in a temp directory
+# OUTSIDE the checkout and runs this same binary from inside it, in the three
+# configurations an external repository can be in. Nothing else in the repo
+# ever ran the CLI from a foreign working directory, which is how a whole
+# class of resolution gaps survived a green suite; see the script's header.
+#
+# Placed before the status is re-raised so a failure here fails the sweep,
+# and given the freshly built `$out/monad` rather than a path of its own --
+# a second binary would be a second thing that can be stale.
+"$(dirname -- "$0")/check-external-mote.sh" "$out/monad"
+
 # Re-raise the captured self-hosted status: without this the `|| self_hosted_rc=$?`
 # above would turn a red run into an exit 0, which is worse than the abort it
 # replaced. A bad check phase has already exited 1 by now.

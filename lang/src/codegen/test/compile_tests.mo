@@ -6,6 +6,7 @@ use llvm::ir {emit_module, mk}
 use llvm::link {compile_ir_to_obj, compile_runtime_obj, link_objects}
 use runtime {}
 use lib::codegen::emit {compile_db_decls_ir, compile_db_module, mk}
+use lib::module {resolve_runtime_src}
 use lib::scope {add_constraint_dict_params_decls, collect_classes, promote_instance_defs, resolve_class_calls_decls, validate_no_unresolved_class_calls}
 
 open Term {lit}
@@ -51,7 +52,14 @@ def test_compile_42 : IO Bool := do {
         return false
     } else do {
 
-        let rt_result <- compile_runtime_obj Runtime.c_path [] runtime_obj;
+        // The C runtime comes from the shared resolver, like every other
+        // consumer: `Runtime.c_path` alone is checkout-root-relative, so it
+        // named nothing when the working directory was not the root. These
+        // harnesses build their program in memory rather than writing a
+        // source file, so the working directory is the only anchor they
+        // have -- which is what the resolver's workspace tier already uses.
+        let runtime_src <- resolve_runtime_src "";
+        let rt_result <- compile_runtime_obj runtime_src [] runtime_obj;
         if not (rt_result == 0) then do {
             println <| "compiling runtime failed";
             return false
@@ -102,7 +110,14 @@ def compile_link_run_expect (defs : List Def) (basename : String) (expected : I6
         println <| basename ++ ": llc failed";
         return false
     } else do {
-        let rt_result <- compile_runtime_obj Runtime.c_path [] runtime_obj;
+        // The C runtime comes from the shared resolver, like every other
+        // consumer: `Runtime.c_path` alone is checkout-root-relative, so it
+        // named nothing when the working directory was not the root. These
+        // harnesses build their program in memory rather than writing a
+        // source file, so the working directory is the only anchor they
+        // have -- which is what the resolver's workspace tier already uses.
+        let runtime_src <- resolve_runtime_src "";
+        let rt_result <- compile_runtime_obj runtime_src [] runtime_obj;
         if not (rt_result == 0) then do {
             println <| basename ++ ": compiling runtime failed";
             return false
@@ -365,7 +380,14 @@ def compile_decls_link_run_expect (decl_list : List Decl) (basename : String) (e
         println <| basename ++ ": llc failed";
         return false
     } else do {
-        let rt_result <- compile_runtime_obj Runtime.c_path [] runtime_obj;
+        // The C runtime comes from the shared resolver, like every other
+        // consumer: `Runtime.c_path` alone is checkout-root-relative, so it
+        // named nothing when the working directory was not the root. These
+        // harnesses build their program in memory rather than writing a
+        // source file, so the working directory is the only anchor they
+        // have -- which is what the resolver's workspace tier already uses.
+        let runtime_src <- resolve_runtime_src "";
+        let rt_result <- compile_runtime_obj runtime_src [] runtime_obj;
         if not (rt_result == 0) then do {
             println <| basename ++ ": compiling runtime failed";
             return false

@@ -13,7 +13,7 @@
 
 use lib::toml {}
 use lib::types {AttrArg, Attribute, show_identifier}
-use std::io {file_exists, read_file}
+use std::io {file_exists, get_env, is_dir, read_file}
 use std::map {}
 use io {IO}
 
@@ -348,6 +348,16 @@ def Mote.manifest_of_table (dir : String) (root : BTreeMap String Toml.Value) : 
 /// `path_join` and `cli/src/main.mo`'s walk already do -- an explicit
 /// `use std::path {...}` for it is what makes the checker warn that a
 /// package-private name is crossing a mote boundary.)
+///
+/// That empty-component rule is not the only one this join needs: an
+/// ABSOLUTE `path` must replace `mote_dir` outright rather than being
+/// appended to it, which is what an external mote declaring
+/// `path = "/home/me/monad/std"` needs, and what a bare `monad check`
+/// (where `mote_dir` is `"."`, not `""`) got wrong until
+/// `raw_path_join` grew the rule `Path.join` already had -- `".//home/me/…"`
+/// resolved to nothing and the dependency silently went missing.
+/// `Mote.bin_target_path` below joins `[bin] path` the same way and
+/// inherits the same fix.
 def Mote.table_dep_dirs (mote_dir : String) (found : Option Toml.Value) : List (Pair String String) :=
     match found {
         Option.none => List.empty,
@@ -457,6 +467,192 @@ def Mote.table_keys (found : Option Toml.Value) : List String :=
             Toml.Value.table sub => List.map (fn (p : Pair String Toml.Value) => p.first) (BTreeMap.to_list sub),
             _ => List.empty
         }
+    }
+
+// ─── The installed toolchain root ────────────────────────────────────
+//
+// A mote in its own repository has no compiler checkout to resolve
+// `init`/`std`/`runtime` from, so resolution needs one more anchor: the
+// directory of an INSTALLED toolchain -- what `scripts/monadup` unpacks
+// into `~/.monad/downloads/<tag>/` and marks active with `~/.monad/
+// active`. This section discovers that directory.
+//
+// What consumes it is `module.mo` (module resolution), `lang/src/
+// codegen/test/*` and `cli/src/main.mo` (the C runtime), so nothing here
+// knows about modules or files beyond joining segments: `module.mo`
+// imports THIS file, so the dependency cannot run the other way.
+//
+// Every function that touches the environment or the filesystem has its
+// DECISION factored out into a pure one beside it. That is not style:
+// there is no `set_env` native in this corpus and the test runner is one
+// process, so a branch that reads an environment variable can only be
+// exercised from outside it. The pure half is what a row can assert.
+
+/// An environment variable's value, or the contents of a file that
+/// carries one, reduced to `none` when there is nothing usable in it.
+///
+/// Two callers, one rule, and both halves of it are load-bearing.
+/// `monadup` writes the active version with `echo "$tag" > "$active_file"`,
+/// so those CONTENTS carry a trailing newline which must not survive into
+/// a path: `downloads/nightly-1\n` is a directory that never exists, and
+/// the failure mode of keeping it is a silent "no toolchain installed".
+/// As an environment reader the same rule covers the other shape --
+/// `MONAD_HOME=` in a shell that inherited the variable unset is the same
+/// situation as not setting it, where a home named `""` would build every
+/// candidate path one level off the working directory.
+def non_empty_env (v : Option String) : Option String :=
+    match v {
+        Option.none => Option.none,
+        Option.some s =>
+            let t := String.trim s in
+            if String.is_empty t then Option.none else Option.some t
+    }
+
+/// `<home>/downloads/<tag>` -- the version directory `monadup` installs a
+/// tag into, and the only shape of a toolchain home this module assumes.
+def Mote.version_dir (home : String) (tag : String) : String :=
+    raw_path_join (raw_path_join home "downloads") tag
+
+/// `<home>/.monad` -- the install root `scripts/monadup` uses when
+/// `MONAD_HOME` says nothing (`${MONAD_HOME:-$HOME/.monad}`), and therefore
+/// what an unset variable has to mean here too. Reading `$HOME` as the home
+/// itself would look one level too high for `active` and one too high for
+/// `downloads/`, i.e. find nothing on exactly the machines that installed a
+/// nightly the ordinary way.
+def Mote.monad_default_home (home : String) : String :=
+    raw_path_join home ".monad"
+
+/// Which home an installed toolchain lives under: `$MONAD_HOME` when it
+/// is set -- monadup's own variable, and the one that makes the layout
+/// testable against a fixture -- else `$HOME/.monad`. `none` when neither
+/// is set: a process with no home has nowhere to look, and that is not an
+/// error.
+def Mote.toolchain_home_of (monad_home : Option String) (home : Option String) : Option String :=
+    match non_empty_env monad_home {
+        Option.some h => Option.some h,
+        Option.none =>
+            match non_empty_env home {
+                Option.none => Option.none,
+                Option.some h => Option.some (Mote.monad_default_home h)
+            }
+    }
+
+/// The version directory an `active` file's contents name, or `none` when
+/// they name no tag. Split out from the decision below so that the IO side
+/// can probe exactly this ONE directory before committing to it.
+def Mote.active_version_dir (home : String) (active : Option String) : Option String :=
+    match non_empty_env active {
+        Option.none => Option.none,
+        Option.some tag => Option.some (Mote.version_dir home tag)
+    }
+
+/// The toolchain root under `home`, given the `active` file's raw contents
+/// and whether the version directory they name exists.
+///
+/// Pure by construction -- both reads are arguments -- which is the whole
+/// reason the layout is assertable from a unit row (see this section's
+/// header on the missing `set_env` native).
+///
+/// `version_dir_exists` is worth checking: an `active` file naming a
+/// version that has since been deleted (a hand `rm -rf`, `monadup clean`)
+/// must resolve to NO toolchain rather than to a directory that is not
+/// there, because a wrong root is worse than no root -- it produces
+/// candidate paths that look plausible in a resolution error and open
+/// nothing.
+def Mote.toolchain_root_in_home (home : String) (active : Option String) (version_dir_exists : Bool) : Option String :=
+    match Mote.active_version_dir home active {
+        Option.none => Option.none,
+        Option.some dir =>
+            if version_dir_exists then Option.some dir else Option.none
+    }
+
+/// A file's contents, or `none` when it is not there at all.
+///
+/// `IO.read_file` cannot answer this (`std/src/io.mo` carries a TODO to
+/// return an `Option`; today the native fails the whole program), and "no
+/// `~/.monad/active`" is the ordinary state of every development checkout,
+/// so it must not be a failure. Existence first is the same two-step
+/// `Mote.discover` already does.
+def read_file_or_none (path : String) : IO (Option String) := do {
+    let exists <- IO.file_exists (Path.path path);
+    if exists
+    then do { let text <- IO.read_file (Path.path path); return (Option.some text) }
+    else return Option.none
+}
+
+/// `IO.is_dir` of a directory that may not have been named at all --
+/// `false` when nothing named one, so a caller probes unconditionally.
+/// `Path.path ""` would answer `false` too (`is_dir` on an empty path),
+/// but only by accident of the native, which is not something to rely on.
+def path_option_is_dir (p : Option String) : IO Bool := do {
+    match p {
+        Option.none => return false,
+        Option.some dir => IO.is_dir (Path.path dir)
+    }
+}
+
+/// Where an installed toolchain's mote sources live, if there is one.
+///
+/// `$MONAD_ROOT` first, honoured VERBATIM and deliberately neither
+/// existence- nor shape-checked: an explicit variable is an instruction,
+/// and a user who points it somewhere useless should get an ordinary
+/// "unknown module" listing the candidate paths rather than a silent
+/// fallback to a `~/.monad` they may not even have. It is also the one
+/// root a test can install with nothing but a shell variable.
+///
+/// Otherwise monadup's install: `$MONAD_HOME` (default `$HOME/.monad`),
+/// the tag its `active` file names, and `<home>/downloads/<tag>` -- which
+/// IS existence-checked, because that one is a guess rather than an
+/// instruction.
+///
+/// `none`, never an error: a development checkout has no `~/.monad`, and
+/// resolution reads "no root" as "no candidates from this tier".
+def Mote.toolchain_root : IO (Option String) := do {
+    let root <- IO.get_env "MONAD_ROOT";
+    match non_empty_env root {
+        Option.some r => return (Option.some r),
+        Option.none => Mote.toolchain_root_from_home
+    }
+}
+
+/// The monadup half of `Mote.toolchain_root`, split out so that the
+/// `$MONAD_ROOT` branch above reads as the one-line precedence rule it is.
+def Mote.toolchain_root_from_home : IO (Option String) := do {
+    let monad_home <- IO.get_env "MONAD_HOME";
+    let home <- IO.get_env "HOME";
+    match Mote.toolchain_home_of monad_home home {
+        Option.none => return Option.none,
+        Option.some h => do {
+            let contents <- read_file_or_none (raw_path_join h "active");
+            let dir_exists <- path_option_is_dir (Mote.active_version_dir h contents);
+            return (Mote.toolchain_root_in_home h contents dir_exists)
+        }
+    }
+}
+
+/// The paths a toolchain root offers for one file, given as segments:
+/// `Mote.toolchain_candidates root ["std", "src", "map.mo"]` is
+/// `["<root>/std/src/map.mo"]`, and the same call with
+/// `["runtime", "src", "runtime.c"]` is the C runtime.
+///
+/// A LIST of one rather than a bare `String`, because both callers splice
+/// it into a candidate cascade they already have (`resolve_module_file`'s
+/// miss tier, `resolve_runtime_src`'s list), and because segments keep the
+/// `prelude` alias at the CALL SITE: `prelude` lives in `init`, so its
+/// segments are `["init", "src", "prelude.mo"]`, and that special case
+/// already belongs to `module.mo`'s `ambient_file`.
+///
+/// `raw_path_join` fold, not `++`, for the same reason
+/// `MoteManifest.src_root` uses it: a relative root (`.`, which is what a
+/// bare `monad check` produces) must still yield a path resolution can
+/// open, and an absolute root must not acquire a prefix.
+def Mote.toolchain_candidates (root : String) (segs : List String) : List String :=
+    [join_segments root segs]
+
+def join_segments (base : String) (segs : List String) : String :=
+    match segs {
+        List.empty => base,
+        List.cons s rest => join_segments (raw_path_join base s) rest
     }
 
 // ─── The inline `#![mote { ... }]` annotation ────────────────────────
@@ -1036,3 +1232,157 @@ def test_mote_attr_unknown_key_error_names_the_key : Bool :=
         List.empty => false,
         List.cons e _ => String.beq e (unknown_mote_key_error "bin")
     }
+
+// ─── The installed toolchain root (tests) ────────────────────────────
+//
+// The IO half (`Mote.toolchain_root`) reads the process environment and
+// cannot be driven from a row: there is no `set_env` native and the test
+// runner is one process. Its DECISION is pure and is what these rows
+// cover; the discovery half is covered from outside, by
+// `scripts/check-external-mote.sh`'s `MONAD_ROOT=<tmp>` configuration and
+// `scripts/monadup`'s fixture install.
+
+/// The candidate list has exactly one element, and it is this -- asserts
+/// the count as well as the path, since a second, wrong candidate is
+/// exactly the kind of thing a "first existing wins" cascade must not
+/// grow by accident.
+def candidate_is (root : String) (segs : List String) (expected : String) : Bool :=
+    match Mote.toolchain_candidates root segs {
+        List.empty => false,
+        List.cons p rest => match rest {
+            List.empty => String.beq p expected,
+            List.cons _ _ => false
+        }
+    }
+
+/// The one shape of a `~/.monad` this module assumes, spelled out.
+#[test]
+def test_version_dir_is_the_monadup_layout : Bool :=
+    String.beq (Mote.version_dir "/home/u/.monad" "nightly-2026-09-21")
+              "/home/u/.monad/downloads/nightly-2026-09-21"
+
+/// `monadup` writes the active tag with `echo`, so the file's contents end
+/// in a newline. Keeping it names a directory that never exists, and the
+/// failure mode is a silent "no toolchain" -- which is the kind of bug
+/// this row exists to fail loudly instead.
+#[test]
+def test_active_tag_survives_the_trailing_newline : Bool :=
+    match non_empty_env (Option.some "nightly-1\n") {
+        Option.none => false,
+        Option.some tag => String.beq tag "nightly-1"
+    }
+
+#[test]
+def test_active_tag_rejects_whitespace_only : Bool :=
+    match non_empty_env (Option.some "  \n\t") { Option.none => true, Option.some _ => false }
+
+#[test]
+def test_active_tag_of_no_file_is_none : Bool :=
+    match non_empty_env Option.none { Option.none => true, Option.some _ => false }
+
+/// `$MONAD_HOME` is monadup's own variable, so it wins over `$HOME`.
+#[test]
+def test_toolchain_home_prefers_monad_home : Bool :=
+    match Mote.toolchain_home_of (Option.some "/mh") (Option.some "/home/u") {
+        Option.none => false,
+        Option.some h => String.beq h "/mh"
+    }
+
+/// The fallback is `$HOME/.monad`, NOT `$HOME`: that is monadup's own
+/// default (`${MONAD_HOME:-$HOME/.monad}`), and it is the difference between
+/// finding an ordinarily-installed nightly and looking one directory above
+/// both `active` and `downloads/`. Getting this wrong fails silently -- an
+/// installed toolchain simply never resolves.
+#[test]
+def test_toolchain_home_falls_back_to_dot_monad_under_home : Bool :=
+    match Mote.toolchain_home_of Option.none (Option.some "/home/u") {
+        Option.none => false,
+        Option.some h => String.beq h "/home/u/.monad"
+    }
+
+/// `$HOME` with a trailing separator joins to the same place -- the join
+/// owns the separator rule, so this row pins that the fallback composes it
+/// rather than pasting `/`.monad` onto whatever it was handed.
+#[test]
+def test_toolchain_home_of_a_home_with_a_trailing_slash : Bool :=
+    match Mote.toolchain_home_of Option.none (Option.some "/home/u/") {
+        Option.none => false,
+        Option.some h => String.beq h "/home/u/.monad"
+    }
+
+#[test]
+def test_toolchain_home_of_neither_is_none : Bool :=
+    match Mote.toolchain_home_of Option.none Option.none { Option.none => true, Option.some _ => false }
+
+/// `MONAD_HOME=` -- set-but-empty is unset, or a home named `""` would put
+/// every candidate path one level off.
+#[test]
+def test_toolchain_home_ignores_an_empty_monad_home : Bool :=
+    match Mote.toolchain_home_of (Option.some "") (Option.some "/home/u") {
+        Option.none => false,
+        Option.some h => String.beq h "/home/u/.monad"
+    }
+
+/// The acceptance shape: `~/.monad/active` says `nightly-1` and
+/// `~/.monad/downloads/nightly-1/` is there, so that directory is the root.
+#[test]
+def test_toolchain_root_of_an_active_version : Bool :=
+    match Mote.toolchain_root_in_home "/home/u/.monad" (Option.some "nightly-1\n") true {
+        Option.none => false,
+        Option.some root => String.beq root "/home/u/.monad/downloads/nightly-1"
+    }
+
+/// A stale `active` naming a deleted download resolves to NOTHING rather
+/// than to a path that is not there -- a wrong root is worse than no root,
+/// because it makes a resolution error look plausible.
+#[test]
+def test_toolchain_root_requires_the_version_dir : Bool :=
+    match Mote.toolchain_root_in_home "/home/u/.monad" (Option.some "nightly-1") false {
+        Option.none => true,
+        Option.some _ => false
+    }
+
+#[test]
+def test_toolchain_root_without_an_active_file : Bool :=
+    match Mote.toolchain_root_in_home "/home/u/.monad" Option.none true {
+        Option.none => true,
+        Option.some _ => false
+    }
+
+/// An `active` file that exists but names nothing is the same state as no
+/// file at all.
+#[test]
+def test_toolchain_root_with_a_blank_active_file : Bool :=
+    match Mote.toolchain_root_in_home "/home/u/.monad" (Option.some "\n") true {
+        Option.none => true,
+        Option.some _ => false
+    }
+
+/// `use std::map` from an installed toolchain -- the segment list
+/// `resolve_module_file` actually builds.
+#[test]
+def test_toolchain_candidates_for_a_module : Bool :=
+    candidate_is "/tc" ["std", "src", "map.mo"] "/tc/std/src/map.mo"
+
+/// `prelude` is the one ambient module whose MOTE is not its name: it
+/// lives in `init`, which the segments have to say.
+#[test]
+def test_toolchain_candidates_for_the_prelude_alias : Bool :=
+    candidate_is "/tc" ["init", "src", "prelude.mo"] "/tc/init/src/prelude.mo"
+
+#[test]
+def test_toolchain_candidates_for_the_c_runtime : Bool :=
+    candidate_is "/tc" ["runtime", "src", "runtime.c"] "/tc/runtime/src/runtime.c"
+
+/// A bare invocation resolves the mote's directory as `"."`, and the
+/// candidates built from it must still be openable paths -- which is
+/// `raw_path_join`'s job, not `++`'s.
+#[test]
+def test_toolchain_candidates_from_a_relative_root : Bool :=
+    candidate_is "." ["std", "src", "map.mo"] "./std/src/map.mo"
+
+/// No segments is the fold's base case: the root itself, no trailing
+/// separator. Keeps the caller from special-casing an empty head.
+#[test]
+def test_toolchain_candidates_with_no_segments : Bool :=
+    candidate_is "/tc" [] "/tc"

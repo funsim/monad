@@ -10,8 +10,13 @@ pub use lib::natives {runtime_native_functions}
 
 /// Path to the C runtime source, relative to the repository root.
 ///
-/// Repo-root-relative because every caller runs from there (the test
-/// harnesses, `monad compile`, the devenv bootstrap task). Making this
-/// absolute or store-resolved is part of the build-system work, not this
-/// mote's job -- see plans/library-ideas/monad-build.md.
+/// Repo-root-relative, and this is now the LAST tier of
+/// `lang.module.mo`'s `resolve_runtime_src`, not the only spelling callers
+/// have: a mote that declares `[dependencies.runtime] path` answers first,
+/// then an installed toolchain root, then the workspace root above the
+/// working directory, and only then this literal -- which is the right
+/// answer exactly when the working directory IS the repository root. Kept
+/// here, in the mote that owns the C file, rather than repeated at each
+/// call site (it used to be copied into four of them, and they all had to
+/// be found by hand when the file moved).
 pub def Runtime.c_path : String := "runtime/src/runtime.c"

@@ -1,11 +1,12 @@
 use io {IO}
 open IO {println, write_file}
-use std::process {exec_cmd}
+use std::process {exec_cmd, process_id}
 use lib::types {Def, i64, id, lit, mk, num}
 use llvm::ir {emit_module, mk}
 use llvm::link {compile_ir_to_obj, compile_runtime_obj, link_objects}
 use runtime {}
 use lib::codegen::emit {compile_db_decls_ir, mk}
+use lib::module {resolve_runtime_src}
 
 open Term {lit}
 open Literal {num}
@@ -29,8 +30,16 @@ def build_main42 : List Def :=
 
 /// Full e2e: compile 42 to LLVM IR, write file, run llc, link, execute.
 def main : IO I64 {
-    let output_dir := "/tmp";
+    // Per-process output directory, like every other codegen harness
+    // (`lang/src/codegen/test/e2e_harness.mo`, `compile_tests.mo`): a bare
+    // `/tmp` would put `monad_test_42`, its `.ll`/`.o` and the shared
+    // `monad_runtime.o` at fixed absolute paths, so two `monad test` runs
+    // on one machine -- or this file alongside any of them -- would link
+    // and execute each other's objects.
+    let output_dir := "/tmp/monad_e2e_" ++ I64.to_string process_id;
     let output_name := "monad_test_42";
+
+    exec_cmd "mkdir" ["-p", output_dir];
 
     let ir_path := String.concat output_dir (String.concat "/" (String.concat output_name ".ll"));
     let obj_path := String.concat output_dir (String.concat "/" (String.concat output_name ".o"));
@@ -46,7 +55,14 @@ def main : IO I64 {
     IO.write_file (Path.path ir_path) ir_text;
 
     let _llc <- compile_ir_to_obj ir_path obj_path;
-    let _rt <- compile_runtime_obj Runtime.c_path [] runtime_obj;
+    // The C runtime comes from the shared resolver, like every other
+    // consumer now: `Runtime.c_path` on its own is checkout-root-relative,
+    // so it names nothing when the working directory is not that root. This
+    // harness builds its program in memory rather than writing a source
+    // file, so the working directory is the only anchor it has -- which is
+    // what the resolver's workspace tier already uses.
+    let runtime_src <- resolve_runtime_src "";
+    let _rt <- compile_runtime_obj runtime_src [] runtime_obj;
     let _link <- link_objects [obj_path, runtime_obj] output_path [];
 
     let bin_args := List.empty;
