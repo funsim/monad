@@ -74,8 +74,17 @@ jobs:
             (`cli/src/main.mo`) compiling itself, run through the Rust
             `monad-rs` reference interpreter. Built on a self-hosted
             Linux x86_64 runner with Nix devenv.
+
+            `monad-src-x86_64-linux.tar.gz` holds the `init`, `std` and
+            `runtime` mote sources. `monadup` unpacks it beside the binary,
+            and the compiler then resolves `use std::…` and the C runtime
+            from that directory as a toolchain root — which is what lets a
+            mote in its own repository build without a compiler checkout.
+            (Older tags have no such asset: `monadup` installs the binary
+            alone and says what is missing.)
           prerelease: true
           make_latest: false
           files: |
             dist/monad-nightly-x86_64-linux
+            dist/monad-src-x86_64-linux.tar.gz
             dist/commit.txt

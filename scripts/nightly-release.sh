@@ -44,6 +44,14 @@ grep -qvE '^$|^unknown$' "$root/dist/commit.txt"
 # artifact being published.
 "$bin" check cli/src/main.mo
 
+# The second artifact: `init`/`std`/`runtime`, which is what lets the binary
+# above compile anything OUTSIDE a compiler checkout. `monadup` unpacks it
+# into the same version directory as the binary, and the compiler then finds
+# it as a toolchain root (`Mote.toolchain_root`, `lang/src/mote.mo`). Staged
+# by its own script because that script is also what the staging test drives
+# against a temp directory -- see scripts/check-monadup.sh.
+"$root/scripts/stage-mote-sources.sh" "$root/dist"
+
 # The workflow's `tag`/`date` step outputs, for the release step. Written
 # here rather than in a second `nix develop` step of their own: they are this
 # script's own output, so a second entry would buy nothing and add a second

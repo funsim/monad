@@ -14,6 +14,22 @@
 #
 # Environment:
 #   MONAD_HOME  Installation root (default: $HOME/.monad)
+#   MONADUP_API_URL  Releases API base URL, for testing the install path
+#                    against a local fixture (default: GitHub's)
+#
+# A version directory holds the binary AND the mote sources it needs:
+#
+#   ~/.monad/downloads/<tag>/
+#     monad-nightly-x86_64-linux   the compiler
+#     commit.txt                    what it was built from
+#     init/  std/  runtime/         the mote sources
+#     mote.toml                     generated: those three as a workspace
+#
+# The last three are what make the directory a TOOLCHAIN ROOT: a mote in its
+# own repository can then `monad check`/`test`/`compile` with no compiler
+# checkout and no path dependencies, because the compiler finds the stdlib
+# and the C runtime there (`Mote.toolchain_root` reads $MONAD_ROOT, then
+# $MONAD_HOME/active, then $HOME/.monad/active).
 #
 # Both `monad` (the nightly binary) and `monadup` (this script) live in
 # ~/.monad/bin, so adding that one directory to PATH gives access to both.
@@ -22,7 +38,16 @@ set -euo pipefail
 
 REPO="monad-lang/monad"
 ASSET_NAME="monad-nightly-x86_64-linux"
-API_URL="https://api.github.com/repos/${REPO}/releases"
+# The mote sources (`init`, `std`, `runtime`) that ship beside the binary.
+# Both URLs below are derived from the release the binary came from, so this
+# is the only other name the API lookup needs to know: asset URLs are
+# `<release base>/<asset name>` for every asset of a release.
+SRC_ASSET_NAME="monad-src-x86_64-linux.tar.gz"
+# Overridable so the fetch-and-unpack path can be driven against a local
+# fixture (`file://` URLs work, `curl -fsSL` reads them) instead of GitHub --
+# which is the only way this path gets tested at all. See
+# scripts/check-monadup.sh.
+API_URL="${MONADUP_API_URL:-https://api.github.com/repos/${REPO}/releases}"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main/scripts/monadup"
 
 # ---------------------------------------------------------------------------
@@ -126,6 +151,12 @@ do_install() {
   local target_dir="${dl_dir}/${LATEST_TAG}"
   local binary="${target_dir}/${ASSET_NAME}"
 
+  # Checked before anything is written: unpacking the sources is part of the
+  # install now, and discovering `tar` is missing AFTER the binary has landed
+  # would leave a half-installed version directory.
+  command -v tar >/dev/null 2>&1 \
+    || err "tar is not available (needed to unpack ${SRC_ASSET_NAME}); install tar, or fetch the binary by hand from the release"
+
   if [[ -x "$binary" ]]; then
     echo "monadup: ${LATEST_TAG} already installed"
   else
@@ -139,6 +170,11 @@ do_install() {
     echo "monadup: installed ${LATEST_TAG}"
   fi
 
+  # Kept OUTSIDE the branch above on purpose: a version installed by an
+  # earlier monadup has the binary and no sources, and re-running `install`
+  # is the obvious way to repair that.
+  do_install_sources "$target_dir"
+
   # If no active nightly yet, set this as active.
   local active_file="${home_dir}/active"
   if [[ ! -f "$active_file" ]]; then
@@ -150,6 +186,43 @@ do_install() {
     "$binary" version 2>/dev/null \
       || echo "monadup: note: binary requires Nix to run (known limitation)"
   fi
+}
+
+# Unpack the mote sources beside the binary, so the version directory is a
+# toolchain root the compiler can find on its own (`Mote.toolchain_root`,
+# `lang/src/mote.mo`): `<version dir>/init`, `/std`, `/runtime` plus a
+# generated root `mote.toml`.
+#
+# The asset is OPTIONAL and a missing one is NOT an error. Every nightly
+# published before it existed has the binary only, and a release is a bad
+# place to make a hard requirement of something a consumer can still work
+# around -- so say what is missing and what it costs, in the terms of the
+# thing the user was trying to do.
+do_install_sources() {
+  local target_dir="$1"
+
+  # Already unpacked? `init` is the marker: every bundle has it, and nothing
+  # else in a version directory is called that.
+  if [[ -d "${target_dir}/init" ]]; then
+    return 0
+  fi
+
+  local url="${LATEST_URL%/"${ASSET_NAME}"}/${SRC_ASSET_NAME}"
+  local tarball="${target_dir}/${SRC_ASSET_NAME}"
+
+  if ! curl -fsSL -o "$tarball" "$url" 2>/dev/null; then
+    rm -f "$tarball"
+    echo "monadup: note: ${LATEST_TAG} ships no ${SRC_ASSET_NAME}"
+    echo "monadup:       the binary is installed and usable inside a compiler checkout,"
+    echo "monadup:       but 'monad compile'/'run'/'test' elsewhere will not find init,"
+    echo "monadup:       std or the C runtime: declare [dependencies.runtime] and run from"
+    echo "monadup:       a checkout, or install a tag that ships the sources."
+    return 0
+  fi
+
+  tar -xzf "$tarball" -C "$target_dir" || err "failed to unpack ${SRC_ASSET_NAME}"
+  rm -f "$tarball"
+  echo "monadup: installed mote sources (init, std, runtime)"
 }
 
 cmd_install() {
@@ -333,7 +406,19 @@ Commands:
   upgrade                       Re-download the latest monadup and replace itself
 
 Environment:
-  MONAD_HOME  Installation root (default: \$HOME/.monad)
+  MONAD_HOME       Installation root (default: \$HOME/.monad)
+  MONADUP_API_URL  Releases API base URL (default: GitHub's; set it to test
+                   the install path against a local fixture)
+  MONAD_ROOT       Read by the COMPILER, not here: a directory holding
+                   init/, std/ and runtime/ to resolve the stdlib and the C
+                   runtime from. \$MONAD_HOME/downloads/<active tag> is one
+                   already, once the sources are installed.
+
+Each installed tag lives in \$MONAD_HOME/downloads/<tag>/ as the binary, the
+commit it was built from, and the init/std/runtime mote sources. The sources
+make that directory a toolchain root, so a mote in its own repository can
+build without a compiler checkout. Nightlies published before the sources
+asset existed install the binary alone, and say so.
 EOF
 }
 
