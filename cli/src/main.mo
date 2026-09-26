@@ -608,10 +608,15 @@ def run_check_loop (cache : ModuleInfoCache) (files : List String) (checked : I6
 ///                       `monad check` inside `std/` checks `std`.
 ///
 /// `Option.none` means "nothing was asked for": no explicit paths, and
-/// no `mote.toml` above. Both callers answer that the same way `check`
-/// and `test` did before any of this existed -- `print_help`, exit 0 --
-/// because a bare subcommand in an arbitrary directory has nothing to
-/// do and should say so rather than sweep the filesystem.
+/// no `mote.toml` above. Both callers answer that with
+/// `no_target_diagnostic` and exit 1 -- a bare subcommand in an
+/// arbitrary directory has nothing to do, so it should say so rather
+/// than sweep the filesystem, and it should NOT exit 0 while saying it.
+/// Printing the whole usage screen and returning 0 (what this used to
+/// do) is the shape a first-time user meets in an empty directory:
+/// `mkdir game && cd game && monad check` reads as a pass on a mote that
+/// does not exist yet, which is the one thing a check command must not
+/// do.
 ///
 /// `Option.some List.empty` is the other empty case and is deliberately
 /// NOT folded into `Option.none`: `--workspace` was given, and no
@@ -676,6 +681,29 @@ def resolve_target_paths (verb : String) (subcommand : String) (files : List Str
     }
 }
 
+/// The message a bare subcommand prints when nothing was named and no
+/// manifest was found above the working directory, paired with the exit
+/// code that makes it a failure. A sibling of `resolve_target_paths`'s
+/// `--workspace` arm, which prints its own reason and lets its caller
+/// `return 1` for the same reason: an invocation that covered zero files
+/// is a broken invocation, not a pass.
+///
+/// It replaces `print_help` in the `Option.none` arms rather than
+/// sitting beside it. The usage screen answers "how do I use this
+/// command", which is not the question asked here -- the question is
+/// "why did nothing happen", and the answer is three concrete things the
+/// user can do next. Help remains reachable by asking for it
+/// (`monad`, `monad --help`), where it is what was wanted.
+///
+/// `subcommand` appears twice so one def serves both callers: as the
+/// command that did nothing ("monad check: ...") and as the command
+/// whose file form is the first way out.
+def no_target_diagnostic (subcommand : String) : IO I64 := do {
+    println ("monad " ++ subcommand ++ ": no mote.toml above this directory and no paths given");
+    println ("  hint: name a file, run this inside a mote, or pass --workspace");
+    return 1
+}
+
 #[partial]
 def run_check (files : List String) (workspace : Bool) (verbose : Bool) : IO I64 := do {
     let targets <- resolve_target_paths "Checking" "check" files workspace;
@@ -690,11 +718,10 @@ def run_check (files : List String) (workspace : Bool) (verbose : Bool) : IO I64
             let cache : ModuleInfoCache := module_info_cache_empty;
             run_check_loop cache expanded 0 0 verbose
         },
-        // Nothing named, inside no mote: the behaviour before any of
-        // this existed, kept because a bare `monad check` in an
-        // arbitrary directory has nothing to check and should say so
-        // rather than sweep the filesystem.
-        Option.none => print_help
+        // Nothing named, inside no mote: say why, and fail. `print_help`
+        // with its exit 0 was the behaviour before any of this existed,
+        // and it is exactly the bug -- see `no_target_diagnostic`.
+        Option.none => no_target_diagnostic "check"
     }
 }
 
@@ -734,10 +761,11 @@ def run_check (files : List String) (workspace : Bool) (verbose : Bool) : IO I64
 /// Decide WHICH files `monad test` runs (`resolve_target_paths`, the
 /// dispatcher `check` shares), then run them.
 ///
-/// Outside any mote and with no paths, it prints help and exits 0 --
-/// the behaviour before this existed, kept because a bare `monad test`
-/// in an arbitrary directory has nothing to run and should say so
-/// rather than sweep the filesystem.
+/// Outside any mote and with no paths, it says why and exits 1
+/// (`no_target_diagnostic`) -- a bare `monad test` in an arbitrary
+/// directory has nothing to run, so it should say so rather than sweep
+/// the filesystem, and it should not report success for having run
+/// nothing.
 ///
 /// Note that a mote-enumerating run covers only directories that ARE
 /// motes: `examples/` has no manifest, so its 19 files are reached by
@@ -753,7 +781,9 @@ def run_test_paths (files : List String) (workspace : Bool) (out_dir : String) (
         // saying the same thing.
         Option.some ts => if List.is_empty ts then return 1
         else run_test ts out_dir verbose,
-        Option.none => print_help
+        // Nothing named, inside no mote: say why, and fail -- see
+        // `no_target_diagnostic`.
+        Option.none => no_target_diagnostic "test"
     }
 }
 

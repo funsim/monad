@@ -120,10 +120,10 @@ def test_from_args_check_workspace_flag_not_a_path : Bool :=
     }
 
 // A bare `monad check` no longer means "print help": it means "check the
-// mote containing the working directory" (and only falls back to help,
-// at RUN time, when there is no such mote). Mirroring
-// `test_from_args_test_no_files_is_a_test_command`, which Phase 9b made
-// true for `test` too.
+// mote containing the working directory" (and only falls back, at RUN
+// time and with exit 1, to `no_target_diagnostic` when there is no such
+// mote). Mirroring `test_from_args_test_no_files_is_a_test_command`,
+// which Phase 9b made true for `test` too.
 #[test]
 def test_from_args_check_no_files_is_a_check_command : Bool :=
     match Command.from_args ["check"] {
@@ -167,8 +167,9 @@ def test_from_args_test_workspace_flag_not_a_path : Bool :=
     }
 
 // A bare `monad test` no longer means "print help": it means "test the
-// mote containing the working directory" (and only falls back to help,
-// at RUN time, when there is no such mote).
+// mote containing the working directory" (and only falls back, at RUN
+// time and with exit 1, to `no_target_diagnostic` when there is no such
+// mote).
 #[test]
 def test_from_args_test_no_files_is_a_test_command : Bool :=
     match Command.from_args ["test"] {
