@@ -40,9 +40,10 @@
     inputs:
     let
       # What `monad version` reports, and what gets baked into every binary the
-      # packaged compiler links (`build_commit_hash`, llvm/src/link.mo). A nix
+      # packaged compiler links (`build_commit_define`, llvm/src/link.mo). A nix
       # build's source tree is a store copy with no `.git`, so the revision has
-      # to reach it from the flake rather than from `git rev-parse`.
+      # to reach it from the flake rather than from the tree it is building --
+      # which is why the derivation exports this as `MONAD_BUILD_COMMIT`.
       #
       # The DIRTY revision is preferred when there is one: `shortRev` on a tree
       # with uncommitted changes is still the last commit, which would label a

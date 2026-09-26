@@ -59,12 +59,12 @@
           runHook preBuild
 
           # The packaged compiler is identifiable, which is the whole reason
-          # `MONAD_BUILD_COMMIT` exists: a store copy has no `.git`, so without
-          # the override `build_commit_hash`'s probe answers with the literal
-          # "unknown" and an artifact that cannot say what it was built from
-          # ships. Only asserted when the flake HAS a revision -- evaluated from
-          # a plain directory it legitimately has none, and "unknown" is then
-          # the honest answer rather than a defect.
+          # `MONAD_BUILD_COMMIT` exists: a store copy has no `.git`, so nothing
+          # in the build can name the revision from the tree it is building, and
+          # an artifact that cannot say what it was built from should not ship.
+          # Only asserted when the flake HAS a revision -- evaluated from a
+          # plain directory it legitimately has none, and "unknown" is then the
+          # honest answer rather than a defect.
           version="$(monad version)"
           echo "monad version: $version"
           if [ "${commit}" != "unknown" ]; then
@@ -84,9 +84,13 @@
           # here has to build it. Turn 2 takes the binary that turn 1 produced.
           #
           # Exported for `monad2` and `monad3`, which are the raw binaries rather
-          # than the wrapper: without it each one probes for a `.git` that is not
-          # there. Nothing in the emitted IR depends on this -- it is a define
-          # for the C runtime -- so it cannot disturb the `cmp` below.
+          # than the wrapper and so do not inherit its `--set`. Bare, each would
+          # fall back to the revision of the compiler that LINKED it -- right by
+          # accident here, since both are linked from this same tree, and wrong
+          # the moment the wrapper and the tree diverge. Saying it outright is
+          # what keeps the answer the same in both cases. Nothing in the emitted
+          # IR depends on this -- it is a define for the C runtime -- so it
+          # cannot disturb the `cmp` below.
           export MONAD_BUILD_COMMIT=${commit}
 
           scripts/self-compile-turn.sh monad "$PWD" monad2 --release

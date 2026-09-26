@@ -3,10 +3,18 @@
 #
 # `packages.default` and `apps.monad` both point here, so this is what
 # `nix build .#monad` and `nix run .#monad` produce. It is a build-and-check
-# artifact rather than a distributable one: the compiler resolves
-# `runtime/src/runtime.c` against its WORKING DIRECTORY (the same constraint
-# the nightly artifact has), so a packaged `monad compile` has to run from a
-# checkout, exactly as CI runs it.
+# artifact rather than a distributable one, and the reason is now only that
+# this derivation installs the BINARY and not the sources: the compiler finds
+# `init`/`std`/`llvm`/`runtime` in the target mote's declared
+# `[dependencies.X] path` entries, in an installed toolchain root
+# (`$MONAD_ROOT`, else `$MONAD_HOME` + `active`) or by walking up from the
+# working directory to a workspace root (`resolve_runtime_src`,
+# `lang/src/module.mo`). The nightly artifact is the distributable half
+# precisely because `scripts/stage-mote-sources.sh` also ships the four motes
+# beside the binary; a store copy of this derivation has no such directory to
+# point at and cannot name one (see MONAD_BUILD_COMMIT below for the same
+# "a store copy cannot name itself" constraint). Bare, then, a packaged
+# `monad compile` runs from a checkout, exactly as CI runs it.
 #
 # The step that builds it is `scripts/build-self-hosted.sh`, not a shell
 # command spelled out here: CI builds rung 1 through that same script in
@@ -36,7 +44,12 @@
 
       # What the packaged compiler needs at RUNTIME, as opposed to at build
       # time: every `monad compile` shells out to `llc` and `clang` by bare
-      # name (llvm/src/link.mo), plus `sh`/`rm` for the build-commit probe.
+      # name (llvm/src/link.mo), plus `mkdir`/`rm` for the link stage's own
+      # output directory and the codegen harnesses' artifacts. `bash` is what
+      # the build-commit probe's `sh -c` used to need; the probe is gone (the
+      # compiler names its own revision now, `build_commit_define`), and bash
+      # is left in only because dropping it would change the packaged closure
+      # for a reason nothing here measures.
       runtimePath = lib.makeBinPath [
         pkgs.llvm
         pkgs.clang
@@ -50,11 +63,12 @@
 
         src = ../.;
 
-        # No `git` here either (see nix/host.nix): MONAD_BUILD_COMMIT below is
-        # what `build_commit_hash` answers with, so its `git rev-parse` probe
-        # is never reached -- which is the point, because the source tree a nix
-        # build gets is a store copy with no `.git` and the probe would answer
-        # with the literal "unknown".
+        # No `git` here either (see nix/host.nix): a store copy has no `.git`,
+        # so nothing in this build could name the revision from the tree it is
+        # building. MONAD_BUILD_COMMIT below is the answer instead -- it wins
+        # over the compiler's own revision in `build_commit_define`, which is
+        # what makes the packaged compiler report the revision it was built
+        # from rather than the one its host happens to have.
         nativeBuildInputs = [
           monadHost
           pkgs.llvm

@@ -83,6 +83,29 @@ else
 fi
 
 if [ -n "$needs_build" ]; then
+  # The revision the rung-1 binary will report (`monad version`) and stamp
+  # into everything it links. It comes from THIS repository -- `git -C
+  # "$root"`, the tree the self-compile below reads -- and only when nothing
+  # more specific is already set, so the flake's own `MONAD_BUILD_COMMIT`
+  # (nix/monad.nix) and nightly-release.sh's keep winning. That is the whole
+  # contract `link_ir` reads: the environment names the revision when a
+  # builder can name it, and the compiler's own baked-in one answers
+  # otherwise.
+  #
+  # Without this, every locally built rung-1 says "unknown": the Rust host
+  # doing the linking has no revision of its own (`core/src/core_native.rs`'s
+  # `build_commit`, `option_env!` at monad-rs's own build time), and the
+  # compiler used to recover the number with a `git rev-parse` in the WORKING
+  # DIRECTORY -- the wrong repository, which is why that probe is gone.
+  #
+  # `|| true` and the empty check are for a builder with no `.git` at all (a
+  # store copy, an unpacked tarball): it is not an error to be unable to name
+  # a revision, and an empty string is not a name -- `build_commit_define`
+  # reads it as "no answer" and says `unknown`, which is the truth there.
+  if [ -z "${MONAD_BUILD_COMMIT:-}" ]; then
+    MONAD_BUILD_COMMIT="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
+    export MONAD_BUILD_COMMIT
+  fi
   $MONAD_HOST_BIN run cli/src/main.mo compile cli/src/main.mo -o "$out/monad" "$@"
 fi
 test -x "$out/monad"

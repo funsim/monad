@@ -14,7 +14,7 @@
 
 use io {IO}
 open IO {println}
-use std::process {exec_cmd, process_id}
+use std::process {exec_cmd}
 use std::bench {now, report_since}
 use std::log {fail_line, ok_line, stage}
 
@@ -62,36 +62,40 @@ pub def map_dash_l (libs : List String) : List String := match libs {
 
 /// `MONAD_BUILD_COMMIT`, trimmed, or `""` when it is unset (or set to
 /// nothing but whitespace). A nix build's source is a store copy: no `.git`,
-/// so the probe below can only ever answer `unknown` there, and the flake
-/// exports the revision it is building instead.
+/// so the compiler inside it cannot name its own revision, and the flake
+/// exports the one it is building instead.
 #[partial]
 def env_commit_hash (from_env : Option String) : String := match from_env {
     Option.some s => String.trim s,
     Option.none => ""
 }
 
-/// The git commit hash, to bake into the binary as a build-time constant.
-/// `exec_cmd` doesn't capture stdout, so this redirects to a temp file and
-/// reads it back.
+/// The commit to bake into a linked binary as `-DMONAD_BUILD_COMMIT`, from
+/// the two sources that can know it, in the order that lets the more
+/// specific answer win.
 ///
-/// The environment wins when it has something to say, which is what makes a
-/// packaged compiler report the revision it was built from rather than
-/// `unknown`.
-#[partial]
-def build_commit_hash : IO String := do {
-    let from_env <- IO.get_env "MONAD_BUILD_COMMIT";
-    let env_hash : String := env_commit_hash from_env;
-    if String.is_empty env_hash then do {
-        let hash_path := "/tmp/monad_build_hash_" ++ I64.to_string process_id;
-        let _ <- exec_cmd "sh" ["-c", "git rev-parse --short HEAD 2>/dev/null > " ++ hash_path];
-        let hash_exists <- IO.file_exists (Path.path hash_path);
-        if hash_exists then do {
-            let raw <- IO.read_file (Path.path hash_path);
-            let _ <- exec_cmd "rm" ["-f", hash_path];
-            return (String.trim raw)
-        } else return "unknown"
-    } else return env_hash
-}
+/// `MONAD_BUILD_COMMIT` wins because a nix build's source is a store copy
+/// with no `.git` in it: the flake exports the revision it is building, and
+/// that is the only source that can answer there.
+///
+/// Otherwise the answer is the COMPILER's own revision -- the string
+/// `monad version` prints, threaded down from `cli/src/main.mo`'s
+/// `build_commit` native. This used to be a `git rev-parse --short HEAD`
+/// probe run in the WORKING DIRECTORY, which asked the wrong repository
+/// entirely: a user compiling their own program got their own repo's HEAD
+/// stamped into monad's runtime (two forks per link to do it). Outside any
+/// repository the probe's redirect still created the file, so the trim
+/// produced `""` rather than the `unknown` the docs promise -- the
+/// compiler could always have named itself here, and now does.
+///
+/// `unknown` survives as the last resort, for a compiler that cannot name
+/// itself (the `monad-rs run cli/src/main.mo` prototype, where the native
+/// falls back to its own default): the string it stamps is then the one the
+/// docs already described.
+pub def build_commit_define (from_env : Option String) (compiler_commit : String) : String :=
+    if String.is_empty (env_commit_hash from_env) then
+        (if String.is_empty (String.trim compiler_commit) then "unknown" else String.trim compiler_commit)
+    else env_commit_hash from_env
 
 /// Write LLVM IR to disk and link it into a native binary via llc + clang.
 /// Returns 0 on success, 1 on any tool failure (each reported on the way
@@ -103,12 +107,21 @@ def build_commit_hash : IO String := do {
 /// declaring `libs = ["m"]` actually link libm. Empty preserves the original
 /// no-extra-flags behaviour.
 ///
+/// `compiler_commit` is the revision of the COMPILER doing the linking
+/// (`cli/src/main.mo`'s `build_commit` native, the same string `monad
+/// version` prints), which is what gets stamped into the linked program
+/// unless `MONAD_BUILD_COMMIT` overrides it -- see `build_commit_define`.
+/// It is a parameter rather than something this def works out for itself
+/// because the answer is the caller's identity, and because finding it out
+/// used to cost a `git` fork in the working directory that named the wrong
+/// repository.
+///
 /// Per-stage `Bench.report` timing is gated on `verbose`, same convention as
 /// `lang.codegen.emit`'s `compile_loaded_modules_to_ir` -- added to measure
 /// where the "compile_file total minus compile_loaded_modules_to_ir total"
 /// remainder actually goes, before guessing at a fix.
 #[partial]
-pub def link_ir (runtime_c : String) (ir_text : String) (output_dir : Path) (output_name : Path) (link_libs : List String) (verbose : Bool) : IO I64 {
+pub def link_ir (runtime_c : String) (ir_text : String) (output_dir : Path) (output_name : Path) (link_libs : List String) (compiler_commit : String) (verbose : Bool) : IO I64 {
     // `Path.join` here is THE fix for the mangled-double-slash bug this
     // whole `Path` type exists to prevent: if `output_name` is already
     // absolute, it replaces `output_dir` outright instead of naively
@@ -163,7 +176,8 @@ pub def link_ir (runtime_c : String) (ir_text : String) (output_dir : Path) (out
     } else do {
         stage verbose "link: clang runtime.c";
         let t_rtc : I64 <- Bench.now;
-        let build_hash <- build_commit_hash;
+        let from_env <- IO.get_env "MONAD_BUILD_COMMIT";
+        let build_hash : String := build_commit_define from_env compiler_commit;
         let commit_flag := "-DMONAD_BUILD_COMMIT=\"" ++ build_hash ++ "\"";
         let result <- compile_runtime_obj runtime_c (List.append [commit_flag] (if verbose then ["-v"] else [""])) runtime_obj_s;
         if verbose then do {
@@ -196,3 +210,36 @@ pub def link_ir (runtime_c : String) (ir_text : String) (output_dir : Path) (out
         }
     }
 }
+
+// `build_commit_define`'s three answers, pinned. Its whole job is to pick
+// between sources that disagree -- the flake's export, the compiler's own
+// revision and "no answer at all" -- and the middle one is the only case a
+// developer ever sees, which is why it is the one a regression would land in
+// silently: a binary stamped with the wrong revision still builds and runs.
+
+#[test]
+def test_build_commit_define_prefers_the_environment : Bool :=
+    String.beq (build_commit_define (Option.some "env-c0ffee") "compiler-1") "env-c0ffee"
+
+#[test]
+def test_build_commit_define_trims_the_environment : Bool :=
+    String.beq (build_commit_define (Option.some "  env-c0ffee  ") "compiler-1") "env-c0ffee"
+
+// A set-but-blank variable is the shape `git rev-parse` left behind when it
+// had nothing to say (the redirect still wrote the file), so it has to read
+// as unset rather than as a revision spelled with spaces.
+#[test]
+def test_build_commit_define_reads_a_blank_environment_as_unset : Bool :=
+    String.beq (build_commit_define (Option.some "   ") "compiler-1") "compiler-1"
+
+#[test]
+def test_build_commit_define_falls_back_to_the_compiler : Bool :=
+    String.beq (build_commit_define Option.none "compiler-1") "compiler-1"
+
+#[test]
+def test_build_commit_define_keeps_unknown_as_the_last_resort : Bool :=
+    String.beq (build_commit_define Option.none "") "unknown"
+
+#[test]
+def test_build_commit_define_keeps_unknown_when_the_compiler_is_blank : Bool :=
+    String.beq (build_commit_define Option.none "   ") "unknown"

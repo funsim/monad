@@ -43,12 +43,13 @@
         doCheck = false;
 
         # Deliberately no `git`. No input in Cargo.lock is a git dependency, so
-        # the only thing it could serve here is the build-commit probe -- and
-        # the revision this compiler reports does not come from a probe. (The
-        # Monad-level `build_commit_hash`, llvm/src/link.mo, is that probe, and
-        # it runs in the `monad` derivation in nix/monad.nix, where
-        # MONAD_BUILD_COMMIT answers it. A host built with `git` on PATH does
-        # not need it, and a store copy has no `.git` for it to read anyway.)
+        # the only thing it could have served here was the build-commit probe
+        # `llvm/src/link.mo` used to run -- and there is no probe any more: a
+        # linked binary is stamped with the LINKING compiler's own revision
+        # (`build_commit_define`), which for the packaged `monad` means the
+        # `MONAD_BUILD_COMMIT` the flake exports in nix/monad.nix. A host built
+        # with `git` on PATH does not need it, and a store copy has no `.git`
+        # for it to read anyway.
         meta.mainProgram = "monad-rs";
       };
     };

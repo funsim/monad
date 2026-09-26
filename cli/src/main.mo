@@ -63,7 +63,7 @@ def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : Li
             let ir_text : String := emit_module mod_;
             let _t_emit : I64 <- bench_step verbose "emit_module (render .ll)" t_emit (String.length ir_text);
             let runtime_src : String <- resolve_runtime_src base_dir;
-            link_ir runtime_src ir_text output_dir output_name link_libs verbose
+            link_ir runtime_src ir_text output_dir output_name link_libs build_commit verbose
         },
     }
 
@@ -86,7 +86,7 @@ def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir
     // its `use` lines are what failed to load.
     println <| "Writing LLVM IR to: " ++ Path.to_string (Path.with_suffix (Path.join output_dir output_name) ".ll");
     let runtime_src : String <- resolve_runtime_src base_dir;
-    link_ir runtime_src ir_text output_dir output_name List.empty verbose
+    link_ir runtime_src ir_text output_dir output_name List.empty build_commit verbose
 }
 
 // (The v1 per-def location table this section used to build --
@@ -1000,7 +1000,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                             // `undefined reference` at link.
                             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
                             let runtime_src : String <- resolve_runtime_src (extract_directory f);
-                            let link_result <- link_ir runtime_src ir_text (Path.path out_dir) (Path.path bin_name) link_libs verbose;
+                            let link_result <- link_ir runtime_src ir_text (Path.path out_dir) (Path.path bin_name) link_libs build_commit verbose;
                             if not (link_result == 0) then do {
                                 // A file-level failure, counted as such:
                                 // no test in it ever ran, so folding it
