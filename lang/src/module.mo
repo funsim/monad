@@ -445,7 +445,6 @@ def resolve_ambient_file (base_dir : String) (mp : ModulePath) (segs : List Stri
 /// has no checkout to resolve `init`/`std` out of: the manifest covers it
 /// when it declared `path` dependencies, the toolchain root covers it when
 /// it declared none and a nightly is installed.
-#[partial]
 def resolve_installed_or_manifest (base_dir : String) (mp : ModulePath) (segs : List String) : IO (Option String) := do {
     let via_manifest <- resolve_via_manifest base_dir mp;
     match via_manifest {
@@ -461,7 +460,6 @@ def resolve_installed_or_manifest (base_dir : String) (mp : ModulePath) (segs : 
 /// no toolchain root at all, else the first of the root's candidates for
 /// `segs` that exists. Factored out so that "no root" is a miss rather than
 /// a list of candidate paths built off a root that is not there.
-#[partial]
 def toolchain_first_existing (root : Option String) (segs : List String) : IO (Option String) := do {
     match root {
         Option.none => return Option.none,
@@ -550,7 +548,6 @@ def first_on_disk (candidates : List String) : IO (Option String) := do {
 /// paths are the callers: this moved here from `cli/src/main.mo` when the
 /// codegen harnesses below needed the same resolver, and a def that crosses a
 /// mote boundary has to say so.
-#[partial]
 pub def resolve_runtime_src (base_dir : String) : IO String := do {
     let manifest <- Mote.discover base_dir;
     let declared := match manifest {
@@ -2985,7 +2982,6 @@ def is_mote_named (name : String) : IO Bool := do {
 /// Split as a pure decision over the root, then the env read, for the same
 /// reason `Mote.toolchain_candidates` is: there is no `set_env` native, so
 /// only the half that does not read the environment can be rowed in-process.
-#[partial]
 def installed_mote_at (root : Option String) (name : String) : IO Bool := do {
     let found <- toolchain_first_existing root [name, "mote.toml"];
     match found {
@@ -2994,7 +2990,6 @@ def installed_mote_at (root : Option String) (name : String) : IO Bool := do {
     }
 }
 
-#[partial]
 def is_installed_mote (name : String) : IO Bool := do {
     let root <- Mote.toolchain_root;
     installed_mote_at root name

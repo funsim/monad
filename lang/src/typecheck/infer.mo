@@ -3237,7 +3237,6 @@ pub def lam_binder_hint (cd : CalleeDomain) (scope : Scope) : Option Term :=
 /// The type a lambda's parameter would take from this domain: the domain of
 /// the domain, for a function-typed one (`Monad.bind`'s continuation parameter
 /// is `A -> M B`, and the lambda's own binder is its `A`).
-#[partial]
 def binder_typ_of (dom : Term) : Term :=
     match term_peel dom {
         Term.pi binder_typ _ret => binder_typ,
@@ -3378,7 +3377,6 @@ struct ClassMethodDecl {
 /// `Bag` declared first and `Box` second, both declaring `put` over different
 /// domains, the pre-fix checker gave `Bag.put`'s lambda binder `Box`'s domain
 /// (`test_qualified_class_method_domain_comes_from_its_own_class`).
-#[partial]
 def class_method_declared_sig (head : Term) (scope : Scope) : Option ClassMethodDecl :=
     match term_peel head {
         Term.var idx dbg =>
