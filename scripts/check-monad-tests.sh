@@ -489,9 +489,14 @@ echo "rust runner: no files left -- the self-hosted runner covers the corpus alo
 # class of resolution gaps survived a green suite; see the script's header.
 #
 # Placed before the status is re-raised so a failure here fails the sweep,
-# and given the freshly built `$out/monad` rather than a path of its own --
-# a second binary would be a second thing that can be stale.
-"$(dirname -- "$0")/check-external-mote.sh" "$out/monad"
+# and given `$monad` rather than a path of its own -- a second binary would be
+# a second thing that can be stale. `$monad` is the one this job is testing:
+# under CI's `MONAD_BIN` it is the flake's compiler, and `$out/monad` would be
+# a path this job never wrote (`scripts/bootstrap-compile.sh` builds exactly
+# that path, on the same host and TMPDIR) -- i.e. the gate would grade another
+# job's binary, or whatever an earlier run left behind, or fail outright
+# because nothing is there.
+"$(dirname -- "$0")/check-external-mote.sh" "$monad"
 
 # Re-raise the captured self-hosted status: without this the `|| self_hosted_rc=$?`
 # above would turn a red run into an exit 0, which is worse than the abort it
