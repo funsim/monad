@@ -358,30 +358,217 @@ fi
 # as the file has existed, and nothing reported it, because `check`
 # cannot see an unwired native -- only codegen can. Adding it here found
 # it on the first run, which is why the two `find` lists now agree.
-self_hosted_targets=()
-while IFS= read -r f; do
-  self_hosted_targets+=("$f")
-done < <(find init std examples lang cli llvm runtime motes slow_tests bench proofs -name '*.mo' | sort)
+# SHARDING. Both corpus phases below gave their whole target list to ONE
+# `monad` process, which walks it a file at a time (`run_test_loop`,
+# cli/src/main.mo:836). Measured on the runner (run 36243944155), that is
+# 42m23s for the sweep and 8m44s for the check, out of a 51m20s step --
+# the sweep alone is most of the `test` job. They are sharded here:
+# MONAD_SWEEP_JOBS processes, one shard each, running concurrently.
+#
+# Safe by construction, because of what the two commands write and
+# nothing else: `monad test` puts every artifact under
+# `${TMPDIR:-/tmp}/monad_out_<pid>/` (`monad_test_bin_<n>` /
+# `monad_test_result_<n>` inside it) and `monad check` writes only the
+# redirect at the call site. Neither has a fixed name, so N processes
+# never share one -- and the corpus is read only.
+#
+# The split is by BYTES, not by file count. A target's cost is dominated
+# by the target: its dependency closure is re-emitted for it, so the
+# closure is roughly a constant added to that file's own work, and the
+# corpus spans four orders of magnitude (`lang/src/module.mo` is ~200 KB).
+# A count-balanced split puts that one file in a shard of 25 -- a quarter
+# of the corpus by bytes -- and the wall clock is then that one shard.
+# Greedy biggest-first is the standard 4/3-of-optimal assignment and needs
+# no cost model to stay honest.
+#
+# MONAD_SWEEP_JOBS=1 is exactly the single invocation this job used to
+# make: same argv, same transcript. That is what lets the serial and the
+# sharded totals be compared by running this one script twice.
+#
+# What parallelism does NOT buy, written down because the honest number is
+# what this is judged on: each shard process loads its own program closure
+# before it can touch a file, and the `ModuleInfoCache` that serves most
+# dependency loads from an earlier file's work within a run is
+# per-process (`run_test_loop`'s own doc comment). So N shards pay N
+# warm-ups, and the wall clock is `(T - N*warmup)/N + warmup`, not `T/N`.
+# The default is min(nproc - 1, 8): the runner has 8 and one is left for
+# the machine, and what each extra shard costs is a closure resident in
+# memory rather than a file on disk.
+sweep_jobs="${MONAD_SWEEP_JOBS:-}"
+case "$sweep_jobs" in
+  '')
+    sweep_jobs="$(nproc 2>/dev/null || echo 1)"
+    if [ "$sweep_jobs" -gt 1 ]; then sweep_jobs=$((sweep_jobs - 1)); fi
+    if [ "$sweep_jobs" -gt 8 ]; then sweep_jobs=8; fi
+    ;;
+  *[!0-9]*)
+    echo "MONAD_SWEEP_JOBS must be a positive integer, got '${sweep_jobs}'" >&2
+    exit 2
+    ;;
+esac
+if [ "$sweep_jobs" -lt 1 ]; then
+  echo "MONAD_SWEEP_JOBS must be at least 1, got '${sweep_jobs}'" >&2
+  exit 2
+fi
+
+# One definition for both phases. They are the same corpus, and "the two
+# `find` lists agree exactly" was a comment that a later edit could
+# falsify silently; a list built once cannot drift from itself. Biggest
+# first, which is the order `shard_files` wants.
+corpus_dirs=(init std examples lang cli llvm runtime motes slow_tests bench proofs)
+corpus_sizes() {
+  find "${corpus_dirs[@]}" -name '*.mo' -printf '%s\t%p\n' | sort -rn
+}
+
+# Greedy biggest-first assignment of the `size<TAB>path` lines on stdin
+# over $sweep_jobs shards, each written to `$dir/shard-<i>.list`. Echoes
+# the number of files it saw, so a caller can tell a corpus that came out
+# empty from one that was never read.
+shard_files() {
+  local dir="$1"
+  local -a load paths
+  local i size path heaviest seen=0
+  for ((i = 0; i < sweep_jobs; i++)); do
+    load[i]=0
+    paths[i]=""
+  done
+  while IFS=$'\t' read -r size path; do
+    [ -n "$path" ] || continue
+    heaviest=0
+    for ((i = 1; i < sweep_jobs; i++)); do
+      if [ "${load[i]}" -lt "${load[heaviest]}" ]; then heaviest="$i"; fi
+    done
+    paths[heaviest]="${paths[heaviest]}${path}"$'\n'
+    load[heaviest]=$((load[heaviest] + size))
+    seen=$((seen + 1))
+  done
+  for ((i = 0; i < sweep_jobs; i++)); do
+    printf '%s' "${paths[i]}" > "$dir/shard-${i}.list"
+  done
+  echo "$seen"
+}
+
+# Run `monad <subcmd>` once per non-empty shard, concurrently, each to its
+# own `$dir/<subcmd>-<i>.log`; then concatenate them in shard order into
+# `$dir/<subcmd>.log`. Sets three arrays the callers read back: `shard_rcs`
+# (each shard's exit status, "" for a shard that was never launched),
+# `shard_files_n` (how many files it was handed) and `shard_pids`.
+#
+# Every launch happens before the first `wait`, or the "concurrency" would
+# be a sequence; the `wait`s then block in shard order, which is also what
+# makes the concatenated transcript deterministic rather than a race.
+run_shards() {
+  local dir="$1" subcmd="$2"
+  local i f
+  local -a targets
+  shard_rcs=()
+  shard_files_n=()
+  shard_pids=()
+  : > "$dir/${subcmd}.log"
+  for ((i = 0; i < sweep_jobs; i++)); do
+    shard_rcs[i]=""
+    shard_files_n[i]="$(wc -l < "$dir/shard-${i}.list")"
+    [ "${shard_files_n[i]}" -gt 0 ] || continue
+    # A `while read` loop rather than `mapfile`: this repo's shell is
+    # bash, but the same line copied into a zsh context yields an EMPTY
+    # array from `mapfile` and silently tests nothing.
+    targets=()
+    while IFS= read -r f; do targets+=("$f"); done < "$dir/shard-${i}.list"
+    "$monad" "$subcmd" "${targets[@]}" > "$dir/${subcmd}-${i}.log" 2>&1 &
+    shard_pids[i]=$!
+  done
+  for ((i = 0; i < sweep_jobs; i++)); do
+    [ -n "${shard_pids[i]:-}" ] || continue
+    shard_rcs[i]=0
+    wait "${shard_pids[i]}" || shard_rcs[i]=$?
+    cat "$dir/${subcmd}-${i}.log" >> "$dir/${subcmd}.log"
+  done
+}
+
+# One shard's verdict, from its log and status. A non-zero status is a
+# failure unless the shard had nothing runnable in it: `No tests found` is
+# what a whole invocation prints when it ends with
+# `tests_passed + tests_failed == 0` (cli/src/main.mo:839-845), which is
+# the truth for a shard of files with no `#[test]`s -- and ALSO for a shard
+# whose every file failed to compile, since a file whose driver was never
+# produced moves neither counter. The `file(s) skipped` line separates
+# them: it is printed only for files that had no runnable tests, so a
+# shard whose skips account for every file it was handed really did have
+# nothing to run, and anything else is a failure. Without this, one shard
+# of compile failures would exit 1 like a shard of no-tests files, and the
+# aggregate total would still be non-zero -- a false green of exactly the
+# kind this script's own `set -e` bug was.
+shard_verdict() {
+  local log="$1" given="$2" rc="$3"
+  local skipped
+  if [ "$rc" -eq 0 ]; then echo ok; return; fi
+  if ! grep -q '^No tests found$' "$log"; then echo failed; return; fi
+  skipped="$(sed -e 's/\x1b\[[0-9;]*m//g' "$log" \
+    | awk -F'[/ ]' '/^[0-9]+ file\(s\) skipped/ { s += $1 } END { printf "%d", s + 0 }')"
+  if [ "$skipped" = "$given" ]; then echo ok; else echo failed; fi
+}
+
+# Per-run, so two runs sharing a TMPDIR (the default one is shared by every
+# worktree and runner on this machine) cannot read each other's shard lists
+# or logs -- the same hazard the shard targets themselves avoid by being
+# pid-unique.
+shard_dir="$out/shards-$$"
+mkdir -p "$shard_dir"
+corpus_files="$(corpus_sizes | shard_files "$shard_dir")"
+if [ "$corpus_files" -eq 0 ]; then
+  echo "self-hosted sweep: the corpus is empty (${corpus_dirs[*]} hold no .mo files) -- check the find above against the tree" >&2
+  exit 1
+fi
 
 self_hosted_rc=0
-"$monad" test "${self_hosted_targets[@]}" || self_hosted_rc=$?
+run_shards "$shard_dir" test
+for ((i = 0; i < sweep_jobs; i++)); do
+  [ -n "${shard_rcs[i]}" ] || continue
+  if [ "$(shard_verdict "$shard_dir/test-${i}.log" "${shard_files_n[i]}" "${shard_rcs[i]}")" != ok ]; then
+    self_hosted_rc=1
+  fi
+done
+cat "$shard_dir/test.log"
+
+# One aggregate line, summed from the shards' own totals rather than
+# re-derived, so the number a reader compares against a serial run is the
+# compiler's. `MONAD_SWEEP_JOBS=1` prints it over a single shard, which is
+# the same run it was before plus this line.
+read -r sweep_passed sweep_total sweep_skipped <<< "$(sed -e 's/\x1b\[[0-9;]*m//g' "$shard_dir/test.log" \
+  | awk -F'[/ ]' '
+      /^[0-9]+\/[0-9]+ total tests passed$/ { p += $1; t += $2; next }
+      /^[0-9]+ file\(s\) skipped/           { s += $1 }
+      END { printf "%d %d %d", p + 0, t + 0, s + 0 }')"
+echo "self-hosted sweep: ${sweep_passed}/${sweep_total} total tests passed, ${sweep_skipped} file(s) skipped (no tests) -- over ${corpus_files} file(s) in ${sweep_jobs} shard(s)"
+if [ "$sweep_total" -eq 0 ]; then
+  # A sweep over this corpus cannot legitimately run zero tests: the
+  # invocation is broken, not passing. `shard_verdict` above already fails
+  # a shard in that state; this catches the same thing stated once for the
+  # whole run, which is the number a reader sees.
+  echo "self-hosted sweep: NO tests ran at all -- a sweep that finds nothing is a broken invocation, not a pass" >&2
+  self_hosted_rc=1
+fi
 if [ "$self_hosted_rc" -ne 0 ]; then
   # Deliberately NOT fatal: `set -e` used to abort here, which dropped the
   # whole check phase (and, before Phase 12, the Rust fallback) whenever a
   # single test failed -- so a red sweep reported one total and no
   # `self-hosted check:` line, indistinguishable from a truncated run.
   # The status is re-raised at the end of the script.
-  echo "self-hosted tests FAILED (exit $self_hosted_rc) -- the check phase still runs"
+  echo "self-hosted tests FAILED -- the check phase still runs"
 fi
 
 # The self-hosted `check` over the SAME corpus as the sweep above -- the
-# two `find` lists agree exactly as of Phase 13, `bench` and `proofs`
-# included in both.
+# same `find` list, literally: both are built from `$corpus_dirs` above,
+# where they used to be two copies asserted to agree. `bench` and `proofs`
+# are included in both.
 # The sweep proves each file's tests RUN, this proves each file TYPECHECKS
 # under the checker the shipped compiler actually uses. The pre-commit
 # hook's `monad check` is the RUST host -- a different implementation --
 # so neither gate covers the other, and until this ran, nothing in CI used
-# the self-hosted checker on the whole corpus. ~52s.
+# the self-hosted checker on the whole corpus. 8m44s serially on the runner
+# (run 36243944155) -- an earlier `~52s` here was measured on one
+# developer's machine over a smaller corpus, and the CI number is the one
+# that decides whether this phase is worth sharding (it is).
 #
 # Both gates are needed, and `bench` is the demonstration: the check phase
 # passed over `bench/src/hashmap_bucket_dispatch.mo` for as long as the
@@ -449,21 +636,29 @@ fi
 # (cli/src/main.mo:551) and prints a `FAIL` line exactly when a file has
 # diagnostics, so `rc != 0` <=> `check_fails != 0` there.
 
-check_targets=()
-while IFS= read -r f; do
-  check_targets+=("$f")
-done < <(find init std examples lang cli llvm runtime motes slow_tests bench proofs -name '*.mo' | sort)
-
-check_log="$out/check.log"
+# Sharded over the SAME shard lists the sweep above used -- one partition,
+# built once, so the two phases provably cover the same files rather than
+# covering two lists that are asserted to agree. ~8m44s serially on the
+# runner (run 36243944155), and it pays the same per-process warm-up.
+run_shards "$shard_dir" check
+check_log="$shard_dir/check.log"
 check_rc=0
-"$monad" check "${check_targets[@]}" > "$check_log" 2>&1 || check_rc=$?
+for ((i = 0; i < sweep_jobs; i++)); do
+  [ -n "${shard_rcs[i]}" ] || continue
+  # The FIRST non-zero shard status, so the message below still names a
+  # real exit code. `run_check_loop` returns 1 iff a file in that shard had
+  # diagnostics (cli/src/main.mo:551) and prints a `FAIL` line exactly
+  # then, so the equivalence the comment above leans on (`rc != 0` <=> a
+  # `FAIL` line) holds per shard and therefore in the concatenation.
+  if [ "${shard_rcs[i]}" -ne 0 ] && [ "$check_rc" -eq 0 ]; then check_rc="${shard_rcs[i]}"; fi
+done
 check_fails=$(grep -cE '^FAIL ' "$check_log" || true)
 if [ "$check_rc" -ne 0 ] || [ "$check_fails" != 0 ]; then
   echo "self-hosted check: ${check_fails} failure(s), exit ${check_rc} -- no check-gap file is registered any more" >&2
   cat "$check_log" >&2
   exit 1
 fi
-echo "self-hosted check: 0 failures over ${#check_targets[@]} file(s)"
+echo "self-hosted check: 0 failures over ${corpus_files} file(s) in ${sweep_jobs} shard(s)"
 
 # The Rust fallback ran here: everything the self-hosted runner could not
 # run went through it, so each file stayed covered and a real regression in

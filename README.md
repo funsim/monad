@@ -122,6 +122,12 @@ cargo test
 # compiled binary first if needed. This is what CI runs.
 scripts/check-monad-tests.sh
 
+# The sweep and the corpus-wide check run over min(nproc - 1, 8) shards
+# at once, each shard its own `monad` process. MONAD_SWEEP_JOBS caps that
+# -- `MONAD_SWEEP_JOBS=1` is the single sequential invocation this script
+# used to make, and the shape its sharded totals are checked against.
+MONAD_SWEEP_JOBS=1 scripts/check-monad-tests.sh
+
 # Or via the Rust host, which is handy while debugging the runner itself
 cargo run -- test init std lang
 
