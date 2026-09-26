@@ -951,7 +951,10 @@ in its own doc comment, and
 the tier that checks it (fail-fast validator / `check` warning / linter mote)
 and to its current corpus count. `scripts/style-metrics.sh` prints those
 counts; `scripts/style-baseline.txt` is the ratchet, so a rule with a backlog
-still blocks new violations.
+still blocks new violations **when the ratchet is run** (`scripts/style-metrics.sh
+--baseline scripts/style-baseline.txt`). Nothing invokes it for you yet -- no CI
+job and no git hook calls it, so today it gates only a run you ask for; wiring it
+in is Phase 1 of `plans/implementations/code-style-and-lint-enforcement.md`.
 
 1. **Every single-constructor type should be a `struct`, not a `type`.**
    `type X { mk (f1:T1) (f2:T2) ... }` with exactly one constructor gives

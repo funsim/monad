@@ -3,8 +3,11 @@
 # plans/implementations/code-style-and-lint-enforcement.md.
 #
 # READ-ONLY: this script never writes a `.mo` file. It emits `key<TAB>value`
-# lines on stdout and a human summary on stderr, so it is safe to run anywhere
-# and cheap enough for CI on every push.
+# lines on stdout and a human summary on stderr, so it is safe to run anywhere.
+#
+# It is NOT wired into CI yet -- no workflow or hook calls it, so `--baseline`
+# only gates a run you invoke yourself. Wiring the ratchet is Phase 1 of
+# plans/implementations/code-style-and-lint-enforcement.md.
 #
 #   scripts/style-metrics.sh                          # the counters + summary
 #   scripts/style-metrics.sh --detail                 # + per-dir/file breakdowns

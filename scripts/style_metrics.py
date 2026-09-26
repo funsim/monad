@@ -400,10 +400,26 @@ def main() -> int:
                     continue
                 k, v = line.rstrip("\n").split("\t", 1)
                 base[k] = int(v)
+        # A ratcheted counter the baseline does not carry is a hole, not a
+        # pass: the regression test below reads `base[k]`, so skipping it
+        # silently is how a truncated (or stale, hand-edited, half-written)
+        # baseline reports "style ratchet ok" while gating nothing at all.
+        # `--write-baseline` always writes every `KEY_ORDER` key, so a full
+        # baseline can never hit this.
+        missing = sorted(k for k in RATCHETED if k not in base)
+        if missing:
+            print("\nstyle ratchet FAILED -- the baseline has no entry for "
+                  "these ratcheted counters:", file=sys.stderr)
+            for k in missing:
+                print(f"  {k}", file=sys.stderr)
+            print(f"  ({args.baseline} is incomplete or truncated; regenerate "
+                  f"it with scripts/style-metrics.sh --write-baseline)",
+                  file=sys.stderr)
+            return 1
         regressions = [
             (k, base[k], metrics.get(k, 0))
             for k in RATCHETED
-            if k in base and metrics.get(k, 0) > base[k]
+            if metrics.get(k, 0) > base[k]
         ]
         if regressions:
             print("\nstyle ratchet FAILED -- these counters rose:", file=sys.stderr)
@@ -411,7 +427,7 @@ def main() -> int:
                 print(f"  {k}: {was} -> {now}  (+{now - was})", file=sys.stderr)
             return 1
         improved = sum(1 for k in RATCHETED
-                       if k in base and metrics.get(k, 0) < base[k])
+                       if metrics.get(k, 0) < base[k])
         print(f"\nstyle ratchet ok ({improved} counter(s) improved)", file=sys.stderr)
     return 0
 
