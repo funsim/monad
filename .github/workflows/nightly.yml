@@ -12,6 +12,13 @@ concurrency:
   group: nightly-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Same suppression as ci.yml: the devShell's shellHook runs the full
+  # pre-commit sweep on every `nix develop -c` entry, and the nightly job
+  # only needs to build and verify the binary. The sweep runs once per
+  # pipeline in ci.yml's pre-commit-checks job; nothing here needs it.
+  DEVENV_SKIP_TASKS: "1"
+
 jobs:
   nightly:
     if: github.repository == 'monad-lang/monad'

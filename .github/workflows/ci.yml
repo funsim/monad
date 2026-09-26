@@ -10,25 +10,29 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Every `nix develop -c` below would otherwise pay the devShell's shellHook,
+  # `devenv-tasks run devenv:enterShell --mode all`. `--mode all` walks the
+  # whole task graph in both directions, so entry reaches
+  # `devenv:git-hooks:run` -- the full `prek run -a` (clippy, rustfmt,
+  # shellcheck, docs-check, monad-check, `cargo test --release`): 521-559s cold
+  # and 76-77s warm in this repo's job logs, seven times per pipeline, and only
+  # one of those runs is any job's verdict. DEVENV_SKIP_TASKS is the shellHook's
+  # own off switch -- devenv's tasks.nix guards the invocation with
+  # `if [ -z "${DEVENV_SKIP_TASKS:-}" ]` and does nothing else with it -- so
+  # setting it here suppresses every entry-time sweep, including the nested
+  # entry the `devenv` CLI makes for `devenv tasks run` (the variable is
+  # inherited), while leaving the one job that WANTS the sweep working:
+  # `pre-commit-checks` runs `devenv tasks run devenv:git-hooks` explicitly, and
+  # that is a separate devenv-tasks invocation. A job that genuinely needs the
+  # entry sweep can opt back in with `env: DEVENV_SKIP_TASKS: ""` (the guard is a
+  # `-z` test, so the empty string re-enables it). The shellHook's other lines --
+  # the PATH exports, the `.devenv/run` symlink, `mkdir -p "$PREK_HOME"` -- sit
+  # OUTSIDE the guard and are unaffected.
+  DEVENV_SKIP_TASKS: "1"
+
 jobs:
-  build-rust:
-    runs-on: [self-hosted, linux]
-    steps:
-      - uses: actions/checkout@v5
-
-      # Builds every crate once (`--workspace`, including monad-wasm) so
-      # the jobs below don't race to build the same crates in parallel.
-      # NOTE: this does NOT warm target/ for the other jobs — each job
-      # runs in its own ephemeral container on the self-hosted runner, so
-      # every job cold-builds what it needs (the fat-LTO release profile
-      # makes that ~10 min). That is expected wall time, not a failure:
-      # the bootstrap job deliberately has no compile deadline, only the
-      # job-level timeout-minutes hang guard below.
-      - name: Build release binary
-        run: nix develop --no-pure-eval --accept-flake-config -c cargo build --release --workspace
-
   pre-commit-checks:
-    needs: build-rust
     runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@v5
@@ -40,25 +44,28 @@ jobs:
       # devenv.nix sets `showOutput` on that task; without it devenv-tasks
       # would capture the per-hook output and print it only on failure.
       #
-      # The sweep is not this job's alone. `nix develop -c` runs the whole task
-      # graph at shell entry in EVERY step of every job (the devShell's
-      # shellHook is `devenv-tasks run devenv:enterShell --mode all`, which
-      # resolves the graph in both directions, not just enterShell's
-      # prerequisites), and a hook failing there exits 1 from `nix develop`
-      # before this command is reached. So this job's verdict is really decided
-      # at shell entry; whether these two lines add to it is secondary. See the
-      # `showOutput` setting in devenv.nix for why that entry-time sweep now
-      # prints its per-hook results on a green run instead of staying captured.
+      # With DEVENV_SKIP_TASKS=1 set above, the entry-time sweep is off in every
+      # step of every job. This explicit `devenv tasks run devenv:git-hooks` is
+      # the ONLY run of the pre-commit suite in the pipeline, so this job's
+      # verdict is decided here, not at shell entry. See the `showOutput` setting
+      # in devenv.nix for why the per-hook results print on a green run.
       - name: Run pre commit checks
         run: nix develop --no-pure-eval --accept-flake-config -c devenv tasks run devenv:git-hooks
 
   test:
-    needs: build-rust
     runs-on: [self-hosted, linux]
     # Hang guard, not a deadline: expected ~10 min cold build + test run.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
+
+      # Build the release binary first so a Rust compile error fails under
+      # a step named "Build release binary" rather than surfacing deep
+      # inside check-monad-tests.sh's cargo run --release. Each job builds
+      # into its own cleaned target/ (actions/checkout runs git clean -ffdx
+      # at the start of every job), so this costs no extra wall clock.
+      - name: Build release binary
+        run: nix develop --no-pure-eval --accept-flake-config -c cargo build --release --workspace
 
       # The script is called directly rather than through
       # `devenv tasks run monad:test` (its local equivalent): devenv-tasks
@@ -70,7 +77,6 @@ jobs:
             scripts/check-monad-tests.sh
 
   bootstrap:
-    needs: build-rust
     runs-on: [self-hosted, linux]
     # Hang guard, not a compile deadline: the interpreted self-compile is
     # ~320s best case but stretches under load from the runner's own
@@ -79,6 +85,14 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+
+      # Build the release binary first so a Rust compile error fails under
+      # a step named "Build release binary" rather than surfacing deep
+      # inside bootstrap-compile.sh's cargo run --release. Each job builds
+      # into its own cleaned target/ (actions/checkout runs git clean -ffdx
+      # at the start of every job), so this costs no extra wall clock.
+      - name: Build release binary
+        run: nix develop --no-pure-eval --accept-flake-config -c cargo build --release --workspace
 
       # Both steps call their script directly rather than through
       # `devenv tasks run monad:bootstrap-compile` / `monad:debug-oracle` (the
