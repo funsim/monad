@@ -72,6 +72,11 @@ Dot notation is **field access only**. `x.some_function` does not call
 something that is not a declared field is an error. Call functions with their
 qualified name: `String.length s`, not `s.length`.
 
+The subject can be any value, including a top-level `def` (`vzero.x`), but the
+Rust host does not accept that form yet — see
+[the bootstrap host appendix](./bootstrap-host.md) for why, and use a local
+subject when you want both compilers to accept the file.
+
 ## Pattern Matching on Structs
 
 A struct's implicit constructor is called `mk`, so you can match positionally:

@@ -20,11 +20,11 @@
 /// threaded through this pass instead -- one place rather than the whole
 /// grammar.
 ///
-/// Name resolution lives HERE: `find_index`, `show_name_path_dotted`,
-/// `name_ref_to_string` and `field_access_chain` are DEFINED in this
-/// module, and `lang/parser.mo` imports `name_ref_to_string` back rather
-/// than keeping the byte-identical copy it used to carry beside that
-/// import -- two definitions of one bare LLVM symbol, the shape
+/// Name resolution lives HERE: `find_index`, `show_name_path_dotted` and
+/// `name_ref_to_string` are DEFINED in this module, and `lang/parser.mo`
+/// imports `name_ref_to_string` back rather than keeping the
+/// byte-identical copy it used to carry beside that import -- two
+/// definitions of one bare LLVM symbol, the shape
 /// `validate_no_colliding_def_symbols` (`lang/codegen/validate.mo`) now
 /// rejects and AGENTS.md item 18 describes.
 ///
@@ -50,7 +50,7 @@ use lib::types {
 // the duplicate-top-level-name collision item 18 records). The grammar no
 // longer resolves names at all, so nothing flows the other way: it
 // imports `lower_parse_do` from here and that is the only edge.
-use lib::types {FieldPattern, FieldPatternEntry, Location, ParseSpan, parse_span_is_unknown, show_module_path, show_name_path, show_operator}
+use lib::types {Location, ParseSpan, field_access_chain, parse_span_is_unknown, show_module_path, show_name_path, show_operator}
 // The monomorphic string map, from the leaf module -- never `Map.lookup`,
 // whose generic dispatch can resolve to the wrong instance
 // (`lang/codegen/util.mo` documents the live bug).
@@ -250,27 +250,13 @@ def name_ref_to_string (nref : NameRef) : Option String := match nref {
 }
 
 
-/// Nested bare-form field-pattern `Match` chain desugaring a dotted-path
-/// field access into ordinary struct-field destructuring -- mirrors the
-/// Rust reference's `lower_core.rs::lower_field_access_chain`.
-///
-/// The binder list is `[field]` inline rather than via
-/// `field_pattern_binder_names`: the pattern built here has exactly one
-/// entry whose binder IS `field`, so calling that helper would only add a
-/// dependency back on `lang/parser.mo`, which is the edge this module
-/// exists without.
-#[partial]
-def field_access_chain (scrutinee : Term) (fields : List Identifier) : Term :=
-    match fields {
-        List.empty => scrutinee,
-        List.cons field rest =>
-            let value : Term := field_access_chain (Term.var 0 (DebugName.named field)) rest in
-            let entry : FieldPatternEntry := FieldPatternEntry.mk field field in
-            let fp : FieldPattern := FieldPattern.mk (List.cons entry List.empty) true in
-            let binders : List Identifier := List.cons field List.empty in
-            let case_ : MatchCase := MatchCase.mc (Identifier.id "") binders value (Option.some fp) in
-            Term.lit (Literal.match_ scrutinee (List.cons case_ List.empty)),
-    }
+/// `field_access_chain` was DEFINED here; it now lives in `lib::types`
+/// (imported above), because it acquired a second caller -- the checker's
+/// recovery arm for a field read through a NON-LOCAL value
+/// (`lang/src/typecheck/infer.mo`'s `try_global_field_access`). Two
+/// builders of one desugaring are the exact drift trap `name_ref_to_string`
+/// was moved out to avoid, and `lang::types` is the lowest module both
+/// callers already depend on.
 
 
 // --- The lowering itself --------------------------------------------

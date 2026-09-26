@@ -4659,6 +4659,62 @@ def test_field_pattern_monomorphic_read_is_unaffected : IO Bool := do {
     return (I64.beq (List.length diags) 0)
 }
 
+// --- A field read through a NON-LOCAL subject ---------------------------
+//
+// `lower_path_ids` (`lang/parser/lower_parse.mo`) settles the "module-
+// qualified global, or field access?" ambiguity on one question only -- is
+// the path's first segment a local binder? -- because the parser has no
+// scope. So `p.first` on a parameter is a `FieldPattern` match by the time
+// the checker sees it, while `vzero.x` on a top-level def kept its whole
+// dotted spelling as ONE global name and was reported as
+// `unknown variable 'vzero.x'`. `try_global_field_access`
+// (`lang/typecheck/infer.mo`) is the recovery; these rows are what it
+// accepts and, more importantly, what it must still refuse.
+//
+// `Vec3` declares one field and `Other2` a DIFFERENTLY named one, which is
+// what makes the last row below a discriminator rather than a restatement:
+// if the recovery ever stole a read whose subject is a local, that row
+// would resolve `vzero` to the GLOBAL `Vec3` and report a missing field.
+//
+// The plain local-parameter case (`p.first` at zero diagnostics) needs no
+// row here -- the `field_pattern_*` family above is all that shape, and
+// `field_access_chain` moving modules is exactly the change that could
+// have disturbed it.
+
+def global_field_preamble : String :=
+    "type T { t }\nstruct Vec3 { x : T }\nstruct Other2 { y : T }\ndef vzero : Vec3 := { x := T.t }\n"
+
+def global_field_src (row : String) : String := global_field_preamble ++ row
+
+/// The reported shape: `vzero` is a top-level def, not a binder, so no
+/// field pattern was ever built and the read failed as an unknown name.
+#[test]
+def test_global_field_read_resolves : IO Bool := do {
+    let diags : List String <- check_diags_of_source (global_field_src "def getx : T := vzero.x") "probe";
+    return (I64.beq (List.length diags) 0 && diags_lack "vzero.x" diags)
+}
+
+/// The guard that keeps the recovery from degrading into "any dotted name
+/// resolves": the same subject with a field `Vec3` does not declare is
+/// still an error, not a hole.
+#[test]
+def test_global_field_read_of_a_missing_field_is_rejected : IO Bool := do {
+    let diags : List String <- check_diags_of_source (global_field_src "def gety : T := vzero.y") "probe";
+    return (I64.beq (List.length diags) 1 && diags_contain "doesn't have" diags)
+}
+
+/// The regression guard, and the one that actually pins the ORDER: a local
+/// named `vzero` of a DIFFERENT struct type wins over the global of the
+/// same name -- the read must be desugared at parse time against the
+/// binder (the parser's gate), never reconstructed by the recovery against
+/// the global. Had the recovery taken it, `vzero : Other2` would have
+/// become `vzero : Vec3`, and the field `y` it reads is not `Vec3`'s.
+#[test]
+def test_global_field_recovery_does_not_steal_a_local : IO Bool := do {
+    let diags : List String <- check_diags_of_source (global_field_src "def shadowed (vzero : Other2) : T := vzero.y") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
 // --- A class method must be DECLARED by the class its qualifier names -----
 //
 // `Map.get` (`std/src/map.mo` declares `empty`/`insert`/`lookup`/`delete`

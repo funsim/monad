@@ -162,7 +162,7 @@ twelve.
 
 ## Syntax the self-hosted compiler accepts and the host rejects
 
-Four, in this direction.
+Five, in this direction.
 
 Term macros:
 
@@ -198,6 +198,27 @@ real program wants this, so the portable alternative is simply not to write it
 — but it is worth knowing, because it is the grammar fact behind the missing-`;`
 mis-scope described above: the same `atom (atom)*` shape is what lets a `let`
 value swallow the statement after it.
+
+A **field access whose subject is a top-level `def`**, rather than a local
+binding:
+
+```monad,ignore
+struct Vec3 { x : I64, y : I64 }
+def vzero : Vec3 := { x := 40, y := 2 }
+def vzero_x : I64 := vzero.x
+```
+
+Both parsers settle "module-qualified name, or field access?" on one question
+— is the path's first segment a local binder? — because neither has a scope to
+ask. A local subject (`p.x`) is therefore already a field-pattern match by the
+time either checker sees it. A top-level one is not, and the self-hosted
+checker rebuilds it there (`try_global_field_access`), so this works and
+compiles. The host's checker never rewrites terms, so it rejects the read with
+*"unbound variable `vzero.x`"* — meaning **a read whose subject is a top-level
+`def` cannot appear in a file the host checks**, which includes this book's
+`monad` blocks and the corpus the pre-commit hook sweeps. Read through a
+parameter or a `let` when you want both compilers to accept it. See
+[Structs and Enums](./structs-enums.md).
 
 And a codegen behaviour rather than syntax: the self-hosted backend runs a
 pre-elaboration pass that desugars annotated struct literals, and aborts loudly

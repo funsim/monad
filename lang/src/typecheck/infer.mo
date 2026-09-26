@@ -3,7 +3,7 @@ use lib::types {
   Literal, LocalScope, LocalVar, MatchCase, ModulePath, NamePath, NameRef, NumSuffix,
   Native, Param, Scope, ScopeClassDef, ScopeDef, ScopeError, Similar,
   StructLitField, Term, TypeConstraint, TypeError,
-  app, con, custom, forall, hole, id, id_eq, id_member, if_, lam, list_rev_loop,
+  app, con, custom, field_access_chain, forall, hole, id, id_eq, id_member, if_, lam, list_rev_loop,
   list_reverse, lit, many, match_, mc, mk, mp, name, named, nid, not_a_type,
   ntv, num, pi, sentinel, show_identifier, show_name_path, str, term_peel,
   unknown_constructor, unknown_type, unknown_var, unnamed, var,
@@ -1699,9 +1699,19 @@ def type_check_case_body_checked (name : Identifier) (args : List Identifier) (b
     }
 
 /// Type check a variable reference.
+///
+/// `#[terminating]`: the free-variable path can RE-ENTER the checker on a
+/// term it built rather than one taken apart (`try_global_field_access`,
+/// `type_check_free_var`'s last fallback -- the non-local field read), so
+/// this def is now a member of the checker's mutual-recursion group without
+/// a structural descent to show for it. Well-founded all the same: the
+/// rebuilt term's subject is the UNDOTTED head, and the recovery refuses
+/// anything that does not have a dot to split, so it cannot re-enter itself
+/// a second time.
+#[terminating]
 def type_check_var (idx : I64) (dbg : DebugName) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     if I64.beq idx sentinel then
-        type_check_free_var dbg expected_type scope locals
+        type_check_free_var dbg expected_type scope local_types locals
     else
         type_check_bound_var idx dbg local_types
 
@@ -1724,6 +1734,227 @@ def last_dotted_segment_go (s : String) (idx : I64) : String :=
 
 def last_dotted_segment (s : String) : String :=
     last_dotted_segment_go s (String.length s - 1)
+
+/// Split a dotted name string at its FIRST `.` -- the forward-scanning
+/// companion to `last_dotted_segment`/`dotted_qualifier` above, which both
+/// scan backwards from the end. Field access needs the other split: for
+/// `vzero.x` (or `vzero.pos.x`) the SUBJECT is everything before the first
+/// dot and the FIELD CHAIN everything after it, in that order.
+///
+/// `Option.none` when the string has no dot at all -- an undotted name is
+/// not a field access, which is why `try_global_field_access` below starts
+/// here. `String.slice` takes a LENGTH as its third argument, so the
+/// remainder is exactly `len - idx - 1` bytes from `idx + 1`.
+#[terminating]
+def split_first_dot_go (s : String) (idx : I64) (len : I64) : Option (Pair String String) :=
+    if I64.beq idx len then Option.none
+    else
+        match (String.get s idx : Option U8) {
+            Option.some byte_val =>
+                if U8.beq byte_val 46u8 then // '.' is ASCII 46
+                    Option.some (Pair.pair (String.slice s 0 idx) (String.slice s (idx + 1) (len - idx - 1)))
+                else
+                    split_first_dot_go s (idx + 1) len,
+            Option.none => Option.none
+        }
+
+def split_first_dot (s : String) : Option (Pair String String) :=
+    split_first_dot_go s 0 (String.length s)
+
+/// Every `.`-separated segment of a dotted name, in written order --
+/// `"x"` -> `["x"]`, `"pos.x"` -> `["pos", "x"]`, `"a.b.c"` ->
+/// `["a", "b", "c"]`. Head first, so the TAIL is exactly the field chain
+/// `field_access_chain` consumes.
+///
+/// The recursion is on a strictly shorter string (`split_first_dot` peels
+/// the head and the dot before recursing) but not on a structural subterm,
+/// which is what the termination check looks for -- hence `#[terminating]`
+/// rather than a derived proof.
+#[terminating]
+def dotted_segments (s : String) : List String :=
+    match split_first_dot s {
+        Option.none => List.cons s List.empty,
+        Option.some p =>
+            match p {
+                Pair.pair head rest => List.cons head (dotted_segments rest),
+            },
+    }
+
+/// `dotted_segments`' result re-wrapped as `Identifier`s -- hand-rolled
+/// rather than `List.map` for the reason `params_all_named`'s own doc
+/// comment further down records: a NEW top-level def in this module whose
+/// body calls a generic `List.*` op fails at run time with `unresolved
+/// global` through the self-hosted evaluator.
+#[partial]
+def identifiers_of_segments (segs : List String) : List Identifier :=
+    match segs {
+        List.empty => List.empty,
+        List.cons s rest => List.cons (Identifier.id s) (identifiers_of_segments rest),
+    }
+
+/// Does `head` name a class? The loose test the class-method path was
+/// built on, kept here only to EXCLUDE, never to resolve: a class-qualified
+/// name belongs to `class_method_ref`/`resolve_class_method`, so
+/// `try_global_field_access` must not reinterpret one as a field lookup.
+/// `Map.get` is the case that matters -- `Map` declares no `get`, so the
+/// tightened `class_method_ref` refuses it and it arrives at the recovery
+/// arm, where the honest answer is `unknown variable 'Map.get'` and not a
+/// field of a class.
+def dotted_head_names_class (head : String) (scope : Scope) : Bool :=
+    match scope_find_class (NamePath.npath (List.cons (Identifier.id head) List.empty)) scope {
+        Option.some _ => true,
+        Option.none => false,
+    }
+
+/// Does `head` name an inductive? A qualified CONSTRUCTOR reference
+/// (`List.empty`, `Vec.cons`) reaches the same recovery arm, and it is
+/// `type_check_free_var_con`'s to resolve: constructors are registered
+/// under their bare name only, so the inductive's own name is exactly the
+/// qualifier that must fall through.
+def dotted_head_names_inductive (head : String) (scope : Scope) : Bool :=
+    match scope_find_inductive (NamePath.npath (List.cons (Identifier.id head) List.empty)) scope {
+        ok _ => true,
+        err _ => false,
+    }
+
+/// `s` ends with `suffix`? Hand-rolled on `String.slice` rather than
+/// `String.ends_with` (`init/string.mo`), which reverses BOTH strings
+/// (`String.from_list (List.reverse (String.to_list s))`) -- this runs once
+/// per `def_refs` key in the scan below, and the scan is the only place a
+/// suffix test is needed.
+def str_ends_with (s : String) (suffix : String) : Bool :=
+    let slen : I64 := String.length s in
+    let plen : I64 := String.length suffix in
+    if I64.lt slen plen then false
+    else String.beq (String.slice s (slen - plen) plen) suffix
+
+/// Every `def_refs` KEY whose rendering ends in `suffix`, unordered (the
+/// caller only asks whether there is exactly one).
+#[partial]
+def def_keys_ending_with (pairs : List (Pair String ScopeDef)) (suffix : String) (acc : List String) : List String :=
+    match pairs {
+        List.empty => acc,
+        List.cons p rest =>
+            match p {
+                Pair.pair k _sd =>
+                    if str_ends_with k suffix
+                    then def_keys_ending_with rest suffix (List.cons k acc)
+                    else def_keys_ending_with rest suffix acc,
+            },
+    }
+
+/// The name `try_global_field_access` rebuilds a dotted access's subject
+/// under -- `head` as written when it resolves, else the ONE `def_refs` key
+/// that ends in `::head`.
+///
+/// The second half is why this exists. A def's own name is module-qualified
+/// by the time CODEGEN elaborates (`qualify_decl_names`, `lang.codegen.
+/// qualify`) -- `def vzero` in `simple` is registered as `simple::vzero`,
+/// and references are rewritten to match by `resolve_open_alias_term_
+/// scoped` -- but that rewriter matches a reference by its WHOLE name text,
+/// and a dotted spelling is not one its keys ever carry, so `vzero.x`
+/// survives qualification with a bare head. `scope_resolve_name` then misses
+/// in the codegen scope while the checker's own (pre-qualification) scope
+/// resolves it, which is exactly the shape of a fix that passes `monad
+/// check` and fails `monad compile` -- measured on the Gap 3 fixture:
+/// `elaborate_class: 3 decl(s) did not elaborate (kept un-elaborated):
+/// prelude::Lens, simple::vzero_x, simple::vzero_y`, each with `unknown
+/// variable 'vzero.x'`.
+///
+/// The key is returned as the rebuilt subject's NAME, not just used as a
+/// presence test, because `def_symbol_name` is the name VERBATIM
+/// (`lang/codegen/symbols.mo`): rebuilding the subject as the bare `vzero`
+/// inside a qualified graph would resolve in the checker and then reach
+/// codegen as a symbol nothing defines -- the same failure one stage later.
+///
+/// A suffix with more than one match is ambiguous and returns `Option.none`,
+/// i.e. the honest `unknown variable`: two modules declaring the same bare
+/// name is precisely what qualification exists to keep apart, and the
+/// rewriter above (which resolves that case by the importing module's own
+/// `use`/`open`) is the only place with the information to choose.
+#[partial]
+def resolve_dotted_head (head : String) (scope : Scope) (locals : LocalScope) : Option String :=
+    match scope_resolve_name (NameRef.nid (Identifier.id head)) scope locals {
+        ok _ => Option.some head,
+        err _ =>
+            let g : ScopeData := scope_globals scope in
+            let suffix : String := String.concat "::" head in
+            match def_keys_ending_with (HashMap.to_list g.def_refs) suffix List.empty {
+                List.empty => Option.none,
+                List.cons k rest =>
+                    match rest {
+                        List.empty => Option.some k,
+                        List.cons _ _ => Option.none,
+                    },
+            },
+    }
+
+/// Gap 3 recovery: a dotted name whose SUBJECT is a top-level def rather
+/// than a local binder.
+///
+/// `lower_path_ids` (`lang/src/parser/lower_parse.mo`) settles the
+/// "module-qualified global, or field access?" ambiguity on exactly one
+/// question -- is the path's first segment a local binder? -- because the
+/// parser has no scope to ask. A local subject (`p.first`) is therefore
+/// already a `FieldPattern` match by the time the checker sees it; a
+/// top-level one (`vzero.x`) is not, and the whole dotted spelling
+/// survives as ONE global name, which no def is registered under -- so the
+/// checker reported `unknown variable 'vzero.x'` for the entirely ordinary
+/// pair `pub def vzero : Vec3` and `vzero.x`.
+///
+/// Nothing about struct layout or LLVM types ever blocked the non-local
+/// case; only the missing desugaring did. This rebuilds the access with the
+/// SAME builder the parser uses (`field_access_chain`, now in `lib::types`)
+/// and re-enters `type_check` on it -- one desugaring, two callers, so the
+/// two cannot drift apart.
+///
+/// Re-entering the checker, rather than resolving the field's type here, is
+/// also what carries the fix to CODEGEN: `elaborate_def_with_scope`
+/// (`lang/module.mo`) writes the checker's rewritten term back into the
+/// `Def`, and both `elaborate_module_decls` and its best-effort sibling go
+/// through it -- so the field-pattern match codegen needs is in the `Def`
+/// with no second pass.
+///
+/// The rebuilt scrutinee is the UNDOTTED head, so the recursion terminates
+/// at once: `type_check` on `Term.var sentinel (named head)` takes the
+/// ordinary global path. `#[partial]` because that recursion is not
+/// structural -- the term handed back to `type_check` is built here, not
+/// taken apart from the one that arrived.
+///
+/// `Option.none` means "not this case", and the caller falls through to the
+/// constructor path unchanged. Four gates, in order:
+///
+///   * no dot at all -- not a field access;
+///   * the head names a CLASS -- the class-method path's business;
+///   * the head names an INDUCTIVE -- the constructor path's, which
+///     `type_check_free_var_con` owns (`List.empty`);
+///   * the head resolves to nothing, even after `resolve_dotted_head`'s
+///     module-qualified fallback -- a genuine `unknown variable`, which the
+///     caller must still report as one.
+#[partial]
+def try_global_field_access (id : Identifier) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Option (Result TypeError TypedTerm) :=
+    match id {
+        Identifier.id s =>
+            match dotted_segments s {
+                List.empty => Option.none,
+                List.cons head rest =>
+                    match rest {
+                        List.empty => Option.none,
+                        List.cons _ _ =>
+                            if dotted_head_names_class head scope then Option.none
+                            else if dotted_head_names_inductive head scope then Option.none
+                            else
+                                match resolve_dotted_head head scope locals {
+                                    Option.none => Option.none,
+                                    Option.some subject =>
+                                        let head_id : Identifier := Identifier.id subject in
+                                        let fields : List Identifier := identifiers_of_segments rest in
+                                        let scrutinee : Term := Term.var sentinel (DebugName.named head_id) in
+                                        Option.some (type_check (field_access_chain scrutinee fields) expected_type scope local_types locals),
+                                },
+                    },
+            },
+    }
 
 /// Fallback for `type_check_free_var`: `id` might be a qualified (or
 /// bare) CONSTRUCTOR reference in value position (`List.cons`,
@@ -1990,7 +2221,12 @@ def ref_names_class_method (id : Identifier) (scope : Scope) : Bool :=
     }
 
 /// Look up a free variable by debug name in the scope.
-def type_check_free_var (dbg : DebugName) (expected_type : Term) (scope : Scope) (locals : LocalScope) : Result TypeError TypedTerm :=
+///
+/// `local_types` is threaded through for exactly one reason: the last
+/// fallback can rebuild the reference as a field-access chain and re-enter
+/// `type_check` on it (`try_global_field_access` below), and `type_check`
+/// needs the full local context to do that. Nothing else here reads it.
+def type_check_free_var (dbg : DebugName) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match dbg {
         DebugName.named id =>
             let nref : NameRef := NameRef.nid id in
@@ -2097,7 +2333,21 @@ def type_check_free_var (dbg : DebugName) (expected_type : Term) (scope : Scope)
                                     },
                             },
                         err _ =>
-                            type_check_free_var_con id expected_type dbg scope,
+                            // Not a class method. Before falling back to the
+                            // constructor path, try the field-access recovery
+                            // -- a dotted name whose SUBJECT is a top-level
+                            // def (`vzero.x`) is an ordinary field read the
+                            // parser could not desugar, because it settles
+                            // the local-vs-global ambiguity on local binders
+                            // only. See `try_global_field_access`'s own doc
+                            // comment; it refuses every case that belongs to
+                            // either path above, so a `List.empty` still
+                            // reaches `type_check_free_var_con` and a
+                            // `Map.get` still reports `unknown variable`.
+                            match try_global_field_access id expected_type scope local_types locals {
+                                Option.some tt_result => tt_result,
+                                Option.none => type_check_free_var_con id expected_type dbg scope,
+                            },
                     },
             },
         DebugName.unnamed =>

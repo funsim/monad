@@ -426,6 +426,36 @@ pub type FieldPatternEntry {
     mk (field: Identifier) (binder: Identifier)
 }
 
+/// Nested bare-form field-pattern `Match` chain desugaring a dotted-path
+/// field access (`p.first`, `vzero.x`) into ordinary struct-field
+/// destructuring -- mirrors the Rust reference's
+/// `lower_core.rs::lower_field_access_chain`.
+///
+/// Lives here, beside the two types it builds, because it has two callers
+/// that must not drift: the parser's `lower_path_ids` (a subject that IS a
+/// local binder) and the checker's `try_global_field_access`
+/// (`lang/src/typecheck/infer.mo`, a subject that is a top-level def, the
+/// case `lower_path_ids` cannot settle at parse time). `lang::types` is the
+/// lowest module both already depend on.
+///
+/// The binder list is `[field]` inline rather than via
+/// `field_pattern_binder_names`: the pattern built here has exactly one
+/// entry whose binder IS `field`, so calling that helper would only add a
+/// dependency back on `lang/parser.mo`, which the parser's copy of this
+/// module exists without.
+#[partial]
+pub def field_access_chain (scrutinee : Term) (fields : List Identifier) : Term :=
+    match fields {
+        List.empty => scrutinee,
+        List.cons field rest =>
+            let value : Term := field_access_chain (Term.var 0 (DebugName.named field)) rest in
+            let entry : FieldPatternEntry := FieldPatternEntry.mk field field in
+            let fp : FieldPattern := FieldPattern.mk (List.cons entry List.empty) true in
+            let binders : List Identifier := List.cons field List.empty in
+            let case_ : MatchCase := MatchCase.mc (Identifier.id "") binders value (Option.some fp) in
+            Term.lit (Literal.match_ scrutinee (List.cons case_ List.empty)),
+    }
+
 /// A single `def` parameter as parsed: either an ordinary explicit param
 /// (unchanged), or a destructured one (`({ x, y } : T)`,
 /// `plans/implementations/struct-field-destructuring.md`'s Phase 8) --
