@@ -130,6 +130,26 @@
         "type": "github"
       }
     },
+    "flake-parts_2": {
+      "inputs": {
+        "nixpkgs-lib": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788450739,
+        "narHash": "sha256-glZLQlzIn1fXH6PazR2iUmTo7kzzyYSshrWhLS9TqCU=",
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "rev": "31729ca8cbdb4fa927b34e5f4353e6a83f39e993",
+        "type": "github"
+      },
+      "original": {
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "type": "github"
+      }
+    },
     "ghostty": {
       "flake": false,
       "locked": {
@@ -333,6 +353,7 @@
     "root": {
       "inputs": {
         "devenv": "devenv",
+        "flake-parts": "flake-parts_2",
         "git-hooks": "git-hooks_2",
         "nixpkgs": "nixpkgs_2"
       }

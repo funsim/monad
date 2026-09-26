@@ -17,6 +17,13 @@ docs/book
 # release step uploads them from dist/, which git need not track.
 dist/
 
+# `nix build` symlinks. Root-anchored, because `result` is an ordinary name
+# anywhere else in the tree. This matters for more than tidiness: `src = ./.`
+# copies the whole tree into the store, so an untracked `result` symlink lands
+# in the source of every derivation that builds it.
+/result
+/result-*
+
 # Plans directory for implementation planning
 plans
 
