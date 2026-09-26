@@ -4659,6 +4659,57 @@ def test_field_pattern_monomorphic_read_is_unaffected : IO Bool := do {
     return (I64.beq (List.length diags) 0)
 }
 
+// --- A class method must be DECLARED by the class its qualifier names -----
+//
+// `Map.get` (`std/src/map.mo` declares `empty`/`insert`/`lookup`/`delete`
+// and no `get`) used to type-check: `ref_names_class_method` only asked
+// whether the qualifier NAMED a class, then looked the bare suffix up in
+// EVERY class -- and `get` does exist, in `MonadState`
+// (`init/src/prelude.mo`). The resolver had the matching hole, so a
+// declared-but-absent method was rewritten to a mangled symbol nothing
+// emits and reached `llc`, and no gate could see it (`validate_no_
+// unresolved_class_calls` can only see refs that never resolved at all).
+//
+// The fixture below therefore needs a SECOND class, and that is measured,
+// not decorative: with `Bag.zzz` alone -- no class anywhere declaring
+// `zzz` -- the pre-fix checker reports the name as unknown too, because
+// the bare-name scan comes up empty. The defect is precisely the scan
+// FINDING an unrelated class's method, so a row without `Other` passes
+// before and after and proves nothing.
+
+def class_method_preamble : String :=
+    "class Bag A {\n\tdef put (a : A) : A\n}\n\nclass Other A {\n\tdef zzz (a : A) : A\n}\n\n"
+
+def class_method_src (row : String) : String := class_method_preamble ++ row
+
+/// The positive control, and the row that keeps the tightening honest:
+/// a method the qualifier's own class DOES declare still resolves, so the
+/// fix cannot pass by rejecting qualified references wholesale. `put`
+/// exists only on `Bag`, which is what makes it a control rather than a
+/// restatement of the row below.
+#[test]
+def test_declared_class_method_still_resolves : IO Bool := do {
+    let diags : List String <- check_diags_of_source (class_method_src "def ok_use (b : I64) : I64 := Bag.put b") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
+/// The defect itself: `Bag` does not declare `zzz`, `Other` does, and the
+/// pre-fix checker accepted `Bag.zzz` by finding `Other`'s.
+#[test]
+def test_class_method_of_another_class_is_not_borrowed : IO Bool := do {
+    let diags : List String <- check_diags_of_source (class_method_src "def bad_use (b : I64) : I64 := Bag.zzz b") "probe";
+    return (I64.beq (List.length diags) 1 && diags_contain "Bag.zzz" diags)
+}
+
+/// ...and a suffix no class declares is reported the same way, which is
+/// the arm the row above reaches through: both land in `unknown variable`
+/// rather than in some third, looser path.
+#[test]
+def test_class_method_declared_nowhere_is_reported : IO Bool := do {
+    let diags : List String <- check_diags_of_source (class_method_src "def bad_use (b : I64) : I64 := Bag.nope b") "probe";
+    return (I64.beq (List.length diags) 1 && diags_contain "Bag.nope" diags)
+}
+
 // --- An unannotated lambda argument's parameter type ---------------------
 //
 // Rows for `implementations/do-bind-binder-untyped.md`. `check_diags_of_source`

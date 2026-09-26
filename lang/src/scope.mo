@@ -5480,10 +5480,33 @@ def all_args_are_wildcards (wildcard_names : List Identifier) (args : List Term)
         List.cons a rest => term_is_wildcard wildcard_names a && all_args_are_wildcards wildcard_names rest,
     }
 
-/// If `id`'s own text is a dotted reference into a known class
-/// (`"Show.show"` for a registered class `Show`), returns that class
-/// and the bare method name (`"show"`). `Option.none` for any other
-/// var (an ordinary global, a local, an unrelated dotted path).
+/// If `id`'s own text is a dotted reference into a known class AND that
+/// class DECLARES the named method (`"Show.show"` for a registered class
+/// `Show`), returns that class and the bare method name (`"show"`).
+/// `Option.none` for any other var (an ordinary global, a local, an
+/// unrelated dotted path) -- including a dotted name whose qualifier IS a
+/// class but whose suffix is not one of its methods (`"Map.get"`: `class
+/// Map` declares `empty`/`insert`/`lookup`/`delete` and no `get`).
+///
+/// The membership test is not a nicety, it is what makes every consumer of
+/// this predicate SOUND. Resolution rewrites a hit to a concrete mangled
+/// name (`mangle_instance_method_name`: `std.map::Map_BTreeMap_get`), and
+/// every such name is built from the class's DECLARED method list
+/// (`class_method_names` drives both `promote_methods` and
+/// `build_dict_fields`) -- so a hit on an undeclared method is a name no
+/// definition can ever carry, and `validate_no_unresolved_class_calls`
+/// (which can only see refs that were never resolved at all) cannot catch
+/// it: it trusts "resolution succeeded" to imply "a definition exists",
+/// and this arm is the premise that made that trust false. What the
+/// caller got instead was a dangling symbol at `llc`, or -- through
+/// `ref_names_class_method`'s mirrored loose test, whose `err` arm falls
+/// back to scanning EVERY class for the bare suffix -- a silently typed
+/// term. `Map.get` is now `unknown variable 'Map.get'`, which is what an
+/// undefined name deserves.
+///
+/// `HashMap.get_bucket` (`std/src/map.mo`) is unaffected and is the one
+/// plausible blast radius: its qualifier is an INDUCTIVE, so
+/// `find_class_by_name` already misses and this arm is never reached.
 #[partial]
 def class_method_ref (classes : List Class) (id : Identifier) : Option ClassMethodRef :=
     let text := show_identifier id in
@@ -5496,7 +5519,10 @@ def class_method_ref (classes : List Class) (id : Identifier) : Option ClassMeth
                     match method_suffix_of text {
                         Option.none => Option.none,
                         Option.some method_str =>
-                            Option.some (ClassMethodRef.mk cls (Identifier.id method_str)),
+                            let method := Identifier.id method_str in
+                            if id_member method (class_method_names cls)
+                            then Option.some (ClassMethodRef.mk cls method)
+                            else Option.none,
                     },
             },
     }

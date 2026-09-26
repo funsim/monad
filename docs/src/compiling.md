@@ -261,6 +261,18 @@ actually shipped once:
 All four run only on reachable declarations, so a problem in dead code cannot
 block a build that never touches it.
 
+The **undefined symbols** gate is a backstop, and one case used to reach it
+that should never have: a class-method call naming a method its class does not
+declare (`Map.get` — `class Map` declares `empty`/`insert`/`lookup`/`delete`).
+The resolver rewrites a class-method reference to a mangled name built from the
+class's *declared* method list, so such a call produced a name nothing emits and
+landed here as `call to undefined symbol(s): std.map::Map_BTreeMap_get` — a
+symbol and no call site. The gate's own reasoning assumes a *successful*
+resolution implies the definition exists; `class_method_ref`
+(`lang/src/scope.mo`) now requires the qualifier's class to declare the method,
+so that assumption holds and the call is rejected during typecheck instead,
+naming the reference exactly as written (`unknown variable 'Map.get'`).
+
 ## Native Coverage
 
 There are 134 natives declared across `init/` and `std/`. The backend wires `I64` arithmetic and

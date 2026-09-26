@@ -10,7 +10,7 @@ use lib::types {
 }
 use lib::scope {
   DictBinding, build_dict_field_projection_checked, build_scope_def,
-  carrier_bindings, class_method_declared_type, class_method_var_names,
+  carrier_bindings, class_method_declared_type, class_method_ref, class_method_var_names,
   class_param_names, dict_binding_class_of, dict_param_name, type_mentions_any,
   find_constructor_in_inductive,
   find_matching_instance, flatten_call_spine, inductive_has_constructor,
@@ -1964,10 +1964,25 @@ def ref_names_class_method (id : Identifier) (scope : Scope) : Bool :=
     match id {
         Identifier.id s =>
             match dotted_qualifier s {
+                // No dot at all: this is not a QUALIFIED reference, and the
+                // arm below is deliberately loose for it -- the caller scans
+                // every class for the bare name. Tightening that (a method
+                // name declared in two classes can still resolve against the
+                // wrong one) is a separate piece of work, not this
+                // predicate's.
                 Option.none => true,
-                Option.some qual =>
-                    let qual_np : NamePath := NamePath.npath (List.cons (Identifier.id qual) List.empty) in
-                    match scope_find_class qual_np scope {
+                // Qualified: decided by `class_method_ref`, the SAME
+                // predicate the resolver itself uses (`lang/scope.mo`), and
+                // that is the point of delegating rather than repeating the
+                // test -- a second, independently-written membership rule is
+                // exactly how the two sides drifted apart in the first
+                // place. `Map.get` fails here now (no `get` among `Map`'s
+                // declared methods), so it falls through to
+                // `type_check_free_var_con` and reports `unknown variable
+                // 'Map.get'` instead of silently matching `MonadState.get`'s
+                // bare name in some unrelated class.
+                Option.some _ =>
+                    match class_method_ref (scope_data_classes (scope_globals scope)) id {
                         Option.some _ => true,
                         Option.none => false,
                     },
