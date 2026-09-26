@@ -114,7 +114,11 @@ Twelve modules are loaded ambiently: the prelude, plus `id`, `io`, `number`,
 `math`, `string`, `list`, the `init` hub, `std.path`, `std.io`, `std.process`,
 and the `std` hub. Everything else must be imported.
 
-Note that `prelude` is not a module you can `use` — it is loaded for you.
+`prelude` is loaded for you, so there is nothing to `use` it for — but it is
+not off limits: `use prelude {…}` resolves like any other module
+(`init/src/prelude.mo`, with its own resolution case because the name has no
+directory of its own to match), which is what a file that wants a prelude name
+it cannot otherwise reach would do.
 
 ### The re-export hubs do not cover everything
 
@@ -164,7 +168,6 @@ order:
 | `init/src/prelude.mo` | only for the exact name `prelude` |
 | `init/src/lib.mo` | only for the exact name `init` |
 | `std/src/lib.mo` | only for the exact name `std` |
-| `{importing file's mote root}/a/b.mo` | the mote doing the `use` |
 | `{dir of the importing file}/a/b.mo` | relative to the file doing the `use` |
 | `a/b.mo` | relative to the working directory |
 | `a/src/b.mo`, `a/src/lib.mo` | the head segment names a mote: `use example::greet` → `example/src/greet.mo` |
@@ -176,8 +179,11 @@ First hit wins. `init` and `std` need their own cases because their module
 *names* no longer match their *file* names — both resolve to a `lib.mo`
 re-export hub.
 
-Only when every one of those misses does the compiler look further, and this
-half is what makes the word *mote* load-bearing rather than decorative:
+Every one of those is anchored at the working directory or at the importing
+file, so all of them miss for a mote in its **own** repository, standing
+somewhere that is not a compiler checkout. That is what the rest of the search
+is for, and this half is what makes the word *mote* load-bearing rather than
+decorative. In order, and only after every candidate above has missed:
 
 1. **The `motes/` convention.** Every `motes/*/src/{stem}.mo` is probed, which
    is how a bare `use greet` finds `motes/example/src/greet.mo` without naming
@@ -186,7 +192,16 @@ half is what makes the word *mote* load-bearing rather than decorative:
    paths answer the lookup, so `use std::list` resolves to the dependency's
    real `src/list.mo` rather than to a directory that happens to be named like
    it. This is the step that makes resolution key off the **mote**, not the
-   working directory.
+   working directory, and it covers both the file's own mote root
+   (`{importing file's mote root}/a/b.mo`) and its declared
+   `[dependencies.X] path` entries.
+3. **An installed toolchain root.** `$MONAD_ROOT` if it is set, else
+   `$MONAD_HOME` (default `~/.monad`) — read through `active` and
+   `downloads/<tag>/` — which is the directory `monadup install` leaves the
+   binary and the mote sources in. This is the tier that lets a mote in its
+   own repository build with nothing declared at all, and it is why
+   `init`, `std`, `llvm` and `runtime` ship as an install asset rather than
+   only as this repository.
 
 The first three candidates are spelled relative to the checkout root, so from a
 directory that is not the root they miss — which is why they *also* consult the
@@ -194,11 +209,18 @@ manifest, and why `monad check src/main.mo` from inside `cli/` now loads its own
 `init`/`std` and reports nothing. Run the compiler from the checkout root and
 nothing changes, because the first candidate always hits there.
 
+If none of the three tiers answers and the module was one of the ambient few
+(`prelude`, `init`, `std`), the compiler says so on one line and names the way
+out — `monadup install`, `$MONAD_ROOT`/`$MONAD_HOME`, or a `path` dependency —
+rather than only listing the modules it could not resolve.
+
 `check` and `test` each take the same three modes: explicit paths,
 `--workspace`/`-w` (every mote in the enclosing workspace), or bare — the mote
-containing the working directory. `compile` is the exception: it takes an
-explicit path only, and a bare `monad compile` prints its usage rather than
-compiling the mote you are standing in:
+containing the working directory. A bare `check` or `test` outside any mote
+says there is nothing to do and exits non-zero; it does not print usage and
+report success. `compile` takes an explicit path or a mote directory, and a
+bare `monad compile` prints its usage rather than compiling the mote you are
+standing in:
 
 ```bash
 monad check --workspace
@@ -220,14 +242,22 @@ inline annotation never silently swallows a misspelled key.
 
 There is still no search-path *flag*; that belongs to the
 [bootstrap host](./bootstrap-host.md#packages-motes). Resolution itself does
-have an install root, though, because a mote in its own repository has no
-checkout to read `init`/`std` out of: after the importing mote's own directory,
-its declared `[dependencies.X] path` entries and the working-directory
-conventions, the self-hosted resolver probes an installed toolchain root — the
-directory `$MONAD_ROOT` names, else `$MONAD_HOME/downloads/<tag>` for the tag in
+have an install root, though — tier 3 above — because a mote in its own
+repository has no checkout to read `init`/`std` out of: the directory
+`$MONAD_ROOT` names, else `$MONAD_HOME/downloads/<tag>` for the tag in
 `$MONAD_HOME/active` (`$MONAD_HOME` defaulting to `$HOME/.monad`). `monadup`
-lays a nightly out in exactly that shape. See
+lays a nightly out in exactly that shape; see
 [Compiling and testing](./compiling.md) for the install walkthrough.
+
+That root is the *last* tier for modules, not the first, so the candidate table
+above can shadow it: a `std/` directory that happens to sit in your working
+directory — the compiler's own checkout, most obviously — answers `use std::map`
+before an installed root is ever consulted. The C runtime is resolved in the
+opposite order (`resolve_runtime_src`, `lang/src/module.mo`), where a declared
+`[dependencies.runtime] path` and the installed root both outrank the
+working-directory walk. Neither order is an accident: a module path is looked up
+by the file doing the `use`, which is what makes the checkout win there, while
+the runtime is one file a build either has or does not.
 
 ## Visibility
 
@@ -279,7 +309,7 @@ def main (args : List String) : IO Unit :=
 - `init/` is pure and portable, `std/` is OS-specific
 - Only 12 modules are ambient — most of `std/` needs an explicit import
 - Resolution is mote-based: a mote's own root first, the directory cascade only as the script-mode fallback
-- `check`/`test` each take explicit paths, `--workspace`, or the mote you are standing in; `compile` takes an explicit path
+- `check`/`test` each take explicit paths, `--workspace`, or the mote you are standing in; `compile` takes a file or a mote directory
 - A script module names its mote with a leading `#![mote { name := …, deps := […] }]`
 - `pub`/`priv`/package-private control visibility
 

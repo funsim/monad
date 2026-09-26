@@ -16,7 +16,7 @@ host](./bootstrap-host.md) is for:
 
 ```bash
 cargo build --release
-cargo run --release -- run lang/main.mo compile lang/main.mo -o "$PWD/monad"
+cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$PWD/monad"
 ```
 
 That produces `monad`, a native binary that needs nothing else. Everything below
@@ -106,6 +106,9 @@ monad compile hello.mo -o "$PWD/hello"
 ```text
 monad compile <path> [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]
         Parse, type-check and compile a .mo source file to a native binary.
+        <path> may also be a mote DIRECTORY, in which case its [bin] target is
+        built: `monad compile cli` builds cli/src/main.mo as `monad`, the name
+        that mote's [bin] declares.
 
 monad run <path> [--verbose/-v] [--debug/-g] [--release]
         Compile and then execute. The binary is always called `run_out`, so
@@ -117,12 +120,17 @@ monad eval <path> [--verbose/-v]
 monad pretty <path>
         Parse and pretty-print a .mo source file.
 
-monad check <path>... [--verbose/-v]
+monad check [<path>...] [--workspace/-w] [--verbose/-v]
         Parse and type-check; no execution.
         Any <path> that is a directory is expanded recursively to its *.mo files.
+        With no <path>, checks the mote containing the working directory;
+        --workspace checks every mote in the enclosing workspace.
+        With no <path> and no mote above the working directory it prints why
+        and exits 1, rather than reporting a pass for having checked nothing.
 
 monad test [<path>...] [--workspace/-w] [--verbose/-v]
         Compile each file's own #[test] defs into a native binary and run it.
+        Any <path> that is a directory is expanded recursively to its *.mo files.
         With no <path>, tests the mote containing the working directory;
         --workspace tests every mote in the enclosing workspace.
         A file with no #[test]s is skipped rather than failed. A file that
@@ -141,7 +149,9 @@ as a **separate argument**: `--output=NAME` is not recognised.
 
 `monad test` with no paths covers the mote containing the working directory, so
 it enumerates that mote's sources; `--workspace` covers every member. Pass
-explicit paths for anything else. Resolution keys off the mote doing the `use`,
+explicit paths for anything else. With no paths and no mote above the working
+directory it says so and exits 1, exactly as `check` does — there is nothing to
+test, and reporting a pass for it would read as one. Resolution keys off the mote doing the `use`,
 so an invocation from inside a mote finds its own `init`/`std` dependencies —
 there is no need to run it from the workspace root.
 
@@ -236,8 +246,8 @@ def main (args : List String) : I64 := 0
 Once you have a `monad` binary, it can build its own successor:
 
 ```bash
-monad compile lang/main.mo -o "$PWD/monad-next" --release
-./monad-next check lang/main.mo
+monad compile cli/src/main.mo -o "$PWD/monad-next" --release
+./monad-next check cli/src/main.mo
 ```
 
 CI runs exactly this on every push, and the second step is the one with teeth:
@@ -255,9 +265,9 @@ explicitly a stopgap.
 
 Every heap object carries a header with a refcount, and `monad_retain` /
 `monad_release` exist — but codegen never emits calls to them, so before the GC
-was added nothing was ever freed. Measured on `check lang/main.mo`, that meant
-5.99 GiB allocated of which 98.24% was garbage, and compiling `lang/main.mo` was
-OOM-killed at 29.7 GB.
+was added nothing was ever freed. Measured on `check cli/src/main.mo`, that meant
+5.99 GiB allocated of which 98.24% was garbage, and compiling `cli/src/main.mo`
+was OOM-killed at 29.7 GB.
 
 So `monad_alloc` calls `GC_malloc`, string buffers go through `GC_malloc_atomic`
 (so the collector does not scan text bytes and mistake them for pointers), and

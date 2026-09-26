@@ -49,6 +49,70 @@ monad compile hello.mo -o "$PWD/hello"
 ./hello
 ```
 
+## Your Own Mote
+
+A **mote** is a package: a directory with a `mote.toml` in it. That single file
+is what turns a pile of `.mo` files into something the compiler can resolve
+against, and it is why a program of your own in its own repository can find
+`init`, `std` and the C runtime without naming any of them.
+
+The smallest one that is a mote is one table:
+
+```toml
+[mote]
+name = "game"
+```
+
+Put it next to your sources and the bare forms of the commands work from
+anywhere inside the directory:
+
+```bash
+cd game
+monad check              # check the mote containing the working directory
+monad test               # build and run its #[test] defs
+monad compile . -o "$PWD/game"   # build the mote's [bin] target
+```
+
+Two more tables are worth having. `[bin]` is what `monad compile .` reads to
+decide which file is the program and what to call it; `[dependencies.X]` is a
+`path` to another mote — the form to reach for when you have a **compiler
+checkout** rather than an install, and want `init`/`std` out of it:
+
+```toml
+[mote]
+name = "game"
+
+[bin]
+name = "game"
+path = "src/main.mo"
+
+[dependencies.std]
+path = "../monad/std"
+
+[dependencies.init]
+path = "../monad/init"
+
+[dependencies.runtime]
+path = "../monad/runtime"
+```
+
+Absolute paths are fine here, and `monad check` bare inside the mote handles
+them. If you installed the compiler with `monadup`, you do not need those
+three entries at all: an install ships the `init`, `std`, `llvm` and `runtime`
+sources beside the binary, and the compiler finds them there. Nothing in your
+`mote.toml` has to mention the standard library.
+
+A single file outside any mote still works — that is a **script module**, and
+it names its own dependencies with a file-level annotation:
+
+```monad
+#![mote { name := "scratch", deps := [init, std] }]
+```
+
+See [Modules and Imports](./modules.md#how-modules-are-found) for the search
+order the compiler uses, and [Compiling and Running](./compiling.md) for
+installing the toolchain in the first place.
+
 ## Understanding the Structure
 
 Every Monad program follows this basic structure:
