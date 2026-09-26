@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "monad-cli"
-version = "0.1.2"
+version = "0.1.0"
 dependencies = [
  "clap",
  "mimalloc",
@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "monad-core"
-version = "0.1.2"
+version = "0.1.0"
 dependencies = [
  "clap",
  "console_error_panic_hook",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "monad-wasm"
-version = "0.1.2"
+version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "monad-core",
