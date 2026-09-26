@@ -1,7 +1,7 @@
-# style baseline @ 59b6780 -- regenerate with scripts/style-metrics.sh --write-baseline
+# style baseline @ fd9d3c3 -- regenerate with scripts/style-metrics.sh --write-baseline
 mo_files	197
-total_lines	86787
-production_lines	32182
+total_lines	86780
+production_lines	32175
 comment_lines	28049
 doc_comment_lines	17852
 blank_lines	7958
@@ -26,8 +26,8 @@ lines_over_100	3278
 lines_over_120	1496
 raw_string_lines	4012
 std_duplicate_defs	18
-partial_attrs	2312
-partial_attr_no_self_call	1557
+partial_attrs	2305
+partial_attr_no_self_call	1550
 list_cons_sites	2702
 list_cons_terminated_lines	1253
 list_cons_chain_depth2plus	274
