@@ -52,15 +52,12 @@ grep -qvE '^$|^unknown$' "$root/dist/commit.txt"
 # command in this script.
 #
 # Nothing is saved by avoiding a shell entry either way, and that is the one
-# thing about the cost worth writing down: entering the dev shell DOES run the
-# pre-commit suite. The flake devShell's shellHook ends in `devenv-tasks run
-# devenv:enterShell --mode all`, and `--mode all` resolves the task graph in
-# both directions from that root rather than only its prerequisites -- which
-# pulls in `devenv:files` (generating .pre-commit-config.yaml) and
-# `devenv:git-hooks:run` (the full `prek run -a` -- 75s warm, 291s measured
-# cold), on every `nix develop -c` in this repo. `DEVENV_SKIP_TASKS=1` is the
-# only way to suppress it. So a second entry here would cost a second sweep,
-# not a `prek install`.
+# thing about the cost worth writing down: nightly.yml sets
+# DEVENV_SKIP_TASKS=1, so entering the dev shell no longer runs the
+# pre-commit sweep (the shellHook's devenv-tasks invocation is gated on
+# that variable). The outputs argument above still decides the shape --
+# writing them here rather than in a second `nix develop -c` avoids a second
+# way for the release job to fail over something unrelated to the release.
 # Unset outside Actions, which is the only place these outputs mean anything.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   date_utc="$(date -u +%Y-%m-%d)"

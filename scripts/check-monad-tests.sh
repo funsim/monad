@@ -10,14 +10,18 @@
 # compiles a driver binary per test file and runs it, so a test failure
 # here is a failure of real compiled code.
 #
-# The binary has to be built in this job: CI's `test` and `bootstrap`
-# jobs run in separate ephemeral containers, so neither can borrow the
-# other's artifacts. The staleness check mirrors
-# `tasks."monad:debug-oracle"` -- reuse an existing binary, but rebuild
-# when any source compiled INTO it is newer, since a stale compiler
-# reports failures that are really its own age. All four motes, not
-# just lang/: cli/ holds the compile target, llvm/ and runtime/ the
-# backend.
+# The binary has to be built in this job: actions/checkout runs git
+# clean -ffdx at the start of every job, wiping target/, .devenv/ and the
+# config, so neither the `test` nor `bootstrap` job can borrow the other's
+# artifacts. The staleness check and build command live in
+# scripts/build-self-hosted.sh, shared with the other two CI scripts:
+# reuse an existing binary, but rebuild when any source compiled INTO
+# it is newer, since a stale compiler reports failures that are really
+# its own age. All four motes, not just lang/: cli/ holds the compile
+# target, llvm/ and runtime/ the backend. The cold cargo build is now
+# this script's dominant cost, since the entry-time sweep that used to
+# pre-pay it is suppressed (DEVENV_SKIP_TASKS=1 in ci.yml); the "Build
+# release binary" step in the `test` job warms target/ first.
 #
 # ONE runner, one corpus: the self-hosted runner tests every .mo file in it
 # and there is ONE total to read. That is where the mechanism was always

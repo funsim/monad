@@ -45,11 +45,16 @@ out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
 # No timeout, by design: the interpreted self-compile measured ~320s
 # (2026-09-09) but stretches 2-4x when the runner's other jobs and local
 # sessions share this machine, and `cargo run`'s own build phase is ~10 min
-# cold (fat-LTO profile; CI's ephemeral job containers never have a warm
-# target/). A fixed `timeout` here was killing healthy runs; the job-level
-# `timeout-minutes` is the hang guard. Progress is visible instead: --verbose
-# streams a per-module and per-stage trace (std/src/log.mo), so a genuinely
-# wedged run shows exactly which stage stalled.
+# cold (fat-LTO profile; actions/checkout runs git clean -ffdx at the start
+# of every job, wiping target/, .devenv/ and the config -- so every job
+# cold-builds what it needs). That cold build is now this script's dominant
+# cost, since the entry-time sweep that used to pre-pay it is suppressed
+# (DEVENV_SKIP_TASKS=1 in ci.yml); the "Build release binary" step in the
+# bootstrap job warms target/ first. A fixed `timeout` here was killing
+# healthy runs; the job-level `timeout-minutes` is the hang guard. Progress
+# is visible instead: --verbose streams a per-module and per-stage trace
+# (std/src/log.mo), so a genuinely wedged run shows exactly which stage
+# stalled.
 # --release: debug info is on by default; DWARF emission costs ~30s on this
 # workload and the binary this job tests does not need it.
 # rm -rf forces a from-scratch build rather than trusting a stale binary;

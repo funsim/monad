@@ -78,7 +78,7 @@ commit this book ships with, not inferred from intent.
 | Distribution | **Partial** | A nightly prerelease is published on every push to `main`, and `scripts/monadup` installs and switches between them. One artifact only — Linux x86_64 — and it is built inside the Nix devenv, so it links store paths and does **not** run on a plain machine. |
 | Packages | **Working** | Manifests are read: a module path resolves from the mote doing the `use`, and `check`/`test`/`compile` take `--workspace` or the mote you are standing in. Script modules declare theirs inline with `#![mote { … }]`. No search-path flag, and no lockfile or registry — those stay host-only. |
 | Editor tooling | **Host only** | The LSP server, MCP server, REPL, and `organize-imports` all live in the host. No syntax highlighting for any editor, and no tree-sitter grammar. |
-| CI | **Working** | Build, lint, full test sweep, and a self-hosting bootstrap check on every push. The sweep runs the **self-hosted** runner against a freshly self-compiled binary, so `monad test` itself is covered. |
+| CI | **Working** | Lint, full test sweep, and a self-hosting bootstrap check on every push. The release build runs inside the test and bootstrap jobs, not as a separate gate. The sweep runs the **self-hosted** runner against a freshly self-compiled binary, so `monad test` itself is covered. |
 | Documentation | **Partial** | This book. Every code block is type-checked; prose is not. |
 | Formatter | **Planned** | `organize-imports`, in the host, is the only codemod. |
 | Package registry | **Planned** | |

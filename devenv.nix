@@ -82,6 +82,10 @@
   # `devenv:git-hooks`, which CI still enters through a task -- says why in
   # its own comment below.
   #
+  # CI sets DEVENV_SKIP_TASKS=1 at the workflow level (see ci.yml's env: block)
+  # to suppress the entry-time sweep in every job; the tasks here stay as the
+  # local equivalent for `devenv test` / `devenv tasks run`.
+  #
   # The script this calls now builds and uses the SELF-HOSTED binary
   # rather than `cargo run -- test` (the Rust evaluator). The self-hosted
   # runner is what the project ships and what a user gets from `monad
@@ -163,25 +167,20 @@
   # .pre-commit-config.yaml` -- and the CI `pre-commit-checks` job is the one
   # step that stays a task rather than calling a script of its own.
   #
-  # It is also the sweep every OTHER CI step already pays for. The devShell's
-  # shellHook ends in `devenv-tasks run devenv:enterShell --mode all`, and
-  # `--mode all` resolves the task graph in both directions from that root
-  # rather than only over its prerequisites -- so entering the dev shell runs
-  # `devenv:files` (which generates the gitignored .pre-commit-config.yaml),
-  # `devenv:git-hooks:install` and this task, the whole `prek run -a`, before
-  # any command in the step starts. A hook that fails there fails the shell
-  # (`nix develop` exits 1), so it decides the step: the pre-commit job's own
-  # command is never even reached when a hook has already failed at entry.
+  # CI sets DEVENV_SKIP_TASKS=1 at the workflow level (see ci.yml's env: block),
+  # so the devShell's shellHook no longer runs the entry-time sweep
+  # (`devenv-tasks run devenv:enterShell --mode all`) in any job. This task's
+  # explicit invocation in pre-commit-checks is the ONLY run of the pre-commit
+  # suite in the pipeline.
   #
   # What the setting below changes: devenv-tasks streams a task's output only
   # for tasks with `showOutput` (its ui.rs: `VerbosityLevel::Normal =>
   # state.show_output`), and a failing task is the one case that does not need
   # it -- the failure report prints the captured stdout and stderr either way.
   # So the case it buys is the GREEN run: which hooks ran and what they said,
-  # in the step log, instead of nothing at all. It has to be set here rather
-  # than on the CI command line because the entry-time run above is where the
-  # sweep actually happens. `devenv:git-hooks:install` and `devenv:files` stay
-  # quiet: their output is setup chatter rather than a result.
+  # in the step log, instead of nothing at all. `devenv:git-hooks:install` and
+  # `devenv:files` stay quiet: their output is setup chatter rather than a
+  # result.
   tasks."devenv:git-hooks:run".showOutput = true;
 
   # https://devenv.sh/git-hooks/

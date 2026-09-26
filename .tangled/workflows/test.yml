@@ -11,6 +11,9 @@
 # runs, and the value it ships with is 5m, far under this job's needs. That
 # raise is a host prerequisite, not something this file can express; see
 # monad-nixos-modules/modules/spindle.nix.
+environment:
+  DEVENV_SKIP_TASKS: "1"
+
 when:
   - event: ["push", "pull_request"]
     branch: ["main"]

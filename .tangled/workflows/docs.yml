@@ -22,6 +22,9 @@
 # this is the cheapest workflow in the directory and it cannot be affected by
 # anything outside docs/, so it does not need to run on every push. (Spindle
 # takes `paths` per constraint, alongside branch and tag.)
+environment:
+  DEVENV_SKIP_TASKS: "1"
+
 when:
   - event: ["push", "pull_request"]
     branch: ["main"]

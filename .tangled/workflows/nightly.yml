@@ -23,6 +23,9 @@
 # The GitHub job also guards on `github.repository == 'monad-lang/monad'` so
 # forks can't publish. There is nothing to port: a pipeline only runs on a repo
 # whose settings list this spindle.
+environment:
+  DEVENV_SKIP_TASKS: "1"
+
 when:
   - event: ["push"]
     branch: ["main"]

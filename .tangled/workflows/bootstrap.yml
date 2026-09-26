@@ -22,6 +22,9 @@
 # task's stdout and shows it only on failure, and here the output IS the
 # diagnostic -- the compile's --verbose per-module stage trace, and the
 # oracle's per-file verdicts.
+environment:
+  DEVENV_SKIP_TASKS: "1"
+
 when:
   - event: ["push", "pull_request"]
     branch: ["main"]
