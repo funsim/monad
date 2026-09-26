@@ -50,6 +50,15 @@
 # that went stale the first time the list changed.
 set -euo pipefail
 
+# Everything below resolves paths against the repository root: the build
+# helper by relative path, and the sweep's own `find` lists by bare tree
+# name. A `find` run from the wrong directory yields an empty sweep rather
+# than an error, so the cwd is not left to the caller -- the three sibling
+# scripts all cd here themselves, and CI happens to invoke every one of
+# them from the repo root.
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
 # `host_only`: the files the self-hosted runner could not build a working
 # driver for. Every entry it ever held was a PRE-EXISTING backend bug,
 # never a problem with the test file or with the runner, and while one was

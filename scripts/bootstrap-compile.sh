@@ -68,8 +68,12 @@ scripts/build-self-hosted.sh "$out" --verbose --release
 # Rung 1 == rung 2, asserted rather than remembered. A binary that builds and
 # checks but emits different IR for its own source is a miscompile the
 # front-end tests cannot see.
-"$out/monad" compile cli/src/main.mo -o "$out/monad2" --release
-test -x "$out/monad2"
+#
+# The turn itself is scripts/self-compile-turn.sh -- the same command, with
+# the same absolute `-o` and the same post-condition, that the flake's
+# `checks.bootstrap` runs against the packaged compiler. One definition, so
+# the two ladders cannot drift.
+scripts/self-compile-turn.sh "$out/monad" "$out" monad2 --release
 cmp "$out/monad.ll" "$out/monad2.ll"
 
 # And again WITHOUT --release, which is the DEFAULT invocation and was broken
@@ -90,7 +94,6 @@ rm -rf "$dbg"; mkdir -p "$dbg"
 scripts/build-self-hosted.sh "$dbg" --verbose
 "$dbg/monad" check cli/src/main.mo
 # Same fixpoint in the default (DWARF-emitting) mode -- see the `--release`
-# block above for why both turns are asserted.
-"$dbg/monad" compile cli/src/main.mo -o "$dbg/monad2"
-test -x "$dbg/monad2"
+# block above for why both turns are asserted, and for the helper.
+scripts/self-compile-turn.sh "$dbg/monad" "$dbg" monad2
 cmp "$dbg/monad.ll" "$dbg/monad2.ll"
