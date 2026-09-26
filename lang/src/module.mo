@@ -4766,6 +4766,76 @@ def test_class_method_declared_nowhere_is_reported : IO Bool := do {
     return (I64.beq (List.length diags) 1 && diags_contain "Bag.nope" diags)
 }
 
+// --- A qualified reference's DOMAIN comes from the class it names ---------
+//
+// The rows above are about WHICH method a qualified reference resolves to.
+// These are about which signature its argument position learns a lambda's
+// binder from, and the defect they pin is the same shape one function over:
+// `class_method_declared_sig` (`lang/src/typecheck/infer.mo`) stripped the
+// qualifier and scanned every class for the bare method name, which answers
+// with the LAST-DECLARED class declaring it -- `scope_data_add_class_def`
+// PREPENDS (`lang/scope.mo`), so `class_defs` is in reverse declaration order
+// and `Box` below, declared second, is what the scan finds. So `Bag.put` took
+// its domain from a class the caller never named. Two classes declaring the
+// same method name with different domains is all it takes.
+//
+// Three things about the fixture were measured, not assumed, and each one is
+// what makes these rows discriminate where an obvious spelling does not:
+//
+//  * a synthetic scope has NO PRELUDE (`check_diags_of_source` builds one from
+//    the source's own decls), so `I64` and `Bool` are unknown variables in it
+//    and a domain mentioning one is rejected by `lam_binder_hint`'s
+//    `mentions_unresolved_name` gate. The domains here are therefore DECLARED
+//    types (`T`, `U`); written with `I64`/`Bool` the row passes with and
+//    without the fix, because the wrong domain never reaches the binder.
+//  * a field read through a binder whose type is still a HOLE is not an error
+//    by itself: the checker's ambiguous-name fallback resolves the field
+//    whenever exactly one type declares it. `TA`/`UA` exist only to make `t`
+//    and `u` ambiguous, so a missing or wrong domain becomes visible instead
+//    of being rescued.
+//  * a body that only APPLIES its binder cannot discriminate: application
+//    arguments are never checked against parameter types here (infer-only
+//    checking), so `idT x` type-checks under any binder type at all. A field
+//    read is the shape that must know the binder's type, which is why every
+//    row below reads one.
+def class_method_domain_preamble : String :=
+    "type Z { z }\n\nstruct T { t : Z }\nstruct U { u : Z }\nstruct TA { t : Z }\nstruct UA { u : Z }\n\nclass Bag A {\n\tdef put (a : A) (f : A -> A) : A\n}\n\nclass Box A {\n\tdef put (a : A) (f : U -> U) : A\n}\n\n"
+
+def class_method_domain_src (row : String) : String := class_method_domain_preamble ++ row
+
+/// The row that fails before the fix and is the acceptance test for it. The
+/// lambda's binder must be `Bag`'s own `A`, solved to `T` by the receiver, so
+/// `x.t` resolves. Measured the other way: before the fix the binder is
+/// `Box`'s `U` and this reports "field pattern names a field the constructor
+/// doesn't have".
+#[test]
+def test_qualified_class_method_domain_comes_from_its_own_class : IO Bool := do {
+    let diags : List String <- check_diags_of_source (class_method_domain_src "def useit (b : T) : Z := Bag.put b (fn x => x.t)") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
+/// The converse, and the reason the row above is not enough on its own: it
+/// reads the field the OTHER class declares. This reports nothing before the
+/// fix, because the binder really was `Box`'s `U` and the read is then
+/// correct -- a wrong domain silently accepted. After the fix the binder is
+/// `T`, which has no `u`, so the row fails unless the domain changed. Together
+/// the pair pins the binder to `Bag`'s `A` rather than merely to "some
+/// resolution".
+#[test]
+def test_qualified_class_method_domain_is_not_borrowed : IO Bool := do {
+    let diags : List String <- check_diags_of_source (class_method_domain_src "def useit (b : T) : Z := Bag.put b (fn x => x.u)") "probe";
+    return (I64.beq (List.length diags) 1 && diags_contain "doesn't have" diags)
+}
+
+/// The control: a reference to the class the bare scan already preferred, so
+/// the fix must change nothing here. It is what fails if honouring the
+/// qualifier damages the case that worked by luck.
+#[test]
+def test_class_method_domain_of_the_declared_class_still_works : IO Bool := do {
+    let diags : List String <- check_diags_of_source (class_method_domain_src "def useit2 (b : U) : Z := Box.put b (fn x => x.u)") "probe";
+    return (I64.beq (List.length diags) 0)
+}
+
 // --- An unannotated lambda argument's parameter type ---------------------
 //
 // Rows for `implementations/do-bind-binder-untyped.md`. `check_diags_of_source`

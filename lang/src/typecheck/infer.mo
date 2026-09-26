@@ -1,5 +1,5 @@
 use lib::types {
-  Con, DebugName, Identifier, Inductive, InductConstructor,
+  Class, Con, DebugName, Identifier, Inductive, InductConstructor,
   Literal, LocalScope, LocalVar, MatchCase, ModulePath, NamePath, NameRef, NumSuffix,
   Native, Param, Scope, ScopeClassDef, ScopeDef, ScopeError, Similar,
   StructLitField, Term, TypeConstraint, TypeError,
@@ -9,7 +9,7 @@ use lib::types {
   unknown_constructor, unknown_type, unknown_var, unnamed, var,
 }
 use lib::scope {
-  DictBinding, build_dict_field_projection_checked, build_scope_def,
+  ClassMethodRef, DictBinding, build_dict_field_projection_checked, build_scope_def,
   carrier_bindings, class_method_declared_type, class_method_ref, class_method_var_names,
   class_param_names, dict_binding_class_of, dict_param_name, type_mentions_any,
   find_constructor_in_inductive,
@@ -3359,12 +3359,25 @@ struct ClassMethodDecl {
     vars : List Identifier,
 }
 
-/// The class method a bare reference names, or `Option.none` if `head` is not
-/// one. Mirrors `type_check_free_var`'s own class-method test -- `ref_names_
-/// class_method` for the qualifier rule (a qualifier naming an INDUCTIVE is a
-/// constructor reference, not a class method) plus the bare-name lookup, which
-/// is why the qualifier is stripped first: class methods are registered under
-/// their bare method name (`add_methods_go`, `lang/scope.mo`).
+/// The class method a reference names, or `Option.none` if `head` is not one.
+/// Mirrors `type_check_free_var`'s own class-method test -- `ref_names_class_
+/// method` for the qualifier rule (a qualifier naming an INDUCTIVE is a
+/// constructor reference, not a class method) -- and takes its answer from the
+/// same calls that test makes, so the domain the hint goes down with and the
+/// resolution the reference gets cannot name different classes.
+///
+/// A QUALIFIED reference is decided by `class_method_ref` alone: the class the
+/// qualifier names, and only that class. The bare-name scan cannot answer for
+/// it, because class methods are registered under their bare name
+/// (`add_methods_go`, `lang/scope.mo`) and the scan's answer is positional: both
+/// `scope_data_add_class_def` and `scope_data_add_class` PREPEND (`lang/scope.
+/// mo`), so the scan returns the LAST class declaring that name -- and a later-
+/// declared class declaring the same method name would hand this argument
+/// position a domain from a class the caller never named. That is the
+/// `Bag.put x (fn q => ...)` case, and it is measured rather than assumed: with
+/// `Bag` declared first and `Box` second, both declaring `put` over different
+/// domains, the pre-fix checker gave `Bag.put`'s lambda binder `Box`'s domain
+/// (`test_qualified_class_method_domain_comes_from_its_own_class`).
 #[partial]
 def class_method_declared_sig (head : Term) (scope : Scope) : Option ClassMethodDecl :=
     match term_peel head {
@@ -3373,20 +3386,13 @@ def class_method_declared_sig (head : Term) (scope : Scope) : Option ClassMethod
                 match dbg {
                     DebugName.named id =>
                         if ref_names_class_method id scope then
-                            let bare_id : Identifier :=
-                                match id { Identifier.id s => Identifier.id (last_dotted_segment s) } in
-                            match scope_find_class_def_by_name bare_id scope {
-                                err _ => Option.none,
-                                ok cd =>
-                                    match scope_find_class cd.class_name scope {
-                                        Option.none => Option.none,
-                                        Option.some cls =>
-                                            match class_method_declared_type cls cd.name {
-                                                Option.none => Option.none,
-                                                Option.some sig =>
-                                                    Option.some (ClassMethodDecl.mk sig (class_method_var_names cls sig)),
-                                            },
-                                    },
+                            match class_method_ref (scope_data_classes (scope_globals scope)) id {
+                                Option.some ref => class_method_decl_of ref,
+                                // No qualifier, so there is no class to honour and
+                                // the bare-name scan is the only rule there is. It
+                                // stays loose deliberately -- see `ref_names_class_
+                                // method`'s comment on the un-dotted arm.
+                                Option.none => class_method_declared_sig_bare id scope,
                             }
                         else
                             Option.none,
@@ -3395,6 +3401,43 @@ def class_method_declared_sig (head : Term) (scope : Scope) : Option ClassMethod
             else
                 Option.none,
         _ => Option.none,
+    }
+
+/// The declaration a resolved class-method reference names, in the shape the
+/// lambda-binder hint wants: the signature, plus the names the class
+/// declaration binds (`class_method_var_names`), which is the wildcard set
+/// `lam_binder_hint` rejects a discovered domain against.
+///
+/// Takes the reference rather than the class and method in loose form, so both
+/// arms of the lookup above hand the next step the same thing -- the qualified
+/// one its own resolution, the unqualified one the resolution it stands in for.
+def class_method_decl_of (found : ClassMethodRef) : Option ClassMethodDecl :=
+    match found {
+        ClassMethodRef.mk cls method =>
+            match class_method_declared_type cls method {
+                Option.none => Option.none,
+                Option.some sig => Option.some (ClassMethodDecl.mk sig (class_method_var_names cls sig)),
+            },
+    }
+
+/// The unqualified half of the lookup above: the first class in scope that
+/// declares a method of this bare name. A method name declared by two classes
+/// can still answer with the wrong one here, which is the pre-existing
+/// looseness `ref_names_class_method` documents rather than a rule this
+/// function introduces.
+def class_method_declared_sig_bare (id : Identifier) (scope : Scope) : Option ClassMethodDecl :=
+    let bare_id : Identifier :=
+        match id { Identifier.id s => Identifier.id (last_dotted_segment s) } in
+    match scope_find_class_def_by_name bare_id scope {
+        err _ => Option.none,
+        ok cd =>
+            match scope_find_class cd.class_name scope {
+                Option.none => Option.none,
+                // The scan found the class, so the method it named is one this
+                // class declares: the reference below is the resolution the scan
+                // stands in for, not a guess.
+                Option.some cls => class_method_decl_of (ClassMethodRef.mk cls cd.name),
+            },
     }
 
 /// Extract the return type from the function's type after application.
