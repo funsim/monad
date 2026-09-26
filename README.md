@@ -71,7 +71,11 @@ Prebuilt nightlies are published on every push to `main` and installed with
 `scripts/monadup` (`monadup self-install`, then `monadup default`). They are
 Linux x86_64 and are built inside the Nix devenv, so they link store paths and
 will not run on a machine without them -- building from source is the portable
-route. See [Compiling and Running](docs/src/compiling.md#getting-a-compiler).
+route. A nightly ships the `init`, `std` and `runtime` mote sources beside the
+binary, so the compiler resolves the standard library and the C runtime out of
+its own install directory and can build a program that lives anywhere; point
+`MONAD_ROOT` at a different tree to override that. See
+[Compiling and Running](docs/src/compiling.md#getting-a-compiler).
 
 ### Compile and run a program
 

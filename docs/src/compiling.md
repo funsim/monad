@@ -43,14 +43,38 @@ monad version
 ```
 
 `monadup list` / `use <tag>` / `update` / `uninstall <tag>` manage the installed
-set under `~/.monad`. It needs `curl` and either `jq` or `python3`.
+set under `~/.monad`. It needs `curl`, `tar` and either `jq` or `python3`.
 
 > **The nightly is built inside the Nix devenv** and links against store paths,
 > so on a machine without those it will not run — `monadup` says so rather than
 > leaving you to discover it. Until that is fixed, building from source is the
 > portable route.
 
-There is one artifact, `monad-nightly-x86_64-linux`: Linux x86_64 only.
+An install directory holds more than the compiler:
+
+```
+~/.monad/downloads/<tag>/
+  monad-nightly-x86_64-linux   the compiler
+  commit.txt                   the commit it was built from
+  init/  std/  runtime/        the mote sources
+  mote.toml                    those three, as a workspace
+```
+
+Those last three are what let you use the compiler on a program of your own —
+`use std::map` and the C runtime both resolve out of that directory. Without
+them, only a checkout of the compiler repository can compile anything. Nightlies
+published before the sources asset existed install the binary alone and say so;
+re-running `monadup install` adds the sources once a release ships them.
+
+`MONAD_ROOT` points the compiler at a different set of sources, for a root that
+is not a monadup install (an unpacked copy, or a checkout):
+
+```bash
+MONAD_ROOT=/path/to/tree-with-init-std-runtime monad check
+```
+
+Two artifacts, both Linux x86_64 only: `monad-nightly-x86_64-linux` (the
+compiler) and `monad-src-x86_64-linux.tar.gz` (the sources above).
 
 ## Your First Program
 
