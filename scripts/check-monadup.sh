@@ -17,7 +17,7 @@
 # script builds on the spot. That covers the two cases the shipped script has
 # to get right and cannot be reasoned about from reading it:
 #
-#   * a release WITH the sources asset -- binary, commit.txt and the three
+#   * a release WITH the sources asset -- binary, commit.txt and the four
 #     motes all end up in the version directory, which is what makes it a
 #     toolchain root the compiler can find on its own;
 #   * a release WITHOUT one -- every nightly published before the asset
@@ -57,18 +57,19 @@ asset="$dist/monad-src-x86_64-linux.tar.gz"
 [ -f "$asset" ] || die "stage-mote-sources.sh wrote no $asset"
 
 listing="$(tar -tzf "$asset")"
-for want in init/mote.toml std/mote.toml runtime/mote.toml \
-            init/src/lib.mo std/src/lib.mo runtime/src/runtime.c mote.toml; do
+for want in init/mote.toml std/mote.toml llvm/mote.toml runtime/mote.toml \
+            init/src/lib.mo std/src/lib.mo llvm/src/ir.mo runtime/src/runtime.c \
+            mote.toml; do
   grep -qxF "$want" <<<"$listing" || die "sources asset is missing '$want'"
 done
-ok "sources asset carries the three motes' manifests, sources and runtime.c"
+ok "sources asset carries the four motes' manifests, sources and runtime.c"
 
 # The generated root manifest is what makes the unpacked directory a
-# WORKSPACE rather than three loose motes -- and it is generated, so it is
+# WORKSPACE rather than four loose motes -- and it is generated, so it is
 # asserted rather than assumed.
-tar -xzOf "$asset" mote.toml | grep -qF 'members = ["init", "std", "runtime"]' \
-  || die "sources asset's root mote.toml does not declare the three motes as members"
-ok "sources asset's root mote.toml is a workspace naming all three motes"
+tar -xzOf "$asset" mote.toml | grep -qF 'members = ["init", "std", "llvm", "runtime"]' \
+  || die "sources asset's root mote.toml does not declare the four motes as members"
+ok "sources asset's root mote.toml is a workspace naming all four motes"
 
 # The exclusion is deliberate (they are already inside the binary): if a
 # later edit drops it, the artifact doubles in size and this says why that
@@ -127,12 +128,13 @@ MONAD_HOME="$home" MONADUP_API_URL="file://${fix}/releases" \
 vdir="$home/downloads/${tag}"
 [ -x "$vdir/monad-nightly-x86_64-linux" ] || die "no executable binary in ${vdir}"
 [ "$(cat "$vdir/commit.txt")" = deadbeef ] || die "commit.txt was not installed"
-for m in init std runtime; do
+for m in init std llvm runtime; do
   [ -d "$vdir/$m" ] || die "the sources asset was not unpacked: ${vdir}/${m} is missing"
 done
 [ -f "$vdir/mote.toml" ] || die "the generated root mote.toml is missing from ${vdir}"
 [ -f "$vdir/std/src/map.mo" ] || die "the unpacked std is not the real std"
-ok "monadup installed the binary, commit.txt and the three motes"
+[ -f "$vdir/llvm/src/ir.mo" ] || die "the unpacked llvm is not the real llvm"
+ok "monadup installed the binary, commit.txt and the four motes"
 
 [ "$(cat "$home/active")" = "$tag" ] || die "the fixture was not made active"
 [ -L "$home/bin/monad" ] || die "no bin/monad symlink"
@@ -185,7 +187,7 @@ MONAD_HOME="$home_old" MONADUP_API_URL="file://${fix_old}/releases" \
 
 grep -q "already installed" "$work/reinstall.log" \
   || { cat "$work/reinstall.log" >&2; die "re-running install did not take the already-installed path"; }
-for m in init std runtime; do
+for m in init std llvm runtime; do
   [ -d "$vdir_old/$m" ] || die "re-running install did not add ${m}/"
 done
 ok "re-running install adds the sources to an existing binary-only version directory"

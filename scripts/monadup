@@ -215,14 +215,14 @@ do_install_sources() {
     echo "monadup: note: ${LATEST_TAG} ships no ${SRC_ASSET_NAME}"
     echo "monadup:       the binary is installed and usable inside a compiler checkout,"
     echo "monadup:       but 'monad compile'/'run'/'test' elsewhere will not find init,"
-    echo "monadup:       std or the C runtime: declare [dependencies.runtime] and run from"
-    echo "monadup:       a checkout, or install a tag that ships the sources."
+    echo "monadup:       std, llvm or the C runtime: declare [dependencies.runtime] and run"
+    echo "monadup:       from a checkout, or install a tag that ships the sources."
     return 0
   fi
 
   tar -xzf "$tarball" -C "$target_dir" || err "failed to unpack ${SRC_ASSET_NAME}"
   rm -f "$tarball"
-  echo "monadup: installed mote sources (init, std, runtime)"
+  echo "monadup: installed mote sources (init, std, llvm, runtime)"
 }
 
 cmd_install() {
