@@ -31,6 +31,28 @@ env:
   # OUTSIDE the guard and are unaffected.
   DEVENV_SKIP_TASKS: "1"
 
+# The three jobs run in PARALLEL, deliberately, and the pipeline's wall clock
+# is the slowest of them (the `test` job) rather than their sum. `needs:`
+# between them was considered and declined on the measurements, not on taste:
+#
+#   * `needs: pre-commit-checks` on `test`/`bootstrap` would delay the
+#     critical-path job by the lint's own 9m32s on every GREEN run, because
+#     the gate would then run before the job it gates instead of beside it.
+#     (Run 36243944155: pre-commit 13:04:33-13:14:05 on one runner while
+#     `test` ran 13:04:33-14:12:08 on the other.) What it buys is real but
+#     different -- up to an hour of runner time not spent on a run that fails
+#     formatting -- and that is a cost trade for the maintainer, not a wall
+#     clock win, so it is not made here.
+#   * `[self-hosted, linux, monad-ci]` (the label registered by
+#     monad-nixos-modules' modules/github-runner.nix) was considered as a way
+#     to stop paying a cold build. It would not help: the 16-20 min
+#     "Build the compiler from the flake" step is the same on both runners
+#     (16m11s on anders-desktop in run 36243944155, 19m58s on nixos-server in
+#     run 36238059186) because `.#monad` depends on this commit's whole source
+#     tree, so it is cold on EVERY commit. Pinning a job to one machine would
+#     remove scheduling freedom and buy nothing. The fix for that step is a
+#     binary cache shared by the two runners (nix-serve or attic) -- a
+#     monad-nixos-modules change, not one this repo can make.
 jobs:
   pre-commit-checks:
     runs-on: [self-hosted, linux]
@@ -54,9 +76,17 @@ jobs:
 
   test:
     runs-on: [self-hosted, linux]
-    # Hang guard, not a deadline: a sandbox rung-1 build (~10-20 min, measured
-    # on a dev machine rather than on this runner) plus the sweep, which is
-    # ~50 min of the 56 min this step took on run 36197461023.
+    # Hang guard, not a deadline: a sandbox rung-1 build plus the sweep. Both
+    # halves of that are now measured rather than guessed (run 36243944155,
+    # the last green one before this comment): the flake build was 16m11s
+    # there and 19m58s in run 36238059186, on the OTHER runner -- so it is a
+    # per-commit cold build of `.#monad`, not store luck, and not something a
+    # label can fix. The sweep was 42m23s and the check 8m44s, and
+    # scripts/check-monad-tests.sh now runs both sharded
+    # (MONAD_SWEEP_JOBS, default min(nproc - 1, 8) = 7 here). Measured on the
+    # full 197-file corpus with one binary, serial vs 7 shards:
+    # 58m45s -> 25m35s for the whole script, at 2195/2195 tests either way.
+    # That is the local figure; this step was 51m20s in CI.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
