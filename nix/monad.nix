@@ -1,11 +1,31 @@
-# Rung 1: the host compiles `cli/src/main.mo` into a real `monad`, wrapped so
-# that everything it shells out to at RUNTIME is reachable from a store path.
+# Rung 1, in two derivations: the host interprets `cli/src/main.mo` into a real
+# `monad` plus the `.ll` it emitted (`packages.monadRung1`), and a small link
+# step stamps that `.ll` with this commit's revision (`packages.monad`).
 #
-# `packages.default` and `apps.monad` both point here, so this is what
-# `nix build .#monad` and `nix run .#monad` produce. It is a build-and-check
-# artifact rather than a distributable one, and the reason is now only that
-# this derivation installs the BINARY and not the sources: the compiler finds
-# `init`/`std`/`llvm`/`runtime` in the target mote's declared
+# The split exists because of what made the old single derivation uncacheable.
+# `.#monad` was cold on EVERY commit for two independent reasons -- its `src`
+# was `../.`, the whole tree, and `MONAD_BUILD_COMMIT` was interpolated into
+# its phases -- so the 20-minute interpretation was paid again by every commit,
+# including one that changed only a workflow file. The revision has to be baked
+# in (see installPhase), so the second reason cannot be removed from the
+# arithmetic. What CAN be removed is the interpretation: the revision never
+# enters the emitted IR, so the expensive half is a pure function of the
+# compiler's sources, and the per-commit half is a three-command link.
+#
+# That the revision does not reach the IR is measured, not assumed. Two rung-1
+# builds of the same source stamped with two DIFFERENT revisions (5441725 and
+# 6770f64) emitted byte-identical `monad.ll` -- `cmp` clean on 5417399 bytes --
+# which is what makes a commit-free `rung1` a legitimate input to a stamped
+# `.#monad`. `monad_build_commit` reaches the binary as a `declare` the runtime
+# object defines (`llvm/src/link.mo`'s `build_commit_define`, and
+# runtime/src/runtime.c's `#ifdef MONAD_BUILD_COMMIT`), which is why the define
+# has to be applied by a LINK and not by a wrapper.
+#
+# `.#monad` is what `packages.default` and `apps.monad` point to, so
+# `nix build .#monad` and `nix run .#monad` are unchanged. It is a
+# build-and-check artifact rather than a distributable one, and the reason is
+# now only that this derivation installs the BINARY and not the sources: the
+# compiler finds `init`/`std`/`llvm`/`runtime` in the target mote's declared
 # `[dependencies.X] path` entries, in an installed toolchain root
 # (`$MONAD_ROOT`, else `$MONAD_HOME` + `active`) or by walking up from the
 # working directory to a workspace root (`resolve_runtime_src`,
@@ -16,7 +36,7 @@
 # "a store copy cannot name itself" constraint). Bare, then, a packaged
 # `monad compile` runs from a checkout, exactly as CI runs it.
 #
-# The step that builds it is `scripts/build-self-hosted.sh`, not a shell
+# The step that builds rung 1 is `scripts/build-self-hosted.sh`, not a shell
 # command spelled out here: CI builds rung 1 through that same script in
 # check-monad-tests.sh, bootstrap-compile.sh and debug-oracle.sh, and the two
 # drifted apart once already (the absolute `-o`, commit b8af914). The host
@@ -57,18 +77,126 @@
         pkgs.coreutils
       ];
 
-      monad = pkgs.stdenv.mkDerivation {
-        pname = "monad";
+      # The install step both derivations share. `$PWD/monad` is where each
+      # buildPhase leaves the binary, and the wrapper supplies the runtime PATH
+      # and the gc paths exactly as the single derivation always did.
+      #
+      # `extraFlag` is spliced in as the LAST continuation of the `makeWrapper`
+      # call, and it is either another `makeWrapper` argument or the empty
+      # string: `.#monad` passes `--set MONAD_BUILD_COMMIT <rev>`, and `rung1`
+      # passes nothing, because a `--set` of a fixed revision is precisely the
+      # per-commit input this split removes. The empty case is not a stylistic
+      # choice -- the flags above are a multi-line string that ends in a
+      # newline, so a caller spelling its extra flag as
+      #
+      #     makeWrapper ... ${wrapperFlags} \
+      #       --set MONAD_BUILD_COMMIT ${commit}
+      #
+      # would have that newline TERMINATE the `makeWrapper` command, leaving
+      # the next line to run as a command of its own: `--set: command not
+      # found`. Splicing keeps one command one command whatever is passed, and
+      # the empty string leaves the continuation pointing at a blank line,
+      # which ends the command exactly where the flags do.
+      installPhaseWith = extraFlag: ''
+        runHook preInstall
+        install -Dm755 "$PWD/monad" $out/share/monad/monad
+        makeWrapper $out/share/monad/monad $out/bin/monad \
+          --prefix PATH : ${runtimePath} \
+          --set NIX_LDFLAGS "-L${gcLib}/lib" \
+          --set NIX_CFLAGS_COMPILE "-isystem ${gcDev}/include" \
+          --set LIBRARY_PATH "${gcLib}/lib" \
+          --set CPATH "${gcDev}/include" \
+          ${extraFlag}
+        runHook postInstall
+      '';
+
+      # A1 -- WHAT THE BUILD READS, which is what a derivation's hash should
+      # cover and what `src = ../.` did not.
+      #
+      # `scripts/build-self-hosted.sh`'s staleness scan is the authoritative
+      # input list and is the guide here: the six trees the compiler is built
+      # from, their `.mo`/`.c`/`.h` sources and each one's `mote.toml`. That is
+      # the complete set for those trees -- enumerated rather than assumed:
+      # the six hold 137 `.mo`, 6 `mote.toml` and exactly one `.c`
+      # (runtime/src/runtime.c), and no file of any other name. `.h` is in the
+      # filter and matches nothing today; it is there because the script scans
+      # for it, and a header added later must not silently fall outside the
+      # hash that is supposed to cover it.
+      #
+      # Three things outside the scan are kept because the build needs them:
+      #
+      #   * the root `mote.toml`. Its `[workspace] members` names trees this
+      #     filter drops (`bench`, `proofs`, `slow_tests`, `motes/*`), and the
+      #     fear was that the memberlist is walked eagerly and their absence
+      #     would break the load. It is not: the compiler's own source checks
+      #     clean in a tree assembled by exactly this filter (`1 file(s)
+      #     checked, 0 error(s), 3 warning(s)`) with those trees absent. The
+      #     file stays because it is the workspace-root marker
+      #     `resolve_runtime_src` walks up to find, and losing that is a
+      #     different failure from losing a member.
+      #   * `scripts/build-self-hosted.sh`, the one script buildPhase enters.
+      #     The whole directory would work, but it would also mean a change to
+      #     any CI script invalidates a 20-minute build.
+      #   * `nix/` is NOT kept, and neither are the flake files: nothing in the
+      #     build reads them. The revision and the version reach this
+      #     derivation as `commit` and `monadVersion` arguments, and the
+      #     toolchain reaches it through `pkgs`.
+      #
+      # 146 files and 3.7 MiB, against the whole tracked tree's 363 files and
+      # 6.5 MiB (both measured). What that buys is not a smaller build -- it is
+      # a SHAREABLE one: `rung1` below carries no commit, so this hash is the
+      # same across two commits that differ only outside these paths, and that
+      # is the prerequisite for two CI runs ever sharing the result.
+      compilerSrc = lib.fileset.toSource {
+        root = ../.;
+        fileset = lib.fileset.unions (
+          [
+            ../mote.toml
+            ../scripts/build-self-hosted.sh
+          ]
+          ++ map (
+            tree:
+            lib.fileset.fileFilter
+              (f: f.hasExt "mo" || f.hasExt "c" || f.hasExt "h" || f.name == "mote.toml")
+              (../. + "/${tree}")
+          ) [
+            "init"
+            "std"
+            "lang"
+            "cli"
+            "llvm"
+            "runtime"
+          ]
+        );
+      };
+
+      # The interpretation. Commit-free by construction: no phase below
+      # mentions `commit`, and neither does `nix/host.nix`, which takes only
+      # `monadVersion` -- so nothing in this derivation's inputs can move with
+      # the revision, which is the whole point of it. What `monad version`
+      # prints from this output is therefore a constant and not this commit;
+      # the revision belongs to `.#monad` below, and it gets one.
+      #
+      # It installs `monad.ll` BESIDE the binary, which is the enabling change
+      # for CI's bootstrap job: the ladder there asserts the
+      # interpreted-vs-compiled comparison and needs the IR the interpreter
+      # wrote, and `nix/monad.nix` has deliberately never installed one. The
+      # reasoning that kept it out -- "exactly one consumer, the
+      # interpreted-vs-compiled `cmp`... a store copy would grow every
+      # consumer's closure by 5.4 MB of IR" -- is an argument about the
+      # PACKAGED `.#monad`, whose consumers compile programs and have no use
+      # for the IR of the compiler itself. A dedicated rung-1 output whose only
+      # consumer is that ladder is the different thing that argument allows
+      # for, and `.#monad` still installs the binary alone.
+      rung1 = pkgs.stdenv.mkDerivation {
+        pname = "monad-rung1";
         version = monadVersion;
 
-        src = ../.;
+        src = compilerSrc;
 
         # No `git` here either (see nix/host.nix): a store copy has no `.git`,
         # so nothing in this build could name the revision from the tree it is
-        # building. MONAD_BUILD_COMMIT below is the answer instead -- it wins
-        # over the compiler's own revision in `build_commit_define`, which is
-        # what makes the packaged compiler report the revision it was built
-        # from rather than the one its host happens to have.
+        # building -- and this derivation must not name one at all.
         nativeBuildInputs = [
           monadHost
           pkgs.llvm
@@ -92,38 +220,104 @@
         buildPhase = ''
           runHook preBuild
 
-          # The revision reaches the compiler AND every binary it links, since
-          # the define goes into the emitted C runtime. `$PWD` is the unpacked
-          # source root, which is what the script is given as its output
-          # directory -- the script writes `$PWD/monad` beside the `.ll` it
-          # emits for the same reason this is spelled absolutely.
-          export MONAD_BUILD_COMMIT=${commit}
+          # `$PWD` is the unpacked source root, which is what the script is
+          # given as its output directory -- the script writes `$PWD/monad`
+          # beside the `.ll` it emits for the same reason this is spelled
+          # absolutely.
           MONAD_HOST_BIN=${lib.getExe monadHost} scripts/build-self-hosted.sh "$PWD" --release
 
           runHook postBuild
         '';
 
-        # Only the binary is installed. `monad.ll` -- the IR of cli/src/main.mo
-        # as the HOST INTERPRETER emitted it, 5.4 MB beside a 2.6 MB binary
-        # (measured) -- stays in the build directory. It has exactly one
-        # consumer, the interpreted-vs-compiled `cmp`, and that comparison is
-        # made where BOTH of its turns are built: CI's
-        # `scripts/bootstrap-compile.sh`, on every push and in both build
-        # modes. A store copy would grow every consumer's closure by 5.4 MB of
-        # IR to restate a property the packaged compiler already asserts
-        # against itself (see nix/bootstrap.nix).
+        # `""` for the extra flag, so this wrapper sets no revision: rung 1 has
+        # none to set. The `.ll` is installed ahead of the shared step because
+        # that step is a complete phase, hooks and all, and `install` needs none
+        # of them.
         installPhase = ''
-          runHook preInstall
-          install -Dm755 "$PWD/monad" $out/share/monad/monad
-          makeWrapper $out/share/monad/monad $out/bin/monad \
-            --prefix PATH : ${runtimePath} \
-            --set NIX_LDFLAGS "-L${gcLib}/lib" \
-            --set NIX_CFLAGS_COMPILE "-isystem ${gcDev}/include" \
-            --set LIBRARY_PATH "${gcLib}/lib" \
-            --set CPATH "${gcDev}/include" \
-            --set MONAD_BUILD_COMMIT ${commit}
-          runHook postInstall
+          install -Dm644 "$PWD/monad.ll" $out/share/monad/monad.ll
+          ${installPhaseWith ""}
         '';
+
+        meta = {
+          description = "Rung 1 of the Monad bootstrap ladder, with the IR it emitted";
+          homepage = "https://monad-lang.org";
+          license = lib.licenses.asl20;
+          mainProgram = "monad";
+        };
+      };
+    in
+    let
+      # A2 -- the per-commit half, and it is a link.
+      #
+      # Three commands, and they are `llvm/src/link.mo`'s four stages one to
+      # one: `llc` on the IR, `clang -c` on the runtime with the revision
+      # defined, `clang` over the two objects with `-lgc`. It is written out
+      # here rather than reached through the compiler because the compiler has
+      # no way in: `link_ir` is only ever entered with IR it just generated
+      # from `.mo` modules, so re-stamping a `.ll` on disk means performing
+      # the same three steps.
+      #
+      # That this reproduces what the interpretation would have produced is
+      # measured rather than argued. Re-running these stages against a rung-1
+      # build (rung1's own `monad.ll`, `runtime/src/runtime.c` at the stamped
+      # revision, the same llc and clang) reproduced its binary byte for byte
+      # -- 2603672 bytes, `cmp` clean -- once the linker's environment-derived
+      # RUNPATH was accounted for: the same experiment against a binary linked
+      # in a different devenv shell differed only in that RPATH, 205828 bytes,
+      # and differs in nothing else.
+      #
+      # `-DMONAD_BUILD_COMMIT="<rev>"` is spelled the way `link_ir` builds it
+      # (`"-DMONAD_BUILD_COMMIT=\"" ++ build_hash ++ "\""`), single-quoted
+      # shell-side so the quotes reach clang. The path
+      # `runtime/src/runtime.c` is `Runtime.c_path`, a literal, and it is used
+      # RELATIVE because that is what the compiler passes; an absolute path
+      # produces a different object file from the same source.
+      monad = pkgs.stdenv.mkDerivation {
+        pname = "monad";
+        version = monadVersion;
+
+        src = compilerSrc;
+
+        # No `git` here either (see nix/host.nix): a store copy has no `.git`,
+        # so nothing in this build could name the revision from the tree it is
+        # building. MONAD_BUILD_COMMIT below is the answer instead -- it wins
+        # over the compiler's own revision in `build_commit_define`, which is
+        # what makes the packaged compiler report the revision it was built
+        # from rather than the one its host happens to have.
+        #
+        # `monadHost` is NOT here: this derivation never runs the interpreter.
+        # It reads `rung1`'s output instead, which is the whole point.
+        nativeBuildInputs = [
+          pkgs.llvm
+          pkgs.clang
+          pkgs.lld
+          pkgs.makeWrapper
+          pkgs.bash
+          pkgs.coreutils
+        ];
+        buildInputs = [ pkgs.boehmgc ];
+
+        buildPhase = ''
+          runHook preBuild
+
+          # Rung 1's IR, linked here with this commit's revision. `rung1` is a
+          # build input and not a runtime one: the `.ll` is copied out of its
+          # store path, and `llc` records the path it was GIVEN -- this build
+          # directory -- so the finished binary should name no store path of
+          # rung 1's. That is checked after the build with `nix-store -q
+          # --references` on this derivation's output, not asserted here.
+          install -Dm644 ${rung1}/share/monad/monad.ll "$PWD/monad.ll"
+
+          llc -filetype=obj "$PWD/monad.ll" -o "$PWD/monad.o"
+          clang -pthread -c runtime/src/runtime.c \
+            "-DMONAD_BUILD_COMMIT=\"${commit}\"" \
+            -o "$PWD/monad_runtime.o"
+          clang -pthread "$PWD/monad.o" "$PWD/monad_runtime.o" -lgc -o "$PWD/monad"
+
+          runHook postBuild
+        '';
+
+        installPhase = installPhaseWith "--set MONAD_BUILD_COMMIT ${commit}";
 
         meta = {
           description = "The self-hosted Monad compiler";
@@ -144,6 +338,11 @@
     {
       packages.monad = monad;
       packages.default = monad;
+      # Rung 1 on its own, for CI's bootstrap ladder: it is what makes the
+      # interpretation a store hit across commits that do not touch the
+      # compiler's sources, and it is where the `.ll` that ladder compares
+      # against now comes from.
+      packages.monadRung1 = rung1;
 
       apps.monad = app;
       apps.default = app;
