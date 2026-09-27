@@ -418,11 +418,16 @@ fi
 # test lang/src/scope.mo`, the heaviest file in this corpus, peaks at 172 MB of
 # summed tree RSS -- so memory is not what bounds this and cores are.
 #
-# It used to be min(nproc - 1, 8), holding a core back "for the machine". Run
-# 36323615273 showed what that cost: its shard walls were `947s 1425s 1425s`,
-# so 3797 s of work ran on 3 shards and the 4-core runner's fourth core sat
-# idle for the whole 1425 s critical path -- a quarter of the sweep, on a
-# reserve inherited from round 1 rather than from a measurement.
+# It used to be min(nproc - 1, 8), holding a core back "for the machine". The
+# reason to reverse that needs no timing at all: the phase's wall is the
+# LARGEST of the shards, so a shard count below the core count can only make
+# that maximum longer or leave it equal, never shorter -- the reserved core
+# runs nothing while the sweep's critical path is decided on the others. What
+# a higher count costs is memory and co-tenant contention, which is measured
+# above and does not bind here. (Round 2 argued this from run 36323615273's
+# `947s 1425s 1425s` and a 3797 s sum; those per-shard numbers were an
+# instrumentation artifact -- see `run_shards` -- so the argument is stated
+# from the structure instead, which is where it should have started.)
 #
 # `nproc` here is the CPU count available to THIS process, which is the whole
 # reason CI's two runners disagree: nixos-server (4 cores) reports 4 and
@@ -488,10 +493,11 @@ shard_files() {
 # `$dir/<subcmd>.log`. Sets four arrays the callers read back: `shard_rcs`
 # (each shard's exit status, "" for a shard that was never launched),
 # `shard_files_n` (how many files it was handed), `shard_pids`, and
-# `shard_secs` -- each shard's OWN wall clock, launch to its `wait`
-# returning, which is that shard's exit instant and therefore its own
-# duration and not the phase's. The phase's wall is the LARGEST of them,
-# never their sum; their spread is the imbalance left on the table.
+# `shard_secs` -- each shard's OWN wall clock, written by the shard itself
+# just before it exits (see the launch below for why it must be the shard and
+# not this loop). The phase's wall is the LARGEST of them, never their sum;
+# their spread is the imbalance left on the table, and their sum is the work
+# the split had to divide.
 #
 # `shard_wall_summary` is left for the caller to echo, and deliberately not
 # echoed here: this function writes the transcript to a file the caller
@@ -513,13 +519,12 @@ shard_files() {
 # makes the concatenated transcript deterministic rather than a race.
 run_shards() {
   local dir="$1" subcmd="$2"
-  local i f s max min=-1 walls=""
+  local i f s max min=-1 walls="" total=0
   local -a targets
   shard_rcs=()
   shard_files_n=()
   shard_pids=()
   shard_secs=()
-  shard_t0=()
   shard_wall_summary=""
   : > "$dir/${subcmd}.log"
   for ((i = 0; i < sweep_jobs; i++)); do
@@ -531,15 +536,39 @@ run_shards() {
     # array from `mapfile` and silently tests nothing.
     targets=()
     while IFS= read -r f; do targets+=("$f"); done < "$dir/shard-${i}.list"
-    shard_t0[i]=$SECONDS
-    "$monad" "$subcmd" "${targets[@]}" > "$dir/${subcmd}-${i}.log" 2>&1 &
+    # Each shard times ITSELF, in its own subshell, and writes its duration
+    # beside its log. Timing it from the `wait` loop below instead is what
+    # this used to do and it was wrong: those waits run in shard ORDER, not in
+    # finish order, so a shard that finished early is stamped with the finish
+    # of whichever lower-indexed shard the loop was still blocked on. The
+    # recorded value is therefore a running MAXIMUM -- and because all the
+    # shards are launched inside the same integer second, every shard that was
+    # overtaken reports an IDENTICAL number. Run 36336502690's `1220s` seven
+    # times, and run 36323615273's `1425s 1425s`, are both that artifact;
+    # round 2 read them as work and sized a shard-count change on the sum.
+    # `SECONDS` keeps its epoch across the fork, so this is the same primitive
+    # read on the shard's own clock. `$rc` is carried out and re-exited so the
+    # parent's `wait` still sees the COMPILER's status, not the writer's.
+    (
+      s0=$SECONDS
+      rc=0
+      "$monad" "$subcmd" "${targets[@]}" > "$dir/${subcmd}-${i}.log" 2>&1 || rc=$?
+      printf '%s\n' "$((SECONDS - s0))" > "$dir/${subcmd}-${i}.secs"
+      exit "$rc"
+    ) &
     shard_pids[i]=$!
   done
   for ((i = 0; i < sweep_jobs; i++)); do
     [ -n "${shard_pids[i]:-}" ] || continue
     shard_rcs[i]=0
     wait "${shard_pids[i]}" || shard_rcs[i]=$?
-    shard_secs[i]=$((SECONDS - shard_t0[i]))
+    # The shard wrote this before exiting, so it exists once `wait` returns.
+    # `|| true` because `set -e` would otherwise abort on a missing file, and
+    # an absent reading is skipped by the summary loop below. An absent one
+    # means the shard died before it could write -- an OOM kill is the case
+    # that matters -- which leaves `rc` non-zero and the run red, so a `max`
+    # that understates the wall there cannot flatter a green run.
+    shard_secs[i]="$(cat "$dir/${subcmd}-${i}.secs" 2>/dev/null || true)"
     cat "$dir/${subcmd}-${i}.log" >> "$dir/${subcmd}.log"
   done
   max=0
@@ -549,9 +578,10 @@ run_shards() {
     walls="${walls}${walls:+ }${s}s"
     if [ "$s" -gt "$max" ]; then max="$s"; fi
     if [ "$min" -lt 0 ] || [ "$s" -lt "$min" ]; then min="$s"; fi
+    total=$((total + s))
   done
   if [ -n "$walls" ]; then
-    shard_wall_summary="shard walls ${walls} -- max ${max}s is this phase's wall, spread $((max - min))s"
+    shard_wall_summary="shard walls ${walls} -- max ${max}s is this phase's wall, spread $((max - min))s, sum ${total}s of work"
   fi
 }
 

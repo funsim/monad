@@ -60,12 +60,16 @@
 #     way, so a runner that does constrain it says so instead of silently
 #     changing the answer.
 #   * the budget IS the shard count -- one shard per core. That reverses the
-#     `nproc - 1` this script and the sweep's default used to carry, because
-#     the reserved core was measured sitting idle: run 36323615273's shard
-#     walls were `947s 1425s 1425s`, so 3797 s of work ran on 3 shards and the
-#     4-core runner's fourth core was unused for the whole 1425 s critical
-#     path. A ~25% cut on that box, from a reserve that was a round-1
-#     inheritance rather than a measurement.
+#     `nproc - 1` this script and the sweep's default used to carry: a shard
+#     count below the core count can only lengthen the phase's wall (the
+#     LARGEST shard) or leave it unchanged, never shorten it, so the reserved
+#     core bought nothing and a round-1 inheritance cost whatever imbalance it
+#     absorbed. No size for that cost is claimed here -- round 2's estimate
+#     (a 3797 s sum from run 36323615273's `947s 1425s 1425s`) and run
+#     36336502690's `1220s` seven times were both read off per-shard
+#     instrumentation that was reporting a running maximum, not each shard's
+#     own duration (see `run_shards` in scripts/check-monad-tests.sh), so the
+#     first correct per-shard numbers are the next run's, not these.
 #   * the cap of 8 is a guard on shard COUNT, not on memory. The memory
 #     reasoning it used to carry ("this corpus has OOM'd a box before") does
 #     not survive contact with the corpus as it now is: `monad test
