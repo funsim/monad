@@ -63,27 +63,68 @@ out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
 # from-source build here, in both modes; only its host is packaged. CI's
 # `test` job has no such comparison to make, so it does sweep the packaged
 # compiler -- see its step.
+#
 # --release: debug info is on by default; DWARF emission costs ~30s on this
-# workload and the binary this job tests does not need it.
-# rm -rf forces a from-scratch build rather than trusting a stale binary;
-# the staleness check and build command live in scripts/build-self-hosted.sh.
-rm -rf "$out"; mkdir -p "$out"
-scripts/build-self-hosted.sh "$out" --verbose --release
-"$out/monad" check cli/src/main.mo
-# ... and the FIXPOINT, which is the property that would regress silently: the
-# binary just built compiles the same source itself, and the `.ll` it emits
-# (written beside its own `-o` output) must be byte-identical to the host's.
-# Rung 1 == rung 2, asserted rather than remembered. A binary that builds and
-# checks but emits different IR for its own source is a miscompile the
-# front-end tests cannot see.
+# workload and the binary this job tests does not need it. So the release
+# ladder is the fast one and the default-mode ladder is the one that gates
+# DWARF emission -- and, because both are asserted, the mode flag is threaded
+# through every command below rather than set on one of them.
+#
+# One ladder, both modes: build rung 1, check the largest input in the tree
+# through it, then assert the FIXPOINT -- the binary just built compiles the
+# same source itself, and the `.ll` it emits (written beside its own `-o`
+# output) must be byte-identical to the host's. Rung 1 == rung 2, asserted
+# rather than remembered. A binary that builds and checks but emits different
+# IR for its own source is a miscompile the front-end tests cannot see.
 #
 # The turn itself is scripts/self-compile-turn.sh -- the same command, with
 # the same absolute `-o` and the same post-condition, that the flake's
 # `checks.bootstrap` runs against the packaged compiler. One definition, so
 # the two ladders cannot drift.
-scripts/self-compile-turn.sh "$out/monad" "$out" monad2 --release
-cmp "$out/monad.ll" "$out/monad2.ll"
+#
+# The only difference between the two callers is `--release` (see each one's
+# note below), and it is threaded through to BOTH commands: `--release` on the
+# compile is what decides whether DWARF is emitted, and `--release` on the turn
+# is what keeps the emitted IR comparable to it. `rm -rf` forces a
+# from-scratch build rather than trusting a stale binary; the staleness check
+# and the build command live in scripts/build-self-hosted.sh.
+ladder() {
+  local dir="$1"; shift
+  rm -rf "$dir"; mkdir -p "$dir"
+  scripts/build-self-hosted.sh "$dir" --verbose "$@"
+  "$dir/monad" check cli/src/main.mo
+  scripts/self-compile-turn.sh "$dir/monad" "$dir" monad2 "$@"
+  cmp "$dir/monad.ll" "$dir/monad2.ll"
+}
 
+# The two ladders are INDEPENDENT -- separate output directories, separate
+# builds, nothing shared but the read-only sources -- so they run at once
+# rather than one after the other. Measured: 38m53s together in the
+# `bootstrap` job (run 36243944155), the second-longest step in the pipeline.
+# Each ladder is single-threaded -- one `llc`, one `clang` at a time -- so
+# overlapping them uses a second core of the runner's eight rather than
+# contending for the first, and the step's wall clock becomes the slower
+# ladder instead of their sum.
+#
+# Memory is the thing this trades away, so it is stated with its measurement
+# rather than assumed: each rung-1 build is the Rust host interpreting
+# cli/src/main.mo, sampled at 1.34 GB RSS on this workload, so both at once is
+# ~2.7 GB plus the dev shell -- not the 29.7 GB shape that OOM'd a machine
+# once (that was a compiled binary with no release calls; see
+# runtime/src/runtime.c).
+#
+# Each ladder's `--verbose` trace is prefixed rather than interleaved: the
+# trace is the evidence that says where a wedged or miscompiling run stalled,
+# and two unprefixed streams on one terminal are no longer evidence of which
+# ladder stalled -- which is also why they stream rather than being captured
+# to a file and printed only on failure.
+#
+# `exit "${PIPESTATUS[0]}"` is explicit because `set -e` does NOT reliably
+# propagate a failure out of a pipeline's left-hand element: without it a dead
+# ladder would exit its own subshell 0 and this script would wait out the
+# other one and then report success.
+( ladder "$out" --release 2>&1 | sed -u 's/^/[release] /'; exit "${PIPESTATUS[0]}" ) &
+release_pid=$!
 # And again WITHOUT --release, which is the DEFAULT invocation and was broken
 # for an unknown length of time precisely because nothing ran it: `monad
 # compile cli/src/main.mo` died at `no instance found for `Append.append``,
@@ -98,10 +139,12 @@ cmp "$out/monad.ll" "$out/monad2.ll"
 # examples/located_terms.mo's own header for why, verified rather than
 # assumed).
 dbg="${TMPDIR:-/tmp}/monad-bootstrap-ci-debug"
-rm -rf "$dbg"; mkdir -p "$dbg"
-scripts/build-self-hosted.sh "$dbg" --verbose
-"$dbg/monad" check cli/src/main.mo
-# Same fixpoint in the default (DWARF-emitting) mode -- see the `--release`
-# block above for why both turns are asserted, and for the helper.
-scripts/self-compile-turn.sh "$dbg/monad" "$dbg" monad2
-cmp "$dbg/monad.ll" "$dbg/monad2.ll"
+( ladder "$dbg" 2>&1 | sed -u 's/^/[debug]   /'; exit "${PIPESTATUS[0]}" ) &
+debug_pid=$!
+
+release_rc=0; wait "$release_pid" || release_rc=$?
+debug_rc=0;   wait "$debug_pid"   || debug_rc=$?
+if [ "$release_rc" -ne 0 ] || [ "$debug_rc" -ne 0 ]; then
+  echo "bootstrap-compile.sh: the release ladder exited ${release_rc}, the debug ladder ${debug_rc}" >&2
+  exit 1
+fi
