@@ -483,10 +483,11 @@ echo "rust runner: no files left -- the self-hosted runner covers the corpus alo
 
 # The external-mote end-to-end check last, because it is the one thing here
 # that does not run over the corpus: it builds a mote in a temp directory
-# OUTSIDE the checkout and runs this same binary from inside it, in the three
-# configurations an external repository can be in. Nothing else in the repo
-# ever ran the CLI from a foreign working directory, which is how a whole
-# class of resolution gaps survived a green suite; see the script's header.
+# OUTSIDE the checkout and runs this same binary from inside it, in every
+# configuration an external repository can be in -- six, see its header.
+# Nothing else in the repo ever ran the CLI from a foreign working directory,
+# which is how a whole class of resolution gaps survived a green suite; see
+# the script's header.
 #
 # Placed before the status is re-raised so a failure here fails the sweep,
 # and given `$monad` rather than a path of its own -- a second binary would be

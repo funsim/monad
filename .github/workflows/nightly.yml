@@ -75,8 +75,8 @@ jobs:
             `monad-rs` reference interpreter. Built on a self-hosted
             Linux x86_64 runner with Nix devenv.
 
-            `monad-src-x86_64-linux.tar.gz` holds the `init`, `std` and
-            `runtime` mote sources. `monadup` unpacks it beside the binary,
+            `monad-src-x86_64-linux.tar.gz` holds the `init`, `std`, `llvm`
+            and `runtime` mote sources. `monadup` unpacks it beside the binary,
             and the compiler then resolves `use std::…` and the C runtime
             from that directory as a toolchain root — which is what lets a
             mote in its own repository build without a compiler checkout.

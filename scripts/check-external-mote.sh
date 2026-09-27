@@ -11,7 +11,7 @@
 #
 # So this script builds a mote in a temporary directory *outside* the
 # checkout and runs the compiled self-hosted binary from inside it, in the
-# three configurations an external user can be in:
+# six configurations an external user can be in:
 #
 #   1. declared path dependencies, explicit path -- `monad check src/lib.mo`.
 #      The filed repro: everything resolves except `runtime.c`, which had no

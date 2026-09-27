@@ -56,11 +56,11 @@ An install directory holds more than the compiler:
 ~/.monad/downloads/<tag>/
   monad-nightly-x86_64-linux   the compiler
   commit.txt                   the commit it was built from
-  init/  std/  runtime/        the mote sources
-  mote.toml                    those three, as a workspace
+  init/  std/  llvm/  runtime/ the mote sources
+  mote.toml                    those four, as a workspace
 ```
 
-Those last three are what let you use the compiler on a program of your own —
+Those motes are what let you use the compiler on a program of your own —
 `use std::map` and the C runtime both resolve out of that directory. Without
 them, only a checkout of the compiler repository can compile anything. Nightlies
 published before the sources asset existed install the binary alone and say so;
