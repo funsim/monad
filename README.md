@@ -125,10 +125,13 @@ scripts/check-monad-tests.sh
 # The sweep runs over min(nproc - 1, 8) shards at once, each shard its own
 # `monad` process. MONAD_SWEEP_JOBS caps that -- `MONAD_SWEEP_JOBS=1` is the
 # single sequential invocation this script used to make, and the shape its
-# sharded totals are checked against. CI does not leave that default to
-# `nproc` inside the dev shell: its "Settle the CPU budget" step measures the
-# runner and sets the variable, because three records disagreed about this
-# host's core count and the run that shipped had 3 shards, not 7.
+# sharded totals are checked against. CI sets that variable from a
+# measurement instead of leaving it to this default: its "Settle the CPU
+# budget" step prints the runner's core count both from the host and from
+# inside the dev shell, runs scripts/ci-cpu-budget.sh, and sets the result.
+# Three records disagreed about this host's core count -- this repository's
+# ci.yml, monad-nixos-modules' runner module and the 3 shards a run actually
+# shipped -- so both readings are printed rather than one being assumed.
 MONAD_SWEEP_JOBS=1 scripts/check-monad-tests.sh
 
 # There is no separate corpus-wide `check` phase any more. `monad test`

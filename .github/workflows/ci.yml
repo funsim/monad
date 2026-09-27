@@ -6,6 +6,22 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Per-ref, which for a pull request is `refs/pull/N/merge`: a new push to a
+# PR cancels that PR's own previous run, which is the intent, and two PRs
+# never cancel each other.
+#
+# Grouping on the PR's head branch instead was considered as a way to
+# collapse "a PR's run and its branch's push" and DECLINED, because that
+# duplicate cannot exist with these triggers: `push` is filtered to
+# `branches: ["main"]`, so a push to a feature branch starts no workflow at
+# all, and a branch's only runs are its PR's. What such a grouping would
+# actually collapse is a push to `main` and the PR run of the commit before
+# it -- i.e. it would cancel the post-merge verification of `main`, which is
+# a defect rather than a saving. The 5413-9848 s queue waits in run
+# 36301331844 are not this mechanism either: they are two runners serving
+# three parallel jobs while another branch's pipeline holds both, and
+# cancelling across refs would take capacity away from a branch that is
+# legitimately queued.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -53,7 +69,49 @@ env:
 #     remove scheduling freedom and buy nothing. The fix for that step is a
 #     binary cache shared by the two runners (nix-serve or attic) -- a
 #     monad-nixos-modules change, not one this repo can make.
+#
+# A fourth job, `changes`, now precedes these three and gates the two
+# compiler jobs. That is neither a reversal of the above nor the `needs:`
+# that was declined there: it is a path classifier that costs seconds (one
+# checkout and a `git diff`, no nix, no cargo), it gates only `test` and
+# `bootstrap`, and what it does is SKIP a job on a change that cannot reach
+# it rather than delay a green one behind a gate. It exists because a
+# docs-only change -- the traffic that fills the queue -- otherwise buys a
+# 54-minute job and a 22-minute one to learn nothing; see
+# scripts/ci-compiler-relevant.sh for the rules and for why a workflow-level
+# `paths-ignore` would be wrong here (it would skip `docs-check`, a
+# pre-commit hook, on exactly the changes that need it).
+#
+# `pre-commit-checks` deliberately has NO `needs:`, so every run still
+# reports a verdict -- a docs-only change is still linted, rustfmt'd,
+# clippy'd and doc-checked, and no required check is left pending.
 jobs:
+  # Decides whether the two compiler jobs have anything to do. Answers over
+  # an output because the gates below read it. `fetch-depth: 0` because the
+  # classifier diffs the change against the commit the event names as its
+  # base; the repository's whole pack is ~11.5 MiB, so the full history
+  # costs seconds, and a base that cannot be fetched makes it answer `true`
+  # (it fails OPEN), so even a wrong guess costs time rather than signal.
+  changes:
+    runs-on: [self-hosted, linux]
+    outputs:
+      compiler: ${{ steps.classify.outputs.compiler }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: classify
+        name: Classify the change
+        env:
+          # `before` is the previous tip on a push and all zeros on a new
+          # branch; `pull_request.base.sha` is the base tip. The script
+          # treats both the zeros and an unreachable revision as `true`.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          decision="$(scripts/ci-compiler-relevant.sh "$BASE")"
+          echo "compiler=$decision" >> "$GITHUB_OUTPUT"
+          echo "compiler-relevant: $decision"
+
   pre-commit-checks:
     runs-on: [self-hosted, linux]
     steps:
@@ -76,20 +134,75 @@ jobs:
 
   test:
     runs-on: [self-hosted, linux]
+    # Gated on the classifier: a change that touches no compiler input has
+    # nothing for this job to build or sweep. A skipped job still reports
+    # (as `skipped`, which required checks treat as passing, unlike a
+    # skipped WORKFLOW), so this cannot strand a merge the way a
+    # workflow-level `paths-ignore` would.
+    needs: changes
+    if: needs.changes.outputs.compiler == 'true'
     # Hang guard, not a deadline: a sandbox rung-1 build plus the sweep. Both
     # halves of that are now measured rather than guessed (run 36243944155,
     # the last green one before this comment): the flake build was 16m11s
     # there and 19m58s in run 36238059186, on the OTHER runner -- so it is a
     # per-commit cold build of `.#monad`, not store luck, and not something a
-    # label can fix. The sweep was 42m23s and the check 8m44s, and
-    # scripts/check-monad-tests.sh now runs both sharded
-    # (MONAD_SWEEP_JOBS, default min(nproc - 1, 8) = 7 here). Measured on the
-    # full 197-file corpus with one binary, serial vs 7 shards:
+    # label can fix. The sweep was 42m23s and the check 8m44s. Measured on
+    # the full 197-file corpus with one binary, serial vs 7 shards:
     # 58m45s -> 25m35s for the whole script, at 2195/2195 tests either way.
     # That is the local figure; this step was 51m20s in CI.
+    #
+    # The shard count is no longer this comment's to claim: the "Settle the
+    # CPU budget" step in the list below measures the runner's budget and
+    # sets MONAD_SWEEP_JOBS from it. Run 36301331844 is why -- this comment
+    # used to assert the default was "= 7 here" and that run shipped 3, i.e.
+    # the `nproc` the sweep itself called returned 4 there. The step prints
+    # both readings rather than explaining that away.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
+
+      # What this runner actually lets the sweep use, printed because three
+      # records disagreed about it: this file claimed the sharding default
+      # `min(nproc - 1, 8)` was "= 7 here", monad-nixos-modules' runner
+      # module comments 8 vCPU as "matches the CI host's cores", and run
+      # 36301331844 shipped 3 shards. The 3 is a measurement of the sweep's
+      # own reading, by arithmetic rather than assertion: the default is
+      # `min(nproc - 1, 8)`, nothing in the runner's configuration sets
+      # MONAD_SWEEP_JOBS (checked in monad-nixos-modules), so 3 shards means
+      # the `nproc` the sweep called returned 4. WHY it returned 4 is not
+      # claimed here -- the two readings below, host and dev shell, are what
+      # settle that, and asserting the cause before them is what this
+      # comment is replacing.
+      #
+      # MONAD_SWEEP_JOBS is SET from the measurement instead of being left to
+      # that default, so the value stops depending on which environment
+      # happened to ask. `nproc` already respects the process's CPU affinity
+      # and the cgroup quota caps the CPU time it may actually burn, so the
+      # smaller of the two is the budget; the cap of 8 is the memory-driven
+      # one the script's own default carries (a shard is a whole compiler
+      # plus its GC heap, and this corpus has OOM'd a box before). A literal
+      # 7 is deliberately not written down: on a 4-CPU budget it would be 2x
+      # oversubscription.
+      #
+      # The measurement is a script run INSIDE the dev shell, for a reason
+      # that cost a red pipeline: a bare `run:` step gets the RUNNER HOST's
+      # PATH, which has no `awk` and no `lscpu`. The first version of this
+      # step was inlined here and run 36313431973's `test` job died 8 s in on
+      #     line 4: lscpu: command not found
+      #     line 7: awk: command not found
+      #     Process completed with exit code 127
+      # before it had measured anything at all -- having already printed the
+      # host's `nproc` (8), because `nproc` and `uname` DO exist there. So
+      # the host reading stays here, where it is reachable, and everything
+      # that needs a real tool is in scripts/ci-cpu-budget.sh, which the dev
+      # shell supplies them for. That script is also runnable by hand, which
+      # is how this was checked rather than assumed.
+      - name: Settle the CPU budget
+        run: |
+          echo "host nproc (affinity-aware, outside the dev shell): $(nproc)"
+          echo "host nproc --all: $(nproc --all)"
+          nix develop --no-pure-eval --accept-flake-config -c \
+            scripts/ci-cpu-budget.sh
 
       # The compiler this job sweeps comes from the flake. `packages.monad` IS
       # rung 1 -- the host interpreting cli/src/main.mo, from this commit's
@@ -122,6 +235,11 @@ jobs:
 
   bootstrap:
     runs-on: [self-hosted, linux]
+    # Same classifier as `test`, for the same reason: neither ladder reads a
+    # markdown file or the generated docs, so a prose-only change cannot make
+    # them fail.
+    needs: changes
+    if: needs.changes.outputs.compiler == 'true'
     # Hang guard, not a compile deadline: the interpreted self-compile is
     # ~320s best case but stretches under load from the runner's own
     # parallel jobs; the host build (~4 min) plus two slow compiles still fits

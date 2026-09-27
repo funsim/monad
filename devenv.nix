@@ -31,6 +31,25 @@
     # available to check that SUMMARY.md still resolves.
     mdbook
     file
+
+    # The tools the CI scripts under scripts/ call, declared here because a
+    # bare `run:` step in CI gets the runner HOST path, not this shell's --
+    # and that path has neither `awk` nor `lscpu`. Run 36313431973's `test`
+    # job died 8 s in on `lscpu: command not found` / `awk: command not
+    # found`, exit 127, measuring nothing. See scripts/ci-cpu-budget.sh.
+    #
+    # `type -p <tool>` INSIDE this shell is not evidence either, which is the
+    # trap this list closes: `nix develop` leaves the ambient system PATH in
+    # place rather than replacing it, so a tool from /run/current-system/sw/bin
+    # (lscpu was exactly that, before util-linux below) looks present here and
+    # is absent on the runner. Only what is declared here is really the
+    # shell's, on both.
+    gawk
+    coreutils
+    gnugrep
+    # lscpu. The script guards the call with `command -v`, so losing this
+    # would cost a diagnostic line rather than the step.
+    util-linux
   ];
 
   # https://devenv.sh/languages/

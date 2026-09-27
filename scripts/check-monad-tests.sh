@@ -414,11 +414,15 @@ fi
 #
 # The default is min(nproc - 1, 8): one core is left for the machine, and
 # what each extra shard costs is a closure resident in memory rather than a
-# file on disk. Note that CI does NOT get 8 from this default -- `nproc`
-# inside the dev shell there reports 4, so the job took 3 shards while
-# ci.yml's own comment says "= 7 here". ci.yml now sets MONAD_SWEEP_JOBS
-# explicitly so the number is a decision rather than a side effect of
-# where `nproc` is called from.
+# file on disk. CI does NOT get 8 from this default: run 36301331844 took 3
+# shards, and since nothing in the runner's configuration sets
+# MONAD_SWEEP_JOBS, 3 = min(nproc - 1, 8) means the `nproc` called HERE
+# returned 4 in that job. Note that the same call returns 8 on the dev box,
+# inside and outside the dev shell, so the 4 was a property of that job's
+# environment and not of this line -- which reading is the right one to
+# shard on is exactly what ci.yml's "Settle the CPU budget" step now prints
+# instead of assuming. ci.yml sets MONAD_SWEEP_JOBS explicitly, so the
+# number is a decision rather than a side effect of where `nproc` runs.
 sweep_jobs="${MONAD_SWEEP_JOBS:-}"
 case "$sweep_jobs" in
   '')
