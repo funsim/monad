@@ -568,6 +568,55 @@ pub type Native {
     mk (native_name: Identifier) (num_args: I64) (args: List (Option Term))
 }
 
+// ─── Cubical primitives ────────────────────────────────────────────────
+//
+// The cubical fragment (`plans/type-system/univalence.md`) needs a handful
+// of irreducible primitives -- the interval, its De Morgan operations, and
+// later `PathP`/`transp`/`hcomp`/`Glue`. They are irreducible in the sense
+// that no cubical type theory builds them from anything simpler, so unlike
+// `match`/`if` they cannot be encoded away.
+//
+// They live behind ONE `Term` variant carrying ONE struct, which is the
+// shape `Term.lit (Literal)`, `Term.con (Con)` and `Term.ntv (Native)`
+// already use. The alternative -- one flat `Term` variant per primitive --
+// would take `similar_term_go` below from a 10x10 hand-expanded cross
+// product to 21x21, with no exhaustiveness checking to catch a missed pair.
+// With this shape every generic walker grows exactly one arm, over `args`.
+//
+// `args` is positional and its length is the primitive's arity;
+// `cubical_arity` below is the table, and `type_check_cubical`
+// (`lang/typecheck/cubical.mo`) is what enforces it -- the same division of
+// labour as `Con`'s `num_args` and `type_check_con`.
+//
+// NOTE none of these is a BINDER. A path abstraction is an ordinary
+// `Term.lam` whose parameter type is `I`, so a dimension variable is an
+// ordinary de Bruijn term variable and every `args` entry sits at the same
+// binder depth as the node itself. That is what spares
+// `term_shift`/`term_subst`/`term_permute` and
+// `term_map_children_at_depth` from needing a second index space.
+pub type CubicalPrim {
+    /// The interval type `I`. Not a `Sort`, and deliberately NOT an
+    /// inductive: a two-constructor `I` would make `match` on a dimension
+    /// admissible, which destroys univalence.
+    interval,
+    /// The two endpoints, `i0 : I` and `i1 : I`.
+    i0,
+    i1,
+    /// De Morgan interval operations: `ineg i`, `imeet i j`, `ijoin i j`.
+    /// Spelled as names rather than `~`/`/\`/`\/` because `op_chars`
+    /// (`lang/parser/core.mo`) is maximal-munch, so adding an operator
+    /// character retokenizes the compiler's own source.
+    ineg,
+    imeet,
+    ijoin,
+}
+
+/// One cubical primitive applied to `args`, whose length is its arity.
+pub struct Cubical {
+    prim : CubicalPrim,
+    args : List Term,
+}
+
 // Optional debug name carried by de Bruijn variables and binders.
 // Names are never used for identity or equality — de Bruijn indices
 // determine identity. DebugName exists solely for error messages
@@ -1185,6 +1234,11 @@ pub type Term {
     /// anywhere. A FIELD would still be wrong -- see `ctx` above for the
     /// arity breakage that causes.
     sort (level: SortLevel),
+    /// A cubical primitive application -- see `CubicalPrim`/`Cubical` above.
+    /// One variant rather than one per primitive, for the reason recorded
+    /// there: `similar_term_go` is a hand-expanded cross product over this
+    /// type's variants and nothing checks it for exhaustiveness.
+    cubical (c: Cubical),
 }
 
 /// Strip location wrappers, exposing the term a shape test wants.
@@ -1980,6 +2034,93 @@ def level_lookup (name: Identifier) (binds: List (Pair Identifier SortLevel)) : 
         List.empty => Option.none,
     }
 
+// ─── Cubical constructors and arity ────────────────────────────────────
+
+/// Build a cubical term. Binds an annotated local before wrapping because a
+/// BARE struct literal in argument position miscompiles through the
+/// self-hosted backend (AGENTS.md); this is the established shape for it.
+pub def cub (prim : CubicalPrim) (args : List Term) : Term :=
+    let c : Cubical := { prim := prim, args := args } in
+    Term.cubical c
+
+/// The interval type `I`.
+pub def cub_interval : Term := cub CubicalPrim.interval List.empty
+/// `i0 : I`.
+pub def cub_i0 : Term := cub CubicalPrim.i0 List.empty
+/// `i1 : I`.
+pub def cub_i1 : Term := cub CubicalPrim.i1 List.empty
+/// `ineg i` -- interval negation.
+pub def cub_ineg (i : Term) : Term := cub CubicalPrim.ineg [i]
+/// `imeet i j` -- the De Morgan meet.
+pub def cub_imeet (i : Term) (j : Term) : Term := cub CubicalPrim.imeet [i, j]
+/// `ijoin i j` -- the De Morgan join.
+pub def cub_ijoin (i : Term) (j : Term) : Term := cub CubicalPrim.ijoin [i, j]
+
+/// How many arguments a primitive takes. `args` is positional and this is
+/// the only statement of its expected length; `type_check_cubical` is what
+/// rejects a mismatch, exactly as `type_check_con` does for `Con.num_args`.
+/// Keeping it as a total function over `CubicalPrim` rather than a field on
+/// `Cubical` means a new primitive cannot be added without answering it.
+pub def cubical_arity (prim : CubicalPrim) : I64 := match prim {
+    CubicalPrim.interval => 0,
+    CubicalPrim.i0 => 0,
+    CubicalPrim.i1 => 0,
+    CubicalPrim.ineg => 1,
+    CubicalPrim.imeet => 2,
+    CubicalPrim.ijoin => 2,
+}
+
+/// Is this primitive one of the two interval ENDPOINTS? The reducer and the
+/// path-application rule both ask, and asking through one predicate keeps
+/// the two from drifting.
+pub def cubical_is_endpoint (prim : CubicalPrim) : Bool := match prim {
+    CubicalPrim.i0 => true,
+    CubicalPrim.i1 => true,
+    CubicalPrim.interval => false,
+    CubicalPrim.ineg => false,
+    CubicalPrim.imeet => false,
+    CubicalPrim.ijoin => false,
+}
+
+/// A dense tag per primitive. Total over `CubicalPrim`, so a primitive added
+/// later cannot be left without one.
+///
+/// Equality goes through this rather than through a hand-expanded 6x6 cross
+/// product of constructor pairs. The cross product is what `similar_term_go`
+/// below does for `Term`, where it is forced -- those variants carry payloads
+/// that have to be compared arm by arm. `CubicalPrim` carries none, so the
+/// only thing a cross product would add here is 36 places to omit a pair,
+/// and an omitted pair answers "different" for two equal primitives. One
+/// comparison over six literals is checkable by reading it.
+pub def cubical_prim_tag (prim : CubicalPrim) : I64 := match prim {
+    CubicalPrim.interval => 0,
+    CubicalPrim.i0 => 1,
+    CubicalPrim.i1 => 2,
+    CubicalPrim.ineg => 3,
+    CubicalPrim.imeet => 4,
+    CubicalPrim.ijoin => 5,
+}
+
+pub def cubical_prim_eq (a : CubicalPrim) (b : CubicalPrim) : Bool :=
+    I64.beq (cubical_prim_tag a) (cubical_prim_tag b)
+
+/// The primitive's surface name. One table, shared by the printer
+/// (`lang/pretty.mo`) and the checker's diagnostics, so the two cannot drift.
+pub def cubical_prim_name (prim : CubicalPrim) : String := match prim {
+    CubicalPrim.interval => "I",
+    CubicalPrim.i0 => "i0",
+    CubicalPrim.i1 => "i1",
+    CubicalPrim.ineg => "ineg",
+    CubicalPrim.imeet => "imeet",
+    CubicalPrim.ijoin => "ijoin",
+}
+
+/// Read a cubical term's primitive, past any location wrapper.
+pub def cubical_prim_of (t : Term) : Option CubicalPrim := match term_peel t {
+    Term.cubical c => Option.some c.prim,
+    _ => Option.none,
+}
+
 instance Similar Term {
     /// Peels BOTH sides before comparing, so a location wrapper never
     /// makes two otherwise-identical terms compare unequal. Without this,
@@ -2012,71 +2153,94 @@ def similar_term_go (a : Term) (b : Term) : Bool :=
                 lam _ _ _ => false, forall _ _ _ => false, pi _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             lam d1 t1 bd1 => match b {
                 lam d2 t2 bd2 => Similar.similar d1 d2 && Similar.similar t1 t2 && Similar.similar bd1 bd2,
                 var _ _ => false, forall _ _ _ => false, pi _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             forall d1 k1 bd1 => match b {
                 forall d2 k2 bd2 => Similar.similar d1 d2 && Similar.similar k1 k2 && Similar.similar bd1 bd2,
                 var _ _ => false, lam _ _ _ => false, pi _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             pi a1 r1 => match b {
                 pi a2 r2 => Similar.similar a1 a2 && Similar.similar r1 r2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             app f1 a1 => match b {
                 app f2 a2 => Similar.similar f1 f2 && Similar.similar a1 a2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 pi _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             lit v1 => match b {
                 lit v2 => Similar.similar v1 v2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 pi _ _ => false, app _ _ => false, ntv _ => false,
                 con _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             ntv n1 => match b {
                 ntv n2 => Similar.similar n1 n2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 pi _ _ => false, app _ _ => false, lit _ => false,
                 con _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             con c1 => match b {
                 con c2 => Similar.similar c1 c2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 pi _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, hole => false,
-                sort _ => false
+                sort _ => false, cubical _ => false
             },
             sort l1 => match b {
                 sort l2 => level_eq l1 l2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 pi _ _ => false, app _ _ => false, lit _ => false,
-                ntv _ => false, con _ => false, hole => false
+                ntv _ => false, con _ => false, hole => false, cubical _ => false
             },
             hole => match b {
                 hole => true,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 pi _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, con _ => false,
+                sort _ => false, cubical _ => false
+            },
+            cubical c1 => match b {
+                cubical c2 => similar_cubical c1 c2,
+                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                pi _ _ => false, app _ _ => false, lit _ => false,
+                ntv _ => false, con _ => false, hole => false,
                 sort _ => false
             }
         }
+
+/// Two cubical terms are similar when they name the same primitive and
+/// their argument lists are pointwise similar. `args` carries the arity, so
+/// a length mismatch is a difference rather than a crash.
+def similar_cubical (a : Cubical) (b : Cubical) : Bool :=
+    if cubical_prim_eq a.prim b.prim then similar_terms_pointwise a.args b.args else false
+
+#[partial]
+def similar_terms_pointwise (xs : List Term) (ys : List Term) : Bool := match xs {
+    List.empty => List.is_empty ys,
+    List.cons x xrest => match ys {
+        List.empty => false,
+        List.cons y yrest =>
+            if Similar.similar x y then similar_terms_pointwise xrest yrest else false,
+    },
+}
 
 /// Two sorts are similar exactly when their levels are -- the property that
 /// replaced "similar across the two spellings". A `similar` answering `false`

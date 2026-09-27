@@ -55,7 +55,20 @@ pub def free_level_vars (t: Term) : List Identifier := match t {
     Term.app callee arg => union_ids (free_level_vars callee) (free_level_vars arg),
     Term.quote_ inner => free_level_vars inner,
     Term.ctx _loc inner => free_level_vars inner,
+    // Spelled out rather than left to the catch-all: a cubical primitive's
+    // arguments are ordinary `Term`s and `PathP`'s first argument is a LINE
+    // OF TYPES (`I -> Sort l`), so a level variable can and does occur under
+    // one. Falling through to `List.empty` would drop it, and
+    // `wrap_level_forall` would then fail to generalize a level the def
+    // really is polymorphic in.
+    Term.cubical c => match c { Cubical.mk _prim args => free_level_vars_of_terms args },
     _ => List.empty,
+}
+
+#[partial]
+def free_level_vars_of_terms (ts : List Term) : List Identifier := match ts {
+    List.empty => List.empty,
+    List.cons x rest => union_ids (free_level_vars x) (free_level_vars_of_terms rest),
 }
 
 /// Is this `forall` binder a LEVEL binder rather than a type-variable

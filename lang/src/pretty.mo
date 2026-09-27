@@ -1,14 +1,15 @@
 use lang::types {
-  AttrArg, Attribute, Class, ClassDef, Con, DebugName, Decl, Def, FieldPattern,
-  Identifier, InductConstructor, Inductive, Instance, Literal, MatchCase,
-  ModulePath, Multiplicity, NamePath, Native, NumSuffix, OpenFilter, Operator,
-  Param, SortLevel, Struct, StructField, StructLitField, Term, UseFilter, UseItem,
-  Visibility, char_to_string, level_const, package_private, priv_, pub_,
-  show_identifier, show_module_path, show_name_path, show_operator,
+  AttrArg, Attribute, Class, ClassDef, Con, Cubical, DebugName, Decl, Def,
+  FieldPattern, Identifier, InductConstructor, Inductive, Instance, Literal,
+  MatchCase, ModulePath, Multiplicity, NamePath, Native, NumSuffix, OpenFilter,
+  Operator, Param, SortLevel, Struct, StructField, StructLitField, Term, UseFilter,
+  UseItem, Visibility, char_to_string, cubical_prim_name, level_const,
+  package_private, priv_, pub_, show_identifier, show_module_path, show_name_path,
+  show_operator,
 }
 use std::list {List.intercalate}
 
-open Term {app, con, forall, hole, lam, lit, ntv, pi, var}
+open Term {app, con, cubical, forall, hole, lam, lit, ntv, pi, var}
 open Literal {char, flt, if_, match_, num, str}
 open Decl {
   class_d, def_d, inductive_d, infix_d, instance_d, mote_d, open_d, scoped_open_d,
@@ -118,7 +119,31 @@ pub def show_term (t : Term) : String := match t {
     // Transparent: a position is not part of what a term IS, and printing
     // one would break every `show_term` assertion in the test suite.
     ctx _loc inner => show_term inner,
+    // Printed as an ordinary prefix application of the primitive's own name --
+    // `I`, `i0`, `(ineg i)`, `(imeet i j)` -- which is the surface spelling
+    // too, so a printed term parses back once those names are bound in scope.
+    // Written inline like the `app`/`pi` arms rather than as a helper: a
+    // helper taking the `Cubical` would sit INSIDE this function's cycle and
+    // need its own `#[partial]`, and `#[partial]` on a def whose termination
+    // is provable is the noise the style ratchet screens for.
+    cubical c => match c.args {
+        List.empty => cubical_prim_name c.prim,
+        List.cons _ _ =>
+            let lhs := String.concat "(" (cubical_prim_name c.prim) in
+            let inner := String.concat lhs (show_cubical_args c.args) in
+            String.concat inner ")",
+    },
 }
+
+/// Each argument prefixed with a space, so `head` needs no separator logic.
+#[partial]
+def show_cubical_args (ts : List Term) : String := match ts {
+    List.empty => "",
+    List.cons x rest =>
+        let one : String := String.concat " " (show_term x) in
+        String.concat one (show_cubical_args rest),
+}
+
 
 #[partial]
 def show_literal (lit : Literal) : String := match lit {

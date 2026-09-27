@@ -15,7 +15,7 @@
 /// makes that explicit and gives the substitution walkers
 /// ([[lang/typecheck/name_subst.mo]], [[lang/typecheck/subst.mo]]) a
 /// home to build on rather than re-deriving the same ~10 helpers each.
-use lib::types {Con, Literal, MatchCase, Native, StructLitField, Term}
+use lib::types {Con, Cubical, Literal, MatchCase, Native, StructLitField, Term}
 use std::list {List.length}
 
 // ─── Generic structural recursion ──────────────────────────────────
@@ -48,6 +48,23 @@ def term_map_children (f : Term -> Term) (t : Term) : Term :=
         // term -- which is most of them. `loc` is data, not a child, so
         // `f` is not applied to it.
         Term.ctx loc inner => Term.ctx loc (f inner),
+        // No cubical form is a binder, so every argument is an ordinary
+        // child at this node's own depth -- which is why the depth-aware
+        // sibling below can pass 0 for all of them.
+        Term.cubical c => Term.cubical (cubical_map_children f c),
+    }
+
+/// `args` is positional and its length is the primitive's arity, so this
+/// maps in place and never reshapes the list.
+def cubical_map_children (f : Term -> Term) (c : Cubical) : Cubical :=
+    let mapped : List Term := terms_map_children f c.args in
+    { c with args := mapped }
+
+#[partial]
+def terms_map_children (f : Term -> Term) (ts : List Term) : List Term :=
+    match ts {
+        List.empty => List.empty,
+        List.cons x rest => List.cons (f x) (terms_map_children f rest),
     }
 
 #[partial]
@@ -149,6 +166,11 @@ def term_map_children_at_depth (f : I64 -> Term -> Term) (t : Term) : Term :=
         // sits at exactly the depth the wrapper does. Passing 1 here would
         // shift every free index under a located term by one.
         Term.ctx loc inner => Term.ctx loc (f 0 inner),
+        // Depth 0 for every argument: no cubical form binds. A path
+        // abstraction is an ordinary `Term.lam` with an `I`-typed binder, so
+        // dimension variables are counted by the `lam` arm above like any
+        // other de Bruijn binder.
+        Term.cubical c => Term.cubical (cubical_map_children (f 0) c),
     }
 
 #[partial]

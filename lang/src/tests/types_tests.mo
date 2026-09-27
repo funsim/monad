@@ -1,9 +1,10 @@
 use lang::types {
-  Attribute, Identifier, InductConstructor, Inductive, Infix, InstanceKey,
-  LocalVar, Module, ModulePath, ModuleRegistry, Multiplicity, NamePath, Operator,
-  Param, Scope, ScopeClassDef, ScopeConflict, ScopeData, ScopeDef, ScopeError,
-  ScopeInstance, Similar, Term, nid, nnp, nop, package_private, sort_n,
-  visibility_beq,
+  Attribute, CubicalPrim, Identifier, InductConstructor, Inductive, Infix,
+  InstanceKey, LocalVar, Module, ModulePath, ModuleRegistry, Multiplicity,
+  NamePath, Operator, Param, Scope, ScopeClassDef, ScopeConflict, ScopeData,
+  ScopeDef, ScopeError, ScopeInstance, Similar, Term, cub_i0, cub_i1, cub_imeet,
+  cub_ineg, cub_interval, cubical_arity, cubical_is_endpoint, cubical_prim_eq,
+  cubical_prim_of, nid, nnp, nop, package_private, sort_n, visibility_beq,
 }
 use lib::scope {scope_data_add_def, scope_data_add_inductive, scope_data_empty}
 
@@ -298,3 +299,76 @@ def test_scope_error_construct : Bool :=
         },
         _ => false
     }
+
+// --- Cubical primitives -------------------------------------------------
+//
+// `Cubical` carries its arity in `args`' length rather than in a field, so
+// the arity TABLE is the only statement of what each primitive expects and
+// these pins are what keep it honest. `type_check_cubical`
+// (`lang/typecheck/infer.mo`) is what enforces it; `lang/tests/infer_tests.mo`
+// pins that side.
+
+#[test]
+def test_cubical_arity_table : Bool :=
+    I64.beq (cubical_arity CubicalPrim.interval) 0
+        && I64.beq (cubical_arity CubicalPrim.i0) 0
+        && I64.beq (cubical_arity CubicalPrim.i1) 0
+        && I64.beq (cubical_arity CubicalPrim.ineg) 1
+        && I64.beq (cubical_arity CubicalPrim.imeet) 2
+        && I64.beq (cubical_arity CubicalPrim.ijoin) 2
+
+/// The smart constructors must agree with the table they are checked
+/// against, or every well-formed term is rejected for arity.
+#[test]
+def test_cubical_constructors_match_their_arity : Bool :=
+    match cubical_prim_of cub_i0 {
+        Option.some p => I64.beq (cubical_arity p) 0,
+        Option.none => false,
+    }
+
+/// `similar` must distinguish primitives. `i0` against `i1` is the pair that
+/// matters: they are both nullary, so a tag comparison that fell back to
+/// "same arity, same args" would wrongly call them equal -- and a `Similar`
+/// answering `true` for two different terms is the silent kind of wrong
+/// (`term_matches_carrier` picks an instance off it).
+#[test]
+def test_cubical_similar_distinguishes_endpoints : Bool :=
+    Similar.similar cub_i0 cub_i0
+        && Similar.similar cub_i1 cub_i1
+        && Bool.not (Similar.similar cub_i0 cub_i1)
+
+/// ...and must distinguish a cubical term from every other `Term` shape.
+/// `similar_term_go` is a hand-expanded cross product, so a missed pair is
+/// exactly the kind of omission nothing else catches.
+#[test]
+def test_cubical_similar_distinguishes_from_other_terms : Bool :=
+    Bool.not (Similar.similar cub_i0 (sort_n 1))
+        && Bool.not (Similar.similar (sort_n 1) cub_i0)
+        && Bool.not (Similar.similar cub_interval Term.hole)
+        && Bool.not (Similar.similar Term.hole cub_interval)
+
+/// Arguments are compared pointwise, so two applications of the same
+/// primitive differ exactly when their arguments do.
+#[test]
+def test_cubical_similar_compares_arguments : Bool :=
+    Similar.similar (cub_ineg cub_i0) (cub_ineg cub_i0)
+        && Bool.not (Similar.similar (cub_ineg cub_i0) (cub_ineg cub_i1))
+        && Bool.not (Similar.similar (cub_ineg cub_i0) (cub_imeet cub_i0 cub_i1))
+
+/// `cubical_prim_of` peels a location wrapper, like every other shape probe
+/// in this codebase must (`term_peel`'s own doc comment).
+#[test]
+def test_cubical_prim_of_peels_a_location : Bool :=
+    let loc : Location := { offset := 0, line := 1, column := 1 } in
+    let wrapped : Term := Term.ctx loc cub_i1 in
+    match cubical_prim_of wrapped {
+        Option.some p => cubical_prim_eq p CubicalPrim.i1,
+        Option.none => false,
+    }
+
+#[test]
+def test_cubical_endpoint_predicate : Bool :=
+    cubical_is_endpoint CubicalPrim.i0
+        && cubical_is_endpoint CubicalPrim.i1
+        && Bool.not (cubical_is_endpoint CubicalPrim.interval)
+        && Bool.not (cubical_is_endpoint CubicalPrim.ineg)

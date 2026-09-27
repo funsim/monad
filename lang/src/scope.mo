@@ -2004,6 +2004,19 @@ def resolve_open_alias_term_scoped (names : HashMap String String) (bound : List
         // Preserving: this rewrites names in place and must not drop a
         // position while doing it.
         Term.ctx loc inner => Term.ctx loc (resolve_open_alias_term_scoped names bound inner),
+        Term.cubical c =>
+            let rewritten : List Term := resolve_open_alias_terms_scoped names bound c.args in
+            Term.cubical { c with args := rewritten },
+    }
+
+#[partial]
+def resolve_open_alias_terms_scoped (names : HashMap String String) (bound : List String)
+    (ts : List Term) : List Term :=
+    match ts {
+        List.empty => List.empty,
+        List.cons x rest =>
+            let here : Term := resolve_open_alias_term_scoped names bound x in
+            List.cons here (resolve_open_alias_terms_scoped names bound rest),
     }
 
 #[partial]
@@ -2672,6 +2685,14 @@ def def_references_class (cls_str : String) (t : Term) : Bool :=
         Term.hole => false,
         Term.quote_ inner => def_references_class cls_str inner,
         Term.ctx _loc inner => def_references_class cls_str inner,
+        Term.cubical c => match c { Cubical.mk _prim args => terms_reference_class cls_str args },
+    }
+
+#[partial]
+def terms_reference_class (cls_str : String) (ts : List Term) : Bool :=
+    match ts {
+        List.empty => false,
+        List.cons x rest => def_references_class cls_str x || terms_reference_class cls_str rest,
     }
 
 #[partial]
@@ -7175,6 +7196,16 @@ def find_unresolved_class_calls_term (classes : List Class) (t : Term) (acc : Li
     // Must recurse: an unresolved class call under a located term is still
     // unresolved, and this is what reports it.
     Term.ctx _loc inner => find_unresolved_class_calls_term classes inner acc,
+    // Must recurse, same as `ctx`: an unresolved class call under a cubical
+    // argument is still unresolved.
+    Term.cubical c => match c { Cubical.mk _prim args => find_unresolved_class_calls_terms classes args acc },
+}
+
+#[partial]
+def find_unresolved_class_calls_terms (classes : List Class) (ts : List Term)
+    (acc : List ClassMethodRef) : List ClassMethodRef := match ts {
+    List.empty => acc,
+    List.cons x rest => find_unresolved_class_calls_terms classes rest (find_unresolved_class_calls_term classes x acc),
 }
 
 #[partial]

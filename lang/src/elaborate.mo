@@ -74,7 +74,19 @@ def free_vars (typ : Term) (known_names : List Identifier) : List Identifier :=
         // A location binds nothing, so the names free under it are the
         // names free in it.
         Term.ctx _loc inner => free_vars inner known_names,
+        // A cubical primitive binds nothing, so its arguments contribute
+        // their own free vars directly. This matters for generalization:
+        // `wrap_forall` reads this, and a name occurring only under a
+        // cubical argument would otherwise not be generalized.
+        Term.cubical c =>
+            match c { Cubical.mk _prim args => free_vars_of_terms args known_names },
     }
+
+#[partial]
+def free_vars_of_terms (ts : List Term) (known_names : List Identifier) : List Identifier := match ts {
+    List.empty => List.empty,
+    List.cons x rest => union_ids (free_vars x known_names) (free_vars_of_terms rest known_names),
+}
 
 /// Collect free vars from match case bodies.
 def free_vars_of_cases (cases : List MatchCase) (known_names : List Identifier) (acc : List Identifier) : List Identifier :=

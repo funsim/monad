@@ -206,6 +206,15 @@ def term_has_struct_lit (t : Term) : Bool := match t {
     // Must recurse, or a struct literal under a located term passes the
     // gate and later compiles to a `void_val` placeholder.
     Term.ctx _loc inner => term_has_struct_lit inner,
+    // Must recurse: once `PathP` takes type arguments a struct literal can
+    // sit under one, and this gate is what keeps it from reaching the
+    // `void_val` placeholder.
+    Term.cubical c => match c { Cubical.mk _prim args => terms_have_struct_lit args },
+}
+
+def terms_have_struct_lit (ts : List Term) : Bool := match ts {
+    List.empty => false,
+    List.cons x rest => term_has_struct_lit x || terms_have_struct_lit rest,
 }
 
 def lit_has_struct_lit (l : Literal) : Bool := match l {

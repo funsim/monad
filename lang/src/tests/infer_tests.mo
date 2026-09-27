@@ -1,8 +1,9 @@
 use std::list {List.length}
 use lang::types {
   Attribute, DebugName, Decl, FieldPattern, FieldPatternEntry, Identifier,
-  InductConstructor, Inductive, MatchCase, ModulePath, NamePath, Param, Scope,
-  ScopeClassDef, ScopeData, Similar, Term, TypeError, char, if_, many, match_,
+  CubicalPrim, InductConstructor, Inductive, MatchCase, ModulePath, NamePath,
+  Param, Scope, ScopeClassDef, ScopeData, Similar, Term, TypeError, char, cub_i0,
+  cub_i1, cub_ijoin, cub_imeet, cub_ineg, cub_interval, if_, many, match_,
   package_private, sentinel, sort_n,
 }
 use lib::scope {build_scope_from_decls, scope_find_inductive}
@@ -1149,4 +1150,89 @@ def test_plain_pi_expected_rejects_bad_body : Bool :=
     match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) forall_pin_pi {
         ok _ => false,
         err _ => true,
+    }
+
+// --- Cubical Stage 1: the interval ---------------------------------------
+//
+// Term-level, like the sort pins above, and for the same reason: there is no
+// surface syntax for a cubical primitive yet (scope binding for the names
+// lands in a later Stage 1 commit), so a source-level pin could not reach
+// these rules at all.
+//
+// The rules under test: `I : Type`, `i0 : I`, `i1 : I`, `ineg : I -> I`,
+// `imeet`/`ijoin : I -> I -> I`.
+
+#[test]
+def test_cubical_interval_is_a_type : Bool :=
+    match run_check cub_interval (sort_n 1) {
+        ok _ => true,
+        err _ => false,
+    }
+
+#[test]
+def test_cubical_endpoints_inhabit_the_interval : Bool :=
+    match run_check cub_i0 cub_interval {
+        ok _ => match run_check cub_i1 cub_interval {
+            ok _ => true,
+            err _ => false,
+        },
+        err _ => false,
+    }
+
+/// NEGATIVE: an endpoint is not a type. Without this the pin above would
+/// pass against an arm that accepted anything.
+#[test]
+def test_cubical_endpoint_is_not_a_type : Bool :=
+    match run_check cub_i0 (sort_n 1) {
+        ok _ => false,
+        err _ => true,
+    }
+
+/// NEGATIVE: the interval type is not an interval ELEMENT.
+#[test]
+def test_cubical_interval_does_not_inhabit_itself : Bool :=
+    match run_check cub_interval cub_interval {
+        ok _ => false,
+        err _ => true,
+    }
+
+#[test]
+def test_cubical_ineg_is_interval_valued : Bool :=
+    match run_check (cub_ineg cub_i0) cub_interval {
+        ok _ => true,
+        err _ => false,
+    }
+
+#[test]
+def test_cubical_imeet_and_ijoin_are_interval_valued : Bool :=
+    match run_check (cub_imeet cub_i0 cub_i1) cub_interval {
+        ok _ => match run_check (cub_ijoin cub_i0 cub_i1) cub_interval {
+            ok _ => true,
+            err _ => false,
+        },
+        err _ => false,
+    }
+
+/// An argument must be a dimension, not an arbitrary term. This is the pin
+/// that says `check_cubical_args` actually checks.
+#[test]
+def test_cubical_rejects_a_non_interval_argument : Bool :=
+    match run_check (cub_ineg (sort_n 1)) cub_interval {
+        ok _ => false,
+        err _ => true,
+    }
+
+/// `args`' length IS the arity, so a malformed application is representable
+/// and `type_check_cubical` is the only thing that rejects it. Both
+/// directions: too few and too many.
+#[test]
+def test_cubical_rejects_wrong_arity : Bool :=
+    let no_args : Term := cub CubicalPrim.ineg List.empty in
+    let two_args : Term := cub CubicalPrim.ineg [cub_i0, cub_i1] in
+    match run_check no_args cub_interval {
+        ok _ => false,
+        err _ => match run_check two_args cub_interval {
+            ok _ => false,
+            err _ => true,
+        },
     }

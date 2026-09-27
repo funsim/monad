@@ -42,6 +42,15 @@ def free_names_of_term (bound : List Identifier) (t : Term) : List Identifier :=
     Term.quote_ inner => free_names_of_term bound inner,
     // Transparent: a location binds nothing and references nothing.
     Term.ctx _loc inner => free_names_of_term bound inner,
+    // A cubical primitive binds nothing, so its arguments are walked under
+    // the same `bound` set.
+    Term.cubical c => match c { Cubical.mk _prim args => free_names_of_terms bound args },
+}
+
+#[partial]
+def free_names_of_terms (bound : List Identifier) (ts : List Term) : List Identifier := match ts {
+    List.empty => List.empty,
+    List.cons x rest => union_ids (free_names_of_term bound x) (free_names_of_terms bound rest),
 }
 
 #[partial]
@@ -167,6 +176,16 @@ def collect_referenced_names (t : Term) (acc : List String) : List String := mat
     // to everything under a located term: the def count silently drops and
     // the link fails later with `undefined @X`, far from the cause.
     Term.ctx _loc inner => collect_referenced_names inner acc,
+    // MUST recurse, for the same reason the `ctx` arm above must: a name
+    // referenced only under a cubical argument would be invisible to
+    // `filter_reachable_decls` and the link would fail with `undefined @X`.
+    Term.cubical c => match c { Cubical.mk _prim args => collect_referenced_names_terms args acc },
+}
+
+#[partial]
+def collect_referenced_names_terms (ts : List Term) (acc : List String) : List String := match ts {
+    List.empty => acc,
+    List.cons x rest => collect_referenced_names_terms rest (collect_referenced_names x acc),
 }
 
 /// Now total (no `#[partial]`) — `struct_lit`/`struct_update` are

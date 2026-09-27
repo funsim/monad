@@ -1,13 +1,14 @@
 use std::map {HashMap.to_list}
 use lang::types {
-  Class, Con, DebugName, Def, FieldPattern, FieldPatternEntry, Identifier,
-  InductConstructor, Inductive, Literal, LocalScope, LocalVar, Location,
-  MatchCase, ModulePath, NamePath, NameRef, Native, NumSuffix, Param, Scope,
-  ScopeClassDef, ScopeData, ScopeDef, ScopeError, Similar, SortLevel,
-  StructLitField, Term, TypeConstraint, TypeError, concrete, field_access_chain,
-  id_eq, id_member, level_lt, level_of_type, list_rev_loop, list_reverse, many,
-  max, package_private, sentinel, show_identifier, show_name_path, sort_level_of,
-  succ, term_peel,
+  Class, Con, Cubical, CubicalPrim, DebugName, Def, FieldPattern,
+  FieldPatternEntry, Identifier, InductConstructor, Inductive, Literal,
+  LocalScope, LocalVar, Location, MatchCase, ModulePath, NamePath, NameRef,
+  Native, NumSuffix, Param, Scope, ScopeClassDef, ScopeData, ScopeDef,
+  ScopeError, Similar, SortLevel, StructLitField, Term, TypeConstraint,
+  TypeError, concrete, cub_interval, cubical_arity, cubical_prim_name,
+  cubical_result_type, field_access_chain, id_eq, id_member, level_lt,
+  level_of_type, list_rev_loop, list_reverse, many, max, package_private,
+  sentinel, show_identifier, show_name_path, sort_level_of, succ, term_peel,
 }
 use lang::scope {
   ClassMethodRef, DictBinding, build_dict_field_projection_checked,
@@ -96,6 +97,11 @@ pub def type_check (term : Term) (expected_type : Term) (scope : Scope) (local_t
         // here would erase every source position before codegen ever sees
         // one, and the whole feature would silently do nothing.
         Term.ctx loc inner => type_check_located loc inner expected_type scope local_types locals,
+        // Stage 1 of the cubical fragment carries only the interval and its
+        // De Morgan operations, whose rules are small enough to state here;
+        // `PathP`/`transp`/`hcomp` get their own module
+        // (`lang/typecheck/cubical.mo`) when they land.
+        Term.cubical c => type_check_cubical c expected_type scope local_types locals,
     }
 
 /// Re-wrap a located term's checked result. Split out because the rewrap
@@ -3652,6 +3658,78 @@ def type_check_sort_full (sort_term : Term) (level : SortLevel) (expected_type :
 /// program holding one reaches this def. The constructor lookup below
 /// used the wrong key until 2026-10-05, which failed elaboration for
 /// all of them; see the regression rows beside `point_scope`.
+/// Type check a cubical primitive application (Stage 1: the interval).
+///
+/// Every Stage 1 primitive is non-dependent, so the whole rule is an arity
+/// check plus "each argument is an `I`":
+///
+///   I : Type        i0 : I        i1 : I
+///   ineg  : I -> I        imeet, ijoin : I -> I -> I
+///
+/// `I : Type` rather than a universe of its own is the deliberate Stage 1
+/// compromise recorded in `plans/type-system/univalence.md`: it makes `I` a
+/// legitimate small type, which a full treatment would not, and the cost is
+/// contained by `type_check_pi` treating an `I` DOMAIN as contributing level
+/// 0 so a `Prop`-valued path family is not bumped out of `Prop`.
+///
+/// The arity check is here rather than in `Cubical` itself for the same
+/// reason `Con` carries `num_args` and `type_check_con` validates it: the
+/// representation stays simple and one place enforces the table.
+def type_check_cubical (c : Cubical) (expected_type : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    let want : I64 := cubical_arity c.prim in
+    if Bool.not (I64.beq (List.length c.args) want) then
+        err (TypeError.custom (cubical_arity_message c.prim want (List.length c.args)))
+    else
+        match check_cubical_args c.args scope local_types locals {
+            err e => err e,
+            ok checked =>
+                let inferred : Term := cubical_result_type c.prim in
+                let rebuilt : Term := cub c.prim checked in
+                match unify inferred expected_type scope locals {
+                    ok unified => ok (mk_typed rebuilt unified),
+                    err e => err e,
+                },
+        }
+
+/// What a primitive's application is a term OF. `interval` is the type
+/// former, so it answers a sort; everything else in Stage 1 is interval-
+/// valued.
+def cubical_result_type (prim : CubicalPrim) : Term := match prim {
+    CubicalPrim.interval => sort_n 1,
+    CubicalPrim.i0 => cub_interval,
+    CubicalPrim.i1 => cub_interval,
+    CubicalPrim.ineg => cub_interval,
+    CubicalPrim.imeet => cub_interval,
+    CubicalPrim.ijoin => cub_interval,
+}
+
+/// Every Stage 1 argument is a dimension, i.e. an `I`. When `PathP` lands
+/// its first argument is a line of types instead, which is why this is a
+/// helper rather than inlined.
+#[partial]
+def check_cubical_args (args : List Term) (scope : Scope) (local_types : List Term)
+    (locals : LocalScope) : Result TypeError (List Term) :=
+    match args {
+        List.empty => ok List.empty,
+        List.cons hd rest =>
+            match type_check hd cub_interval scope local_types locals {
+                err e => err e,
+                ok hd_tt =>
+                    match check_cubical_args rest scope local_types locals {
+                        err e => err e,
+                        ok rest_checked => ok (List.cons hd_tt.term rest_checked),
+                    },
+            },
+    }
+
+def cubical_arity_message (prim : CubicalPrim) (want : I64) (got : I64) : String :=
+    let head : String := String.concat "cubical primitive `" (cubical_prim_name prim) in
+    let mid : String := String.concat head "` takes " in
+    let w : String := String.concat mid (I64.to_string want) in
+    let a : String := String.concat w " argument(s), got " in
+    String.concat a (I64.to_string got)
+
 def type_check_con (c : Con) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match c {
         mk cname typ_name num_args args =>

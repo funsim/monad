@@ -2405,7 +2405,33 @@ def compile_db_term_ir (c : CodegenCtx) (term_ : Term) : CompileResult := match 
     Term.sort _level => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     Term.hole => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     Term.ctx loc inner => compile_located_term_ir c loc inner,
+    Term.cubical cub_ => compile_cubical_ir c cub_,
 }
+
+/// Stage 1 codegen for the cubical primitives.
+///
+/// `I` is a type and erases exactly as `Term.sort` does. `i0`/`i1` are the
+/// two interval endpoints and compile to the immediates `0`/`1`, which is
+/// their whole runtime content.
+///
+/// The three De Morgan operations are NOT compiled yet: `ineg`/`imeet`/
+/// `ijoin` need real integer instructions (`1 - i`, min, max), and nothing
+/// reaches them today because no surface syntax produces a cubical term --
+/// scope binding for the primitive names lands in a later Stage 1 commit.
+/// They erase here rather than emitting wrong arithmetic, and that is a
+/// KNOWN DEBT rather than a design: it comes due with the first executable
+/// cubical proof, tracked in `plans/type-system/univalence.md`. Until then
+/// the checker is the only consumer, and `lang/src/tests` pins it at term
+/// level.
+def compile_cubical_ir (c : CodegenCtx) (cub_ : Cubical) : CompileResult :=
+    match cub_.prim {
+        CubicalPrim.i0 => CompileResult.ok c List.empty (LLVMValue.int_ 0) List.empty List.empty List.empty,
+        CubicalPrim.i1 => CompileResult.ok c List.empty (LLVMValue.int_ 1) List.empty List.empty List.empty,
+        CubicalPrim.interval => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.ineg => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.imeet => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.ijoin => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+    }
 
 #[partial]
 def compile_db_app_ir (c : CodegenCtx) (fun : Term) (arg : Term) : CompileResult :=

@@ -25,8 +25,9 @@
 /// (mirroring the reference's own `subst_macro`/`subst_decl_var` much
 /// more directly) — a different module, not this one.
 use lang::types {
-  Con, FieldPattern, Literal, MatchCase, Native, StructLitField, Term, concrete,
-  id, level_const, sentinel, unnamed,
+  Con, Cubical, FieldPattern, Literal, MatchCase, Native, StructLitField, Term,
+  concrete, cub_ineg, id, level_const, sentinel, unnamed,
+}
 }
 
 use lib::typecheck::traverse {term_map_children_at_depth}
@@ -388,5 +389,47 @@ def test_beta_reduce_curried_lam_partial_application : Bool :=
                     I64.beq (term_type_level callee) 42 && I64.beq (term_var_idx remaining_arg) 0,
                 _ => false,
             },
+        _ => false,
+    }
+
+/// A cubical primitive introduces NO binder, so every argument sits at the
+/// node's own depth and a free variable inside one shifts like any other.
+///
+/// This is the pin on the claim that lets `term_shift`/`term_subst`/
+/// `term_permute` stay untouched by the cubical fragment: a path abstraction
+/// is an ordinary `Term.lam` with an `I`-typed binder, so dimension
+/// variables are counted by the `lam` arm and nothing needs a second index
+/// space. If a future primitive ever DOES bind, this test is what fails.
+#[test]
+def test_term_shift_through_cubical_arg_is_depth_zero : Bool :=
+    let t : Term := cub_ineg (Term.var 0 DebugName.unnamed) in
+    match term_shift 3 t {
+        Term.cubical c => match c {
+            Cubical.mk _prim args => match args {
+                List.cons a rest =>
+                    if List.is_empty rest then I64.beq (term_var_idx a) 3 else false,
+                List.empty => false,
+            },
+        },
+        _ => false,
+    }
+
+/// The companion: under a `lam`, a cubical argument's `var 0` refers to that
+/// lambda's binder and must NOT shift -- so the cubical node really is
+/// transparent to depth rather than resetting it.
+#[test]
+def test_term_shift_cubical_under_lam_respects_the_binder : Bool :=
+    let inner : Term := cub_ineg (Term.var 0 DebugName.unnamed) in
+    let t : Term := Term.lam DebugName.unnamed (Term.sort (SortLevel.concrete 1)) inner in
+    match term_shift 5 t {
+        Term.lam _ _ body => match body {
+            Term.cubical c => match c {
+                Cubical.mk _prim args => match args {
+                    List.cons a _ => I64.beq (term_var_idx a) 0,
+                    List.empty => false,
+                },
+            },
+            _ => false,
+        },
         _ => false,
     }
