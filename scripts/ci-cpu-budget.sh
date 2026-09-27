@@ -44,24 +44,41 @@
 #
 # The numbers, and why each is printed rather than asserted:
 #
-#   * three records disagreed about this runner. This repository's ci.yml
-#     asserted the sweep's `min(nproc - 1, 8)` default was "= 7 here";
+#   * there was never a disagreement to settle -- there were TWO MACHINES.
+#     This repository's ci.yml asserted the sweep's default was "= 7 here",
 #     monad-nixos-modules' runner module comments 8 vCPU as "matches the CI
-#     host's cores"; and run 36301331844 shipped 3 shards. A measurement in
-#     the log is what settles that; a fourth assertion would not.
+#     host's cores", and run 36301331844 shipped 3 shards. All three were
+#     right, about different hosts: `runs-on: [self-hosted, linux]` reaches
+#     both runners, and "Set up job" names the one that took the job.
+#     nixos-server (4 cores, 15.6 GB) gave 3 shards in 36301331844;
+#     anders-desktop (8 cores, 31.3 GB) gave 7 in 36322856497. Both readings
+#     below are therefore per-MACHINE, and no literal belongs in the workflow.
 #   * `nproc` respects this process's CPU affinity and the cgroup CPU quota
 #     caps the CPU time it may actually burn, so the smaller of the two is the
-#     budget. `cpu.max` is absent on this runner (printed as such), which
-#     makes the quota the affinity here -- but the reading is printed either
+#     budget. `cpu.max` is absent on both runners (printed as such), which
+#     makes the quota the affinity there -- but the reading is printed either
 #     way, so a runner that does constrain it says so instead of silently
 #     changing the answer.
-#   * a shard is a whole compiler plus its GC heap, so the cap is 8 rather
-#     than the whole budget: this corpus has OOM'd a box before, and 8 is the
-#     cap the script's own `min(nproc - 1, 8)` default already carried.
-#   * the reading that chose 3 shards came from `nproc` INSIDE the dev shell,
-#     so this script -- which runs there -- prints its own `nproc`, and the
-#     step prints the host's beside it. If the two differ, the difference is
-#     the whole explanation, and it is in the log rather than in memory.
+#   * the budget IS the shard count -- one shard per core. That reverses the
+#     `nproc - 1` this script and the sweep's default used to carry, because
+#     the reserved core was measured sitting idle: run 36323615273's shard
+#     walls were `947s 1425s 1425s`, so 3797 s of work ran on 3 shards and the
+#     4-core runner's fourth core was unused for the whole 1425 s critical
+#     path. A ~25% cut on that box, from a reserve that was a round-1
+#     inheritance rather than a measurement.
+#   * the cap of 8 is a guard on shard COUNT, not on memory. The memory
+#     reasoning it used to carry ("this corpus has OOM'd a box before") does
+#     not survive contact with the corpus as it now is: `monad test
+#     lang/src/scope.mo`, the heaviest file in it, peaks at 172 MB of summed
+#     tree RSS (measured 2026-09-27), so four shards are well under a gigabyte
+#     on the 15.6 GB runner. It stays because no runner in this fleet has more
+#     than 8 cores, and a workstation that is also a runner should not be
+#     asked for more than that.
+#   * the reading that chose the shard count comes from `nproc` INSIDE the dev
+#     shell, so this script -- which runs there -- prints its own `nproc`, and
+#     the step prints the host's beside it. Both are in the log, so a shard
+#     count that surprises anyone can be traced to the machine that produced
+#     it rather than to memory.
 #
 # It is runnable by hand, which is how the dependencies above were checked:
 #
@@ -105,7 +122,9 @@ budget="$affinity"
 if [ -n "$quota" ] && [ "$quota" -lt "$budget" ]; then
   budget="$quota"
 fi
-jobs=$((budget - 1))
+# One shard per core, with nothing held back -- see the shard-walls bullet in
+# the header for why the old `- 1` was costing a quarter of the sweep.
+jobs="$budget"
 if [ "$jobs" -lt 1 ]; then jobs=1; fi
 if [ "$jobs" -gt 8 ]; then jobs=8; fi
 echo "budget: affinity=$affinity quota=${quota:-unlimited} -> $jobs sweep shard(s)"

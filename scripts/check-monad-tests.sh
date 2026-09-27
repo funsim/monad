@@ -412,22 +412,28 @@ fi
 # measured warm-up, and it is machine- and load-dependent (CI's 3-shard
 # sweep, 1423s, beat what the model predicts on the local box).
 #
-# The default is min(nproc - 1, 8): one core is left for the machine, and
-# what each extra shard costs is a closure resident in memory rather than a
-# file on disk. CI does NOT get 8 from this default: run 36301331844 took 3
-# shards, and since nothing in the runner's configuration sets
-# MONAD_SWEEP_JOBS, 3 = min(nproc - 1, 8) means the `nproc` called HERE
-# returned 4 in that job. Note that the same call returns 8 on the dev box,
-# inside and outside the dev shell, so the 4 was a property of that job's
-# environment and not of this line -- which reading is the right one to
-# shard on is exactly what ci.yml's "Settle the CPU budget" step now prints
-# instead of assuming. ci.yml sets MONAD_SWEEP_JOBS explicitly, so the
-# number is a decision rather than a side effect of where `nproc` runs.
+# The default is min(nproc, 8): one shard per core, nothing held back. What
+# each extra shard costs is a closure resident in memory rather than a file on
+# disk, and that cost was measured rather than assumed on 2026-09-27 -- `monad
+# test lang/src/scope.mo`, the heaviest file in this corpus, peaks at 172 MB of
+# summed tree RSS -- so memory is not what bounds this and cores are.
+#
+# It used to be min(nproc - 1, 8), holding a core back "for the machine". Run
+# 36323615273 showed what that cost: its shard walls were `947s 1425s 1425s`,
+# so 3797 s of work ran on 3 shards and the 4-core runner's fourth core sat
+# idle for the whole 1425 s critical path -- a quarter of the sweep, on a
+# reserve inherited from round 1 rather than from a measurement.
+#
+# `nproc` here is the CPU count available to THIS process, which is the whole
+# reason CI's two runners disagree: nixos-server (4 cores) reports 4 and
+# anders-desktop (8 cores) reports 8, so run 36301331844's 3 shards and run
+# 36322856497's 7 were both this line, read correctly, on different hardware.
+# CI sets MONAD_SWEEP_JOBS explicitly from scripts/ci-cpu-budget.sh, so this
+# default now serves local runs -- which ask the same question the runners do.
 sweep_jobs="${MONAD_SWEEP_JOBS:-}"
 case "$sweep_jobs" in
   '')
     sweep_jobs="$(nproc 2>/dev/null || echo 1)"
-    if [ "$sweep_jobs" -gt 1 ]; then sweep_jobs=$((sweep_jobs - 1)); fi
     if [ "$sweep_jobs" -gt 8 ]; then sweep_jobs=8; fi
     ;;
   *[!0-9]*)

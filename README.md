@@ -122,16 +122,24 @@ cargo test
 # compiled binary first if needed. This is what CI runs.
 scripts/check-monad-tests.sh
 
-# The sweep runs over min(nproc - 1, 8) shards at once, each shard its own
-# `monad` process. MONAD_SWEEP_JOBS caps that -- `MONAD_SWEEP_JOBS=1` is the
-# single sequential invocation this script used to make, and the shape its
-# sharded totals are checked against. CI sets that variable from a
+# The sweep runs over min(nproc, 8) shards at once -- one shard per core,
+# nothing held back -- each shard its own `monad` process. Memory is not what
+# sets that: `monad test lang/src/scope.mo`, the heaviest file in the corpus,
+# peaks at 172 MB of summed tree RSS (measured 2026-09-27), and more shards
+# means fewer files through each process. Run 36323615273 showed what the old
+# hold-back cost instead: its shard walls were `947s 1425s 1425s`, so 3797 s
+# of work ran on 3 shards and the 4-core runner's fourth core sat idle for the
+# whole 1425 s critical path. MONAD_SWEEP_JOBS caps that -- `MONAD_SWEEP_JOBS=1`
+# is the single sequential invocation this script used to make, and the shape
+# its sharded totals are checked against. CI sets that variable from a
 # measurement instead of leaving it to this default: its "Settle the CPU
 # budget" step prints the runner's core count both from the host and from
 # inside the dev shell, runs scripts/ci-cpu-budget.sh, and sets the result.
-# Three records disagreed about this host's core count -- this repository's
-# ci.yml, monad-nixos-modules' runner module and the 3 shards a run actually
-# shipped -- so both readings are printed rather than one being assumed.
+# The count is per-MACHINE, and that is why no literal appears in the workflow:
+# `runs-on: [self-hosted, linux]` reaches two runners, and "Set up job" names
+# the one that took the job. nixos-server (4 cores) gave 3 shards in run
+# 36301331844, anders-desktop (8 cores) gave 7 in 36322856497. Both readings
+# are printed so a surprising shard count can be traced to its machine.
 MONAD_SWEEP_JOBS=1 scripts/check-monad-tests.sh
 
 # There is no separate corpus-wide `check` phase any more. `monad test`

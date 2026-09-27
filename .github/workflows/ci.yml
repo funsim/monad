@@ -155,34 +155,44 @@ jobs:
     # CPU budget" step in the list below measures the runner's budget and
     # sets MONAD_SWEEP_JOBS from it. Run 36301331844 is why -- this comment
     # used to assert the default was "= 7 here" and that run shipped 3, i.e.
-    # the `nproc` the sweep itself called returned 4 there. The step prints
-    # both readings rather than explaining that away.
+    # the `nproc` the sweep itself called returned 4 there. That turned out
+    # not to be a disagreement but a FLEET: `runs-on: [self-hosted, linux]`
+    # reaches two machines and the "Set up job" step names the one that took
+    # the job. nixos-server (4 cores) gave 3 shards in 36301331844;
+    # anders-desktop (8 cores) gave 7 in 36322856497. Both are correct, which
+    # is why no literal belongs here.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
 
-      # What this runner actually lets the sweep use, printed because three
-      # records disagreed about it: this file claimed the sharding default
-      # `min(nproc - 1, 8)` was "= 7 here", monad-nixos-modules' runner
-      # module comments 8 vCPU as "matches the CI host's cores", and run
-      # 36301331844 shipped 3 shards. The 3 is a measurement of the sweep's
-      # own reading, by arithmetic rather than assertion: the default is
-      # `min(nproc - 1, 8)`, nothing in the runner's configuration sets
-      # MONAD_SWEEP_JOBS (checked in monad-nixos-modules), so 3 shards means
-      # the `nproc` the sweep called returned 4. WHY it returned 4 is not
-      # claimed here -- the two readings below, host and dev shell, are what
-      # settle that, and asserting the cause before them is what this
-      # comment is replacing.
+      # What this runner actually lets the sweep use, printed because the
+      # answer differs per machine: this file once claimed the sharding
+      # default was "= 7 here" while monad-nixos-modules' runner module
+      # comments 8 vCPU as "matches the CI host's cores" and run 36301331844
+      # shipped 3 shards. All three were right about different hosts. `runs-on:
+      # [self-hosted, linux]` reaches nixos-server (4 cores) and
+      # anders-desktop (8 cores), and "Set up job" names the one that took the
+      # job -- so the two readings below are per-machine facts, not a
+      # contradiction to explain away.
       #
       # MONAD_SWEEP_JOBS is SET from the measurement instead of being left to
-      # that default, so the value stops depending on which environment
-      # happened to ask. `nproc` already respects the process's CPU affinity
-      # and the cgroup quota caps the CPU time it may actually burn, so the
-      # smaller of the two is the budget; the cap of 8 is the memory-driven
-      # one the script's own default carries (a shard is a whole compiler
-      # plus its GC heap, and this corpus has OOM'd a box before). A literal
-      # 7 is deliberately not written down: on a 4-CPU budget it would be 2x
-      # oversubscription.
+      # the script's default, so the value stops depending on which
+      # environment happened to ask. `nproc` already respects the process's
+      # CPU affinity and the cgroup quota caps the CPU time it may actually
+      # burn, so the smaller of the two is the budget.
+      #
+      # The budget IS the shard count -- one shard per core. The `nproc - 1`
+      # that both this file and the sweep's default used to carry reserved a
+      # core "for the machine", and run 36323615273 measured what it cost:
+      # shard walls `947s 1425s 1425s`, i.e. 3797 s of work on 3 shards with
+      # the 4-core runner's fourth core idle for the whole 1425 s critical
+      # path. The cap of 8 is a guard on shard COUNT, not on memory -- the
+      # memory claim it used to carry ("this corpus has OOM'd a box before")
+      # does not describe this corpus: `monad test lang/src/scope.mo`, the
+      # heaviest file in it, peaks at 172 MB of summed tree RSS (measured
+      # 2026-09-27). It stays because no runner in this fleet has more than
+      # 8 cores. A literal shard count is deliberately not written down: it
+      # would be wrong on one of the two machines.
       #
       # The measurement is a script run INSIDE the dev shell, for a reason
       # that cost a red pipeline: a bare `run:` step gets the RUNNER HOST's
