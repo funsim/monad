@@ -55,14 +55,16 @@ out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
 # (`nix build .#monadHost`); unset, scripts/build-self-hosted.sh falls back to
 # `cargo run --release --`, whose cold fat-LTO build was ~10 minutes here
 # (actions/checkout runs git clean -ffdx at the start of every job, wiping
-# target/, .devenv/ and the config, so it was cold every time). What is
-# deliberately NOT taken from the flake is the compiler: both rung-1 builds
-# below assert the interpreted-vs-compiled comparison, which needs the `.ll`
-# the interpreter writes beside its output, and a store compiler has none
-# beside it (nix/monad.nix does not install one). The ladder stays a
-# from-source build here, in both modes; only its host is packaged. CI's
-# `test` job has no such comparison to make, so it does sweep the packaged
-# compiler -- see its step.
+# target/, .devenv/ and the config, so it was cold every time).
+#
+# RUNG 1 ITSELF IS NOW ALSO AVAILABLE AS A PACKAGE, and the release ladder
+# takes it when this machine's store already holds it -- see the block above
+# `ladder()`. That reverses what stood here, which was that a store compiler
+# "has no `.ll` beside it (nix/monad.nix does not install one)": `nix/monad.nix`
+# now splits rung 1 into `packages.monadRung1`, and that output DOES install the
+# `.ll` the interpreter wrote, precisely so this comparison can be made against
+# a re-used rung 1 rather than only a re-built one. CI's `test` job has no such
+# comparison to make, so it sweeps the packaged compiler -- see its step.
 #
 # --release: debug info is on by default; DWARF emission costs ~30s on this
 # workload and the binary this job tests does not need it. So the release
@@ -88,10 +90,81 @@ out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
 # is what keeps the emitted IR comparable to it. `rm -rf` forces a
 # from-scratch build rather than trusting a stale binary; the staleness check
 # and the build command live in scripts/build-self-hosted.sh.
+#
+# A3 -- rung 1 is a package, and the release ladder takes it from the store
+# when the store already holds it.
+#
+# `nix/monad.nix`'s `packages.monadRung1` IS this ladder's rung 1: the host
+# interpreting the compiler's own sources, with the `.ll` it emitted installed
+# beside the binary. The from-source build below computes exactly that, so when
+# the store already has it the build adds nothing but the wait -- and the `.ll`
+# it would have written is the very file `cmp` below is a comparison against.
+#
+# THREE THINGS BOUND IT, all measured rather than assumed:
+#
+#   * It is RELEASE-ONLY. The two ladder modes' IR differs decisively -- measured
+#     on this tree: the release `.ll` is 5510916 bytes and the DWARF mode's
+#     8947320, differing from byte 229476 -- so one stored rung 1 cannot serve
+#     both, and the debug ladder keeps its from-source build. The step's wall is
+#     the SLOWER ladder, and the ladder that sets it is the one that cannot
+#     consume this. The saving is therefore runner CPU on the release ladder, NOT
+#     the step's wall clock; said plainly here so a CI log is not read as a win it
+#     cannot make.
+#   * A hit is OPPORTUNISTIC. The fleet's two runners share no nix store, and
+#     `ci.yml:62-71` already records that. It hits on a re-run, on a commit that
+#     leaves the compiler's sources alone, or when the `test` job landed on this
+#     machine -- and `test` builds `.#monad`, which DEPENDS on `rung1`, so a
+#     machine that has swept already has this.
+#   * `nix-store --check-validity` asks "is it already realized", which is the
+#     question. `nix build` would answer it by BUILDING, which is the ~320 s of
+#     interpretation this exists to avoid; `nix eval` of the output path carries
+#     no such risk, since it evaluates the derivation without realizing it.
+#
+# The path is content-addressed on the compiler's SOURCES and not on the commit
+# (that being the split `nix/monad.nix` performs), so it cannot be a stale hit:
+# a dirty or moved source tree evaluates to a different path and the from-source
+# build runs. Nothing here asserts anything about the binary's revision -- the
+# ladder never checked one, and `cmp` below is what it checks.
+rung1_store="${MONAD_RUNG1_STORE:-}"
+if [ -z "$rung1_store" ]; then
+  rung1_store="$(nix eval --raw .#monadRung1.outPath 2>/dev/null || true)"
+fi
+
+# Usable only if it is realized AND carries the `.ll`. The second test is not
+# redundant: it is the one that fails first and most legibly if a later edit
+# stops installing the IR, which is the single thing this lever depends on.
+rung1_in_store() {
+  [ -n "$rung1_store" ] || return 1
+  [ -f "$rung1_store/share/monad/monad.ll" ] || return 1
+  nix-store --check-validity "$rung1_store" 2>/dev/null
+}
+
 ladder() {
-  local dir="$1"; shift
+  local dir="$1" store_rung1="$2"; shift 2
   rm -rf "$dir"; mkdir -p "$dir"
-  scripts/build-self-hosted.sh "$dir" --verbose "$@"
+  # The WRAPPER (`bin/monad`), not `share/monad/monad`: the compiler shells out
+  # to bare `llc` and `clang`, and the wrapper is what puts them on PATH and
+  # supplies the gc header and library. Handing it the raw binary would make
+  # this depend on the dev shell happening to provide both.
+  #
+  # A SYMLINK, and the LINK's own mtime is load-bearing. `debug-oracle.sh` --
+  # the step immediately after this one in the same CI job -- runs
+  # `build-self-hosted.sh` on this same directory, whose staleness scan is
+  # `find init std lang cli llvm runtime ... -newer "$out/monad"`. `ln -sfn`
+  # stamps the link with NOW, so the scan finds nothing newer and the oracle
+  # reuses this compiler; the store file's own mtime is 1970-01-01 (measured),
+  # so a copy that PRESERVED it (`cp -p`, `cp -a`) would read as stale and send
+  # the oracle into a from-source rebuild writing over a read-only store path.
+  # Measured rather than assumed, both directions: the same scan against the
+  # store path directly reports `init/mote.toml` (stale), against this symlink
+  # it reports nothing (fresh).
+  if [ "$store_rung1" = 1 ] && rung1_in_store; then
+    echo "rung 1: re-using the store build at $rung1_store -- the interpretation is skipped"
+    ln -sfn "$rung1_store/bin/monad" "$dir/monad"
+    install -m644 "$rung1_store/share/monad/monad.ll" "$dir/monad.ll"
+  else
+    scripts/build-self-hosted.sh "$dir" --verbose "$@"
+  fi
   "$dir/monad" check cli/src/main.mo
   scripts/self-compile-turn.sh "$dir/monad" "$dir" monad2 "$@"
   cmp "$dir/monad.ll" "$dir/monad2.ll"
@@ -123,7 +196,7 @@ ladder() {
 # propagate a failure out of a pipeline's left-hand element: without it a dead
 # ladder would exit its own subshell 0 and this script would wait out the
 # other one and then report success.
-( ladder "$out" --release 2>&1 | sed -u 's/^/[release] /'; exit "${PIPESTATUS[0]}" ) &
+( ladder "$out" 1 --release 2>&1 | sed -u 's/^/[release] /'; exit "${PIPESTATUS[0]}" ) &
 release_pid=$!
 # And again WITHOUT --release, which is the DEFAULT invocation and was broken
 # for an unknown length of time precisely because nothing ran it: `monad
@@ -139,7 +212,7 @@ release_pid=$!
 # examples/located_terms.mo's own header for why, verified rather than
 # assumed).
 dbg="${TMPDIR:-/tmp}/monad-bootstrap-ci-debug"
-( ladder "$dbg" 2>&1 | sed -u 's/^/[debug]   /'; exit "${PIPESTATUS[0]}" ) &
+( ladder "$dbg" 0 2>&1 | sed -u 's/^/[debug]   /'; exit "${PIPESTATUS[0]}" ) &
 debug_pid=$!
 
 release_rc=0; wait "$release_pid" || release_rc=$?
