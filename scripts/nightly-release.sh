@@ -23,18 +23,41 @@ bin="$root/dist/monad-nightly-x86_64-linux"
 rm -rf "$root/dist"
 mkdir -p "$root/dist"
 
+# The revision the artifact will claim is exported by
+# scripts/build-self-hosted.sh below (`git -C` that checkout, unless the
+# environment already names one) -- one definition, so the nightly cannot
+# disagree with the ladder's own rung-1 builds about which commit they are.
+# That export is why this script no longer carries its own copy: it is read
+# by the compiler at LINK time, in whichever process does the linking, and
+# the host doing that here is `cargo run --release --`, whose own baked-in
+# answer is the literal "unknown" (`build_commit_define`, llvm/src/link.mo).
+
 cd "$root"
-cargo run --release -- run cli/src/main.mo compile cli/src/main.mo \
-  "$bin" --verbose --release
+
+# The build itself is scripts/build-self-hosted.sh -- the same rung-1 command
+# the bootstrap job runs -- rather than a second copy of the compile line, so
+# the two cannot drift in their flags, their stack rlimit, or their stdlib
+# handling. It writes `<out-dir>/monad`; the release step uploads a name with
+# the platform in it, so the file is moved rather than rebuilt.
+#
+# MONAD_HOST_BIN is the knob that keeps this from being a cold build: CI's
+# `nightly` job sets it from the flake (`nix build .#monadHost`), which is
+# the SAME host the `bootstrap` job uses and is a 2s store lookup there,
+# where an unqualified `cargo run --release --` was a cold fat-LTO build
+# (~10 min, since actions/checkout cleans target/ at the start of every job).
+# Unset -- a local `devenv tasks run monad:nightly` -- it falls back to
+# cargo, which is what a developer with no flake host has.
+scripts/build-self-hosted.sh "$root/dist" --verbose --release
+mv "$root/dist/monad" "$bin"
 test -x "$bin"
 chmod +x "$bin"
 file "$bin"
 
-# What the binary says it was built from. `runtime/src/runtime.c`'s
-# `build_commit` falls back to "unknown" when the link stage could not reach
-# `git` (llvm/src/link.mo's `build_commit_hash` shells out to `git rev-parse
-# --short HEAD`), and an unidentifiable published artifact is a real defect,
-# not a cosmetic one -- so an empty or "unknown" line fails here.
+# What the binary says it was built from. An unidentifiable published
+# artifact is a real defect, not a cosmetic one -- so an empty or "unknown"
+# line fails here. This is the check that would have caught the export above
+# going missing, which is what makes it worth keeping even though the export
+# now sets the value deliberately.
 "$bin" version > "$root/dist/commit.txt"
 cat "$root/dist/commit.txt"
 grep -qvE '^$|^unknown$' "$root/dist/commit.txt"

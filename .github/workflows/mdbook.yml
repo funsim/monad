@@ -31,12 +31,29 @@ jobs:
     env:
       MDBOOK_VERSION: 0.4.36
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # The pinned binary, not `rustup` + `cargo install --version
+      # ${MDBOOK_VERSION} mdbook`. That installed an entire Rust toolchain
+      # and compiled mdbook from source on every push to main, for a binary
+      # the project already publishes for this platform -- minutes of a
+      # GitHub-hosted runner spent to arrive at the same file.
+      #
+      # Same VERSION deliberately, and it is the one the published site has
+      # been rendered with. The dev shell's mdbook (devenv.nix) is the LOCAL
+      # preview copy, and that separation is stated there as intentional;
+      # changing what renders monad-lang.org is a docs decision, not a CI
+      # cleanup, so it is not smuggled in here.
       - name: Install mdBook
         run: |
-          curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
-          rustup update
-          cargo install --version ${MDBOOK_VERSION} mdbook
+          set -euo pipefail
+          tarball="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$RUNNER_TEMP/mdbook"
+          curl -fsSL --proto '=https' \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/${tarball}" \
+            | tar -xz -C "$RUNNER_TEMP/mdbook"
+          echo "$RUNNER_TEMP/mdbook" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/mdbook/mdbook" --version
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5

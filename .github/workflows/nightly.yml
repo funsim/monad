@@ -30,6 +30,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The interpreter that builds this artifact comes from the flake, the
+      # same way the `bootstrap` job in ci.yml takes its host: a 2s store
+      # lookup for a host that is already built, in place of the cold
+      # `cargo run --release --` this job used to pay for on every merge to
+      # main -- and it is cold every time, because actions/checkout cleans
+      # target/ at the start of every job and this job runs once per merge.
+      #
+      # MONAD_HOST_BIN is the knob scripts/build-self-hosted.sh already takes
+      # for exactly this; scripts/nightly-release.sh routes its build through
+      # that script, so setting it here is the whole change. The script also
+      # points the packaged host's stdlib at THIS checkout (MONAD_STDLIB),
+      # which a store host needs: the path it reads init/src from is compiled
+      # in, and for a store build that path exists only while the build that
+      # made it runs.
+      - name: Build the host from the flake
+        run: |
+          host="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
+          echo "MONAD_HOST_BIN=$host/bin/monad-rs" >> "$GITHUB_ENV"
+
       # The whole build -- compile, verification, staged artifacts and the
       # `tag`/`date` outputs the release step below reads -- happens inside
       # this one dev-shell entry. Two things drive the shape of it:
