@@ -122,11 +122,22 @@ cargo test
 # compiled binary first if needed. This is what CI runs.
 scripts/check-monad-tests.sh
 
-# The sweep and the corpus-wide check run over min(nproc - 1, 8) shards
-# at once, each shard its own `monad` process. MONAD_SWEEP_JOBS caps that
-# -- `MONAD_SWEEP_JOBS=1` is the single sequential invocation this script
-# used to make, and the shape its sharded totals are checked against.
+# The sweep runs over min(nproc - 1, 8) shards at once, each shard its own
+# `monad` process. MONAD_SWEEP_JOBS caps that -- `MONAD_SWEEP_JOBS=1` is the
+# single sequential invocation this script used to make, and the shape its
+# sharded totals are checked against. CI does not leave that default to
+# `nproc` inside the dev shell: its "Settle the CPU budget" step measures the
+# runner and sets the variable, because three records disagreed about this
+# host's core count and the run that shipped had 3 shards, not 7.
 MONAD_SWEEP_JOBS=1 scripts/check-monad-tests.sh
+
+# There is no separate corpus-wide `check` phase any more. `monad test`
+# elaborates and typechecks every file under the SAME fatal gate before it
+# emits any code for it, so a file the check phase would have failed cannot
+# leave the sweep green -- and that phase was the identical pair of calls
+# over the identical file list, costing 552 s of a 3252 s job (run
+# 36301331844). The sweep's per-shard status and its `FAIL` count are the
+# signal that replaced it.
 
 # Or via the Rust host, which is handy while debugging the runner itself
 cargo run -- test init std lang

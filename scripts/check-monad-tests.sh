@@ -367,10 +367,17 @@ fi
 #
 # Safe by construction, because of what the two commands write and
 # nothing else: `monad test` puts every artifact under
-# `${TMPDIR:-/tmp}/monad_out_<pid>/` (`monad_test_bin_<n>` /
-# `monad_test_result_<n>` inside it) and `monad check` writes only the
-# redirect at the call site. Neither has a fixed name, so N processes
-# never share one -- and the corpus is read only.
+# `/tmp/monad_out_<pid>/` (`monad_test_bin_<n>` / `monad_test_result_<n>`
+# inside it) and `monad check` writes only the redirect at the call site.
+# Neither has a fixed name, so N processes never share one -- and the
+# corpus is read only.
+#
+# That path is HARDCODED `/tmp`, not `${TMPDIR:-/tmp}`: `default_output_dir`
+# is `Path.path ("/tmp/monad_out_" ++ I64.to_string process_id)`
+# (cli/src/main.mo:33) and reads no environment at all. The pid is the whole
+# of what makes the shards safe, so setting TMPDIR does NOT make their
+# writes private -- the script's own directories do honour TMPDIR
+# (bootstrap-compile.sh:44,141), the compiler's do not.
 #
 # The split is by BYTES, not by file count. A target's cost is dominated
 # by the target: its dependency closure is re-emitted for it, so the
@@ -390,10 +397,28 @@ fi
 # before it can touch a file, and the `ModuleInfoCache` that serves most
 # dependency loads from an earlier file's work within a run is
 # per-process (`run_test_loop`'s own doc comment). So N shards pay N
-# warm-ups, and the wall clock is `(T - N*warmup)/N + warmup`, not `T/N`.
-# The default is min(nproc - 1, 8): the runner has 8 and one is left for
-# the machine, and what each extra shard costs is a closure resident in
-# memory rather than a file on disk.
+# warm-ups, and the wall clock is `(T - warmup)/N + warmup`, not `T/N` --
+# the warm-up is paid once per shard, not divided by N. (Spelled out
+# because the earlier form of this line, `(T - N*warmup)/N + warmup`, is
+# algebraically just `T/N`, i.e. the claim it was making.)
+#
+# The size of that warm-up is what bounds what a bigger N can buy: the
+# round-1 measurement (58m45s serial -> 25m35s at 7 shards, 2.30x, local,
+# one binary over 197 files) is what this model predicts for a warm-up of
+# roughly a third of the serial time -- some 20 minutes of the 58. If that
+# holds, the sweep's floor is that warm-up however many shards run, and the
+# residual at N=3 is ~7 minutes rather than the ~34 the T/N ratio suggests.
+# It is a derived figure from two measurements under a crude model, not a
+# measured warm-up, and it is machine- and load-dependent (CI's 3-shard
+# sweep, 1423s, beat what the model predicts on the local box).
+#
+# The default is min(nproc - 1, 8): one core is left for the machine, and
+# what each extra shard costs is a closure resident in memory rather than a
+# file on disk. Note that CI does NOT get 8 from this default -- `nproc`
+# inside the dev shell there reports 4, so the job took 3 shards while
+# ci.yml's own comment says "= 7 here". ci.yml now sets MONAD_SWEEP_JOBS
+# explicitly so the number is a decision rather than a side effect of
+# where `nproc` is called from.
 sweep_jobs="${MONAD_SWEEP_JOBS:-}"
 case "$sweep_jobs" in
   '')
@@ -450,20 +475,42 @@ shard_files() {
 
 # Run `monad <subcmd>` once per non-empty shard, concurrently, each to its
 # own `$dir/<subcmd>-<i>.log`; then concatenate them in shard order into
-# `$dir/<subcmd>.log`. Sets three arrays the callers read back: `shard_rcs`
+# `$dir/<subcmd>.log`. Sets four arrays the callers read back: `shard_rcs`
 # (each shard's exit status, "" for a shard that was never launched),
-# `shard_files_n` (how many files it was handed) and `shard_pids`.
+# `shard_files_n` (how many files it was handed), `shard_pids`, and
+# `shard_secs` -- each shard's OWN wall clock, launch to its `wait`
+# returning, which is that shard's exit instant and therefore its own
+# duration and not the phase's. The phase's wall is the LARGEST of them,
+# never their sum; their spread is the imbalance left on the table.
+#
+# `shard_wall_summary` is left for the caller to echo, and deliberately not
+# echoed here: this function writes the transcript to a file the caller
+# `cat`s afterwards, so a line printed here would land in front of 197
+# files of per-test output instead of beside the aggregate line that says
+# what the phase cost.
+#
+# Why this exists: round 1 sharded on a hypothesis and recorded no
+# per-shard time, so the one post-sharding CI run could only INFER that a
+# phase did not scale -- from its job total, 544s at one shard against 552s
+# at three. That is a fact about the machine, and the wall-clock formula in
+# the header is a fact about the split; neither is visible in a log without
+# these numbers, and every future shard-count decision was left
+# unreasoned. `MONAD_SWEEP_JOBS=1` prints a single number here, which is
+# the serial figure round 1's 2.15x was measured against.
 #
 # Every launch happens before the first `wait`, or the "concurrency" would
 # be a sequence; the `wait`s then block in shard order, which is also what
 # makes the concatenated transcript deterministic rather than a race.
 run_shards() {
   local dir="$1" subcmd="$2"
-  local i f
+  local i f s max min=-1 walls=""
   local -a targets
   shard_rcs=()
   shard_files_n=()
   shard_pids=()
+  shard_secs=()
+  shard_t0=()
+  shard_wall_summary=""
   : > "$dir/${subcmd}.log"
   for ((i = 0; i < sweep_jobs; i++)); do
     shard_rcs[i]=""
@@ -474,6 +521,7 @@ run_shards() {
     # array from `mapfile` and silently tests nothing.
     targets=()
     while IFS= read -r f; do targets+=("$f"); done < "$dir/shard-${i}.list"
+    shard_t0[i]=$SECONDS
     "$monad" "$subcmd" "${targets[@]}" > "$dir/${subcmd}-${i}.log" 2>&1 &
     shard_pids[i]=$!
   done
@@ -481,8 +529,20 @@ run_shards() {
     [ -n "${shard_pids[i]:-}" ] || continue
     shard_rcs[i]=0
     wait "${shard_pids[i]}" || shard_rcs[i]=$?
+    shard_secs[i]=$((SECONDS - shard_t0[i]))
     cat "$dir/${subcmd}-${i}.log" >> "$dir/${subcmd}.log"
   done
+  max=0
+  for ((i = 0; i < sweep_jobs; i++)); do
+    [ -n "${shard_secs[i]:-}" ] || continue
+    s="${shard_secs[i]}"
+    walls="${walls}${walls:+ }${s}s"
+    if [ "$s" -gt "$max" ]; then max="$s"; fi
+    if [ "$min" -lt 0 ] || [ "$s" -lt "$min" ]; then min="$s"; fi
+  done
+  if [ -n "$walls" ]; then
+    shard_wall_summary="shard walls ${walls} -- max ${max}s is this phase's wall, spread $((max - min))s"
+  fi
 }
 
 # One shard's verdict, from its log and status. A non-zero status is a
@@ -498,6 +558,18 @@ run_shards() {
 # of compile failures would exit 1 like a shard of no-tests files, and the
 # aggregate total would still be non-zero -- a false green of exactly the
 # kind this script's own `set -e` bug was.
+#
+# The `skipped == given` rescue is believed UNREACHABLE, and is kept only as
+# a net. A shard exits non-zero iff `tests_failed > 0 || files_failed > 0`
+# (cli/src/main.mo:865), and a file that fails a gate or a driver compile
+# moves `files_failed` and never `skipped` (:890,904 vs :933,969) -- one
+# bucket per file. So `rc != 0` implies at least one file was neither
+# skipped nor successful, i.e. `skipped < given`, and the arm cannot fire.
+# Driven with four synthetic logs (2026-09-27): all-no-tests rc=1 skipped
+# 3/3 -> ok (the arm, reachable only in the fixture); one gate failure
+# skipped 2/3 -> failed; a red shard with no `No tests found` -> failed;
+# rc=0 -> ok. The distinction that actually catches compile failures is the
+# `No tests found` grep above plus the comparison, not a rescue of them.
 shard_verdict() {
   local log="$1" given="$2" rc="$3"
   local skipped
@@ -525,10 +597,17 @@ run_shards "$shard_dir" test
 for ((i = 0; i < sweep_jobs; i++)); do
   [ -n "${shard_rcs[i]}" ] || continue
   if [ "$(shard_verdict "$shard_dir/test-${i}.log" "${shard_files_n[i]}" "${shard_rcs[i]}")" != ok ]; then
+    # Names the shard, its status and its size before the transcript below
+    # repeats them: without this a red run says only that the sweep failed,
+    # and the shard a reader needs is the one whose log is a 60-file wall.
+    echo "self-hosted sweep: shard ${i} failed -- exit ${shard_rcs[i]}, ${shard_files_n[i]} file(s), its transcript is below" >&2
     self_hosted_rc=1
   fi
 done
 cat "$shard_dir/test.log"
+if [ -n "$shard_wall_summary" ]; then
+  echo "self-hosted sweep: ${shard_wall_summary}"
+fi
 
 # One aggregate line, summed from the shards' own totals rather than
 # re-derived, so the number a reader compares against a serial run is the
@@ -549,116 +628,91 @@ if [ "$sweep_total" -eq 0 ]; then
   self_hosted_rc=1
 fi
 if [ "$self_hosted_rc" -ne 0 ]; then
-  # Deliberately NOT fatal: `set -e` used to abort here, which dropped the
-  # whole check phase (and, before Phase 12, the Rust fallback) whenever a
-  # single test failed -- so a red sweep reported one total and no
-  # `self-hosted check:` line, indistinguishable from a truncated run.
-  # The status is re-raised at the end of the script.
-  echo "self-hosted tests FAILED -- the check phase still runs"
+  # Deliberately NOT fatal: `set -e` used to abort here, which dropped
+  # everything after it (the check phase, and before Phase 12 the Rust
+  # fallback) whenever a single test failed -- so a red sweep reported one
+  # total and nothing else, indistinguishable from a truncated run. The
+  # status is re-raised at the end of the script.
+  echo "self-hosted tests FAILED -- continuing to the external-mote gate so one red run reports everything it can"
 fi
 
-# The self-hosted `check` over the SAME corpus as the sweep above -- the
-# same `find` list, literally: both are built from `$corpus_dirs` above,
-# where they used to be two copies asserted to agree. `bench` and `proofs`
-# are included in both.
-# The sweep proves each file's tests RUN, this proves each file TYPECHECKS
-# under the checker the shipped compiler actually uses. The pre-commit
-# hook's `monad check` is the RUST host -- a different implementation --
-# so neither gate covers the other, and until this ran, nothing in CI used
-# the self-hosted checker on the whole corpus. 8m44s serially on the runner
-# (run 36243944155) -- an earlier `~52s` here was measured on one
-# developer's machine over a smaller corpus, and the CI number is the one
-# that decides whether this phase is worth sharding (it is).
+# A COUNT, not a gate. The gate is `shard_rcs` plus `shard_verdict` above,
+# which also fails a shard that died without printing anything; this exists
+# so the failure is stated as a number beside the totals rather than only as
+# per-file lines inside a 197-file transcript.
 #
-# Both gates are needed, and `bench` is the demonstration: the check phase
-# passed over `bench/src/hashmap_bucket_dispatch.mo` for as long as the
-# file existed while its codegen could not compile it at all, because an
-# unwired native is not a check error -- only the sweep can see one.
-#
-# `std/src/qualified_ref_tests.mo` was the last file on it and left with
-# Phase 3, in lockstep with its `gap_files` entry -- that array is now
-# deleted, so its entry is the record of the cause and the fix. Measured
-# before removing: `monad check std/src/qualified_ref_tests.mo` -> 0
-# error(s), and the corpus-wide check log holds no `FAIL` line for it.
-#
-# `examples/structs.mo` left this list with Phase 2, in the same commit
-# as its `gap_files` entry (since deleted): a def's own declared `:=`
-# defaults now reach
-# the checker, so its one error -- `named call: missing required field
-# `factor`` -- is gone. Measured before removing: the file reports 0
-# error(s) and runs 10/10 through the self-hosted runner.
-#
-# `lang/src/json.mo` (3 errors) and `std/src/concurrent/combine_test.mo`
-# (1) left this list with Phase 1's expected-type channel, together with
-# their `gap_files` entries (since deleted): both were the checker half of
-# the SAME
-# missing channel -- a def call's return type was never solved against
-# the ambient expected type, so `IO.pure (List.empty : List I64)` came
-# back as its signature's raw, unsolved `IO A`. Measured before removing
-# them, with a binary rebuilt from the fix: `monad check
-# lang/src/json.mo std/src/concurrent/combine_test.mo` -> both `ok`, 0
-# error(s) each.
-#
-# The `#[derive]` trio that headed this list left it with P10, and the
-# comment on `gap_files` above records what closed them -- all three now
-# report 0 errors (`cli/src/tests/cli_derive_tests.mo` was 7,
-# `examples/derive.mo` and `std/src/derive_tests.mo` 1 each).
-# `std/src/derive_tests.mo`'s own entry survived that commit even though
-# by then the file reported 0 errors, and is removed here, in lockstep
-# with the flip: an entry left behind for a file that has become clean is
-# exactly what would excuse a NEW failure in it, since this list is
-# matched by path first, count second. Measured before removing: `monad
-# check std/src/derive_tests.mo` -> 0 error(s), and the corpus-wide check
-# log holds no `FAIL` line for it.
-#
-# Excluding by path alone would hide a NEW check failure in any of them,
-# so each carries its measured error COUNT: a file whose count changes
-# fails this script even though its path is listed. Anything failing that
-# is not on this list fails it too.
-#
-# The list is DELETED as of Phase 13, and the loop that read it with it.
-# It had been empty since its last entry closed, and the loop's behaviour
-# at that point did not depend on the array being populated: a FAIL line
-# whose path matched no entry fell to the `-z "$want"` arm, which set
-# `check_bad` unconditionally. So the gate is unchanged -- ANY `FAIL` line
-# fails CI -- and what replaces the loop is that same condition written
-# directly, below.
-#
-# The exit STATUS is now the gate too, and that is a real tightening, not
-# a restatement. The old shape read `if cmd; then check_fails=0; else
-# check_fails=$(grep -c ...)` -- so a check phase that died without
-# printing a `FAIL` line (a crash, a missing input, a driver killed by the
-# OOM-reaper) left `check_fails=0`, `check_bad` at 0, and the script
-# printing the green line: the same "a failed phase is indistinguishable
-# from a passing one" class this script's `set -e` bug belonged to. On the
-# normal path the two agree rather than merely coexist, and that is read
-# off `run_check_loop` rather than hoped for: it returns 1 iff `errors > 0`
-# (cli/src/main.mo:551) and prints a `FAIL` line exactly when a file has
-# diagnostics, so `rc != 0` <=> `check_fails != 0` there.
-
-# Sharded over the SAME shard lists the sweep above used -- one partition,
-# built once, so the two phases provably cover the same files rather than
-# covering two lists that are asserted to agree. ~8m44s serially on the
-# runner (run 36243944155), and it pays the same per-process warm-up.
-run_shards "$shard_dir" check
-check_log="$shard_dir/check.log"
-check_rc=0
-for ((i = 0; i < sweep_jobs; i++)); do
-  [ -n "${shard_rcs[i]}" ] || continue
-  # The FIRST non-zero shard status, so the message below still names a
-  # real exit code. `run_check_loop` returns 1 iff a file in that shard had
-  # diagnostics (cli/src/main.mo:551) and prints a `FAIL` line exactly
-  # then, so the equivalence the comment above leans on (`rc != 0` <=> a
-  # `FAIL` line) holds per shard and therefore in the concatenation.
-  if [ "${shard_rcs[i]}" -ne 0 ] && [ "$check_rc" -eq 0 ]; then check_rc="${shard_rcs[i]}"; fi
-done
-check_fails=$(grep -cE '^FAIL ' "$check_log" || true)
-if [ "$check_rc" -ne 0 ] || [ "$check_fails" != 0 ]; then
-  echo "self-hosted check: ${check_fails} failure(s), exit ${check_rc} -- no check-gap file is registered any more" >&2
-  cat "$check_log" >&2
-  exit 1
+# ANSI-stripped first, and that is not cosmetic: the sweep's FAIL lines are
+# colourised (`ESC[31mFAIL  `, cli/src/main.mo:889,903), so a bare
+# `grep -cE '^FAIL '` over this log returns 0. The count the deleted check
+# phase used to print worked only because `run_check_loop`'s own line
+# (cli/src/main.mo:565) is uncoloured -- a difference between the two phases
+# that this count has to correct for rather than inherit.
+read -r sweep_fails <<< "$(sed -e 's/\x1b\[[0-9;]*m//g' "$shard_dir/test.log" \
+  | grep -cE '^FAIL ' || true)"
+if [ -z "$sweep_fails" ]; then
+  # `grep -c` prints a count or nothing at all: nothing means the log could
+  # not be read. Counting that as 0 failures is the "a failed phase is
+  # indistinguishable from a passing one" class this script's own `set -e`
+  # bug belonged to, so it is stated and it is red.
+  echo "self-hosted sweep: could not count FAIL lines in ${shard_dir}/test.log -- that is a broken run, not a clean one" >&2
+  sweep_fails=0
+  self_hosted_rc=1
 fi
-echo "self-hosted check: 0 failures over ${corpus_files} file(s) in ${sweep_jobs} shard(s)"
+if [ "$sweep_fails" != 0 ]; then
+  echo "self-hosted sweep: ${sweep_fails} file(s) reported FAIL -- the lines above say which" >&2
+  self_hosted_rc=1
+fi
+
+# The corpus-wide self-hosted `check` phase used to run HERE, over the same
+# shard lists the sweep above uses, and it was deleted because it was the
+# sweep's own per-file gate repeated call for call:
+#
+#   * `monad test` elaborates and typechecks every file BEFORE emitting code
+#     for it -- `elaborate_loaded_modules_cached` (cli/src/main.mo:878) then
+#     `check_module_with_scope` (:895) -- and a load failure or any
+#     diagnostic is a `FAIL` plus `files_failed + 1` (:889-890, :903-904).
+#     It runs before codegen for EVERY file, `#[test]`s or not: the gate sits
+#     inside `run_test_loop`, whose elaboration is at :878, and the
+#     `run_test_loop_codegen` call it decides against is at :906.
+#   * `check_file_cached` (lang/src/module.mo:2203-2212) makes those same two
+#     calls with the same arguments, `check_deps=false` included, over the
+#     same paths: `expand_check_paths` is identity on files (:2294-2303) and
+#     `resolve_target_paths` is subcommand-agnostic (cli/src/main.mo:647-652),
+#     so both phases read the SAME `shard-<i>.list`.
+#   * The gate is FATAL: `run_test_paths` returns what `run_test_loop`
+#     computed, i.e. 1 iff `tests_failed > 0 || files_failed > 0`
+#     (cli/src/main.mo:865) -- so a file
+#     the old check phase would have FAILed cannot reach codegen and cannot
+#     leave the sweep green.
+#
+# Measured (run 36301331844): the phase cost 552 s of the `test` job's 3252 s
+# -- the second-largest step in the pipeline -- while buying only the
+# ok/FAIL matrix the sweep already prints. It also did not scale with
+# processes, 544 s at one shard against 552 s at three, which is what says
+# its cost was cache-threaded elaboration rather than per-core work; that is
+# why deleting it is worth more than sharding it harder.
+#
+# The old comment here claimed "the pre-commit hook's `monad check` is the
+# RUST host -- a different implementation -- so neither gate covers the
+# other". That is stale: the self-hosted checker runs per corpus file INSIDE
+# the sweep, which is the whole of what this phase was for. Its `bench`
+# example argues the other direction and is kept, because it is the argument
+# against deleting the SWEEP instead: `bench/src/hashmap_bucket_dispatch.mo`
+# passed `monad check` for as long as the file existed while its codegen
+# could not compile it at all -- an unwired native is not a check error, so
+# only the sweep can see one.
+#
+# What replaces its SIGNAL, not its work: the per-shard status plus
+# `shard_verdict` above (the gate, and strictly stronger than a `FAIL` grep,
+# since a shard that died without printing anything still fails it), and the
+# ANSI-stripped `FAIL` count printed with the aggregate line below.
+#
+# Gone with the phase: the `gap_files` registry, whose last entry closed with
+# Phase 3, and the per-file history that filled the comment above
+# (`std/src/qualified_ref_tests.mo`, `examples/structs.mo`, `lang/src/json.mo`,
+# `std/src/concurrent/combine_test.mo`, the `#[derive]` trio). Those files
+# report 0 errors and the registry is deleted; the record of each cause and
+# fix belongs to this script's git history, not to a live exception list.
 
 # The Rust fallback ran here: everything the self-hosted runner could not
 # run went through it, so each file stayed covered and a real regression in
@@ -696,5 +750,7 @@ echo "rust runner: no files left -- the self-hosted runner covers the corpus alo
 
 # Re-raise the captured self-hosted status: without this the `|| self_hosted_rc=$?`
 # above would turn a red run into an exit 0, which is worse than the abort it
-# replaced. A bad check phase has already exited 1 by now.
+# replaced. Nothing between the sweep and here can exit 1 on the sweep's
+# behalf any more -- the check phase that used to do that is deleted -- so
+# this is now the ONLY place a red sweep becomes a red script.
 exit "$self_hosted_rc"
