@@ -946,12 +946,44 @@ type MyType {
 
 ### Adding Native Functions
 
-1. Add Rust implementation in `core/src/eval/native.rs`
-2. Declare in a `.mo` file:
+A native needs **four touchpoints** — plus a fifth when the runtime signature differs
+from the Monad one (step 4). Wiring only the first two compiles fine and then fails at
+runtime, so work through all of them.
+
+1. **Declare it** in a `.mo` file. The string in `#[native "..."]` must match the string
+   used in `exec_native`'s dispatch *and* in `lang/src/codegen/natives.mo`:
 ```monad
 #[native "function_name"]
-def function_name (args: Types) : ReturnType
+pub def function_name (args: Types) : ReturnType
 ```
+   Use `pub` if another **mote** will import it — a cross-mote import of a non-`pub`
+   declaration raises `cross_mote_package_private`.
+
+2. **Implement it for the interpreter** — `core/src/core_native.rs`. Add an arm to
+   `exec_native`'s match (dispatch starts around line 180) and the implementation next to
+   the `read_file` / `print_str` helpers. Do *not* add it to `PURE_NATIVES`; that list is
+   for effect-free natives only.
+
+3. **Implement it for the compiled backend** — `runtime/src/runtime.c`, beside
+   `monad_read_file` / `monad_print_str`. This is the function generated code calls.
+
+4. **Wire it into codegen** — `lang/src/codegen/natives.mo`, in **three** places:
+   - `native_op_table` — the name → op mapping.
+   - `native_runtime_fn_name` — which `NativeWrapKind` wraps the call. `io_passthrough`
+     covers most `IO`-returning natives at any arity, *provided the C function returns the
+     IO payload directly* — including `IO Unit`, which means returning a Unit-ctor pointer
+     (`monad_tcp_close` ends `return tcp_unit();`). A new `NativeWrapKind` is needed only
+     when the runtime signature differs from the Monad one: `io_write_file` is the example,
+     passing an explicit length and discarding the write's return value. A new wrap kind
+     also means a new arm in `emit.mo`'s `compile_native_def_wrapper_ir`.
+   - `runtime_declarations` — the `declare` for the C function, or `runtime.c` will not link.
+
+5. **Verify it in both backends.** `validate_no_unwired_natives`
+   (`lang/src/codegen/validate.mo`) turns a missed `natives.mo` entry into a compile-time
+   error instead of a silent "return Unit" stub. **Nothing catches a missed `runtime.c`
+   entry until compiled code actually calls the native** — so exercise it under both
+   `cargo run --release --` and a compiled binary. Working only interpreted is the classic
+   failure mode.
 
 ## Standard Library
 
