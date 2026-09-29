@@ -53,3 +53,15 @@
 // `PathP` (`extract_pi_ret`), which is why there is no `cub_path`
 // primitive beside this one.
 #[cubical "pathp"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type
+
+// Transport along a line of types (Stage 3). The same `l = 1` instance
+// discipline as `PathP` above, and for the stronger reason: the general
+// `transp : (A : I -> Sort l) (a : A i0) -> A i1` needs a level binder
+// to state. The checker derives nothing from this signature for the
+// saturated case -- `type_check_transp` fires first, reads the result
+// type off the checked line, and the constant-family reduction
+// (`whnf_transp`) needs no signature at all; the signature carries name
+// resolution and types the under-applied `transp A`. Chosen over CCHM's
+// `comp` deliberately: `transp` takes no cofibration, so Stage 3 lands
+// before the face lattice exists (Stage 4).
+#[cubical "transp"] def transp (A : I -> Type) (a : A i0) : A i1

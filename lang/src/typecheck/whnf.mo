@@ -76,7 +76,13 @@ def whnf_fuel : I64 := 64
 /// variable with no body, ...). Sub-terms are left alone -- the head is
 /// all a structural comparison looks at before recursing, and each
 /// recursive step goes back through `unify`, which reduces again.
-def whnf (scope : Scope) (locals : LocalScope) (t : Term) : Term :=
+///
+/// `pub` because the Stage 3 reducer pins
+/// (`proofs/src/checker/cubical_props.mo`) observe the cubical
+/// reductions directly, not only through `type_check` -- the
+/// constant-family/variable-family distinction lives here and nowhere
+/// else.
+pub def whnf (scope : Scope) (locals : LocalScope) (t : Term) : Term :=
     whnf_go whnf_fuel scope locals t
 
 /// `#[partial]`: fuel-bounded, but the decrement is not a structural
@@ -301,11 +307,72 @@ def whnf_cubical_args (fuel : I64) (scope : Scope) (locals : LocalScope) (as : L
             List.cons (whnf_go (fuel - 1) scope locals a) (whnf_cubical_args (fuel - 1) scope locals rest),
     }
 
+/// `transp A x` over a CONSTANT family: `A` is a lambda whose body does
+/// not mention its dimension binder, so every `A i` is the same type
+/// and transporting `x` there is `x` itself (Stage 3,
+/// plans/type-system/univalence.md).
+///
+/// Constant is decided by substituting the two endpoints for the binder
+/// and comparing: `body[i0/i]` and `body[i1/i]` differ exactly when the
+/// binder occurs, because the two cubical endpoints are never similar
+/// while everything else in the two results is identical. That reuses
+/// `term_subst` -- the one walker over every `Term` constructor that
+/// already tracks binder depth -- rather than adding a bespoke
+/// free-variable walker, which with no exhaustiveness checking would be
+/// a constructor the walk silently misses.
+///
+/// Anything else stays STUCK, and that is a recorded limit, not an
+/// omission: the structural reductions (a `Term.pi` family transported
+/// domain-and-codomain separately, a `PathP` family structurally, an
+/// inductive head by congruence over its fields) all need to build
+/// lambdas or recurse over a type's constructors here, and the
+/// inductive case is expressible only through a recursor -- R5 of
+/// `core-term-simplification.md`. A stuck `transp` compares as itself,
+/// which is sound: it only makes conversion LESS defined, never wrong.
+def whnf_transp (c : Cubical) : Option Term :=
+    match c {
+        { prim := p, args := as } =>
+            match cubical_prim_eq p CubicalPrim.transp {
+                false => Option.none,
+                true =>
+                    // Nested constructor patterns do not parse; the two
+                    // args are peeled one level at a time. The arity
+                    // table (cubical_arity) already rejected any other
+                    // count at formation, but whnf is also handed
+                    // hand-built terms, so the peel answers none rather
+                    // than assuming.
+                    match as {
+                        List.cons line rest =>
+                            match rest {
+                                List.cons elem rest2 =>
+                                    match rest2 {
+                                        List.empty =>
+                                            match term_peel line {
+                                                Term.lam _dbg _dom body =>
+                                                    if Similar.similar
+                                                        (term_subst 0 cub_i0 body)
+                                                        (term_subst 0 cub_i1 body)
+                                                    then Option.some elem
+                                                    else Option.none,
+                                                _ => Option.none,
+                                            },
+                                        _ => Option.none,
+                                    },
+                                _ => Option.none,
+                            },
+                        _ => Option.none,
+                    },
+            },
+    }
+
 /// Normalize a cubical head: reduce each argument to WHNF, then take
-/// one De Morgan step if any applies. No further pass over the step's
-/// result is needed -- it is assembled from pieces that are already in
-/// WHNF, and a stuck head keeps its reduced arguments, so a caller
-/// comparing two stuck terms compares them as reduced as they can be.
+/// one De Morgan step if any applies, then one transport step if the
+/// family is constant. No further pass over either step's result is
+/// needed -- it is assembled from pieces that are already in WHNF
+/// (whnf_transp answers the already-reduced element, which came out of
+/// `whnf_cubical_args` below), and a stuck head keeps its reduced
+/// arguments, so a caller comparing two stuck terms compares them as
+/// reduced as they can be.
 #[partial]
 def whnf_cubical (fuel : I64) (scope : Scope) (locals : LocalScope) (c : Cubical) : Term :=
     match c {
@@ -316,7 +383,11 @@ def whnf_cubical (fuel : I64) (scope : Scope) (locals : LocalScope) (c : Cubical
             let c_r : Cubical := { prim := p, args := as_r } in
             match whnf_demorgan c_r {
                 Option.some t => t,
-                Option.none => Term.cubical c_r,
+                Option.none =>
+                    match whnf_transp c_r {
+                        Option.some t => t,
+                        Option.none => Term.cubical c_r,
+                    },
             },
     }
 

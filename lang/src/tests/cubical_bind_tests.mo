@@ -26,7 +26,7 @@ use lib::scope {build_scope_from_decls, scope_find_cubical_prim}
 
 def synthetic_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "synthetic") List.empty)
 
-/// The seven Stage 1+2 declarations, spelled exactly as they are in
+/// The eight Stage 1+2+3 declarations, spelled exactly as they are in
 /// `proofs/src/cubical.mo`. One literal per decl, concatenated: a single
 /// spanning literal would need line continuations the string lexer does
 /// not have, and one literal per line keeps each under the width the
@@ -38,7 +38,8 @@ def cubical_source : String :=
     (String.concat "#[cubical \"ineg\"] def ineg (i : I) : I\n"
     (String.concat "#[cubical \"imeet\"] def imeet (i : I) (j : I) : I\n"
     (String.concat "#[cubical \"ijoin\"] def ijoin (i : I) (j : I) : I\n"
-    "#[cubical \"pathp\"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type")))))
+    (String.concat "#[cubical \"pathp\"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type\n"
+    "#[cubical \"transp\"] def transp (A : I -> Type) (a : A i0) : A i1"))))))
 
 /// A scope carrying whatever `source` declares. A snippet that fails to
 /// parse yields an empty scope, which makes the binding tests below
@@ -75,11 +76,11 @@ def binds_nothing (s : Scope) (nm : String) : Bool :=
 
 #[test]
 def test_cubical_decls_parse : Bool :=
-    // All seven, not "at least one": a parser that stops after the first
+    // All eight, not "at least one": a parser that stops after the first
     // body-less def (the reference host's does) still hands back a
     // successful non-empty parse.
     match parse_all_decls cubical_source {
-        success _ decls => I64.beq (List.length decls) 7,
+        success _ decls => I64.beq (List.length decls) 8,
         fail _ => false,
     }
 
@@ -93,6 +94,7 @@ def test_cubical_names_bind : Bool :=
         && binds s "imeet" CubicalPrim.imeet
         && binds s "ijoin" CubicalPrim.ijoin
         && binds s "PathP" CubicalPrim.pathp
+        && binds s "transp" CubicalPrim.transp
 
 #[test]
 def test_unmarked_def_of_the_same_name_binds_nothing : Bool :=

@@ -4102,6 +4102,7 @@ def type_check_cubical (c : Cubical) (expected_type : Term) (scope : Scope)
         // fall into a rule that answers a dimension question about it.
         match c.prim {
             CubicalPrim.pathp => type_check_pathp c.args expected_type scope local_types locals,
+            CubicalPrim.transp => type_check_transp c.args expected_type scope local_types locals,
             CubicalPrim.interval =>
                 check_cubical_args_then c expected_type scope local_types locals,
             CubicalPrim.i0 =>
@@ -4132,6 +4133,90 @@ def check_cubical_args_then (c : Cubical) (expected_type : Term) (scope : Scope)
             match unify inferred expected_type scope locals {
                 ok unified => ok (mk_typed rebuilt unified),
                 err e => err e,
+            },
+    }
+
+/// The formation rule for `transp A a : A i1` where
+/// `A : I -> Sort l` and `a : A i0` (Stage 3,
+/// plans/type-system/univalence.md). The line discipline is
+/// `type_check_pathp`'s -- the same INFERRED line (the result type
+/// `A i1` needs the line itself, and an echo of an expected `pi I _`
+/// would lose it), the same `path_line_dom_ok` domain test, the same
+/// `sort_level_of` codomain guard. The level is validated but not
+/// consumed: `PathP` returns a SORT, so it needs `l`; `transp` returns
+/// `A i1`, a term-level type, so the guard here only enforces that the
+/// family really is a line INTO types. The element is checked against
+/// `A i0` and unified against it -- the endpoint half of
+/// `type_check_pathp_endpoints` for one endpoint, with the same
+/// bidirectional-plus-unify discipline.
+def type_check_transp (args : List Term) (expected_type : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    // Nested constructor patterns do not parse; the two args are
+    // peeled one level at a time.
+    match args {
+        List.cons a_line rest =>
+            match rest {
+                List.cons a_elem rest2 =>
+                    match rest2 {
+                        List.empty =>
+                            type_check_transp_go a_line a_elem expected_type scope local_types locals,
+                        _ => err (TypeError.custom "transp takes 2 argument(s)"),
+                    },
+                _ => err (TypeError.custom "transp takes 2 argument(s)"),
+            },
+        // The arity table rejects every other argument count before this
+        // runs; the arm exists only because the list has to be peeled.
+        _ => err (TypeError.custom "transp takes 2 argument(s)"),
+    }
+
+/// The body of the formation rule once the two arguments have been
+/// peeled apart (`type_check_transp` delegates here for the same
+/// reason `type_check_pathp` does).
+def type_check_transp_go (a_line : Term) (a_elem : Term) (expected_type : Term)
+    (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match type_check a_line Term.hole scope local_types locals {
+        err e => err e,
+        ok line_tt =>
+            match term_peel line_tt.typ {
+                Term.pi dom cod =>
+                    match path_line_dom_ok dom scope local_types locals {
+                        false => err (TypeError.custom
+                            "transp's first argument must be a line over the interval"),
+                        true =>
+                            match sort_level_of cod {
+                                Option.none => err (TypeError.custom
+                                    "transp's first argument must be a line into a sort"),
+                                Option.some _l =>
+                                    // WHNF first, and it is load-bearing: the
+                                    // element of a `PathP`-valued family is a
+                                    // path LAMBDA, and `check_path_lam` peels
+                                    // the expected type BEFORE any reduction
+                                    // -- an `App`-spelled `A i0` would fail
+                                    // that peel and fall into the inferring
+                                    // arm, rejecting a correct element.
+                                    let elem_typ : Term :=
+                                        whnf scope locals (Term.app line_tt.term cub_i0) in
+                                    match type_check a_elem elem_typ scope local_types locals {
+                                        err e => err e,
+                                        ok elem_tt =>
+                                            match unify elem_tt.typ elem_typ scope locals {
+                                                err e => err e,
+                                                ok _ =>
+                                                    let rebuilt : Term :=
+                                                        cub_transp line_tt.term elem_tt.term in
+                                                    let result : Term :=
+                                                        Term.app line_tt.term cub_i1 in
+                                                    match unify result expected_type scope locals {
+                                                        err e => err e,
+                                                        ok unified =>
+                                                            ok (mk_typed rebuilt unified),
+                                                    },
+                                            },
+                                    },
+                            },
+                    },
+                _ => err (TypeError.custom
+                    "transp's first argument must be a line over the interval"),
             },
     }
 
@@ -4258,11 +4343,12 @@ def type_check_pathp_endpoints (line : Term) (a_left : Term) (a_right : Term) (s
 
 /// What a primitive's application is a term OF. `interval` is the type
 /// former, so it answers a sort; everything else in Stage 1 is interval-
-/// valued. `pathp`'s row is never consulted -- `type_check_cubical`
-/// routes it to `type_check_pathp` because its result level is read off
-/// the LINE, which no prim-keyed table can state -- but the row exists
-/// all the same: with no exhaustiveness checking a missing arm is a
-/// silent future crash, not a compile error.
+/// valued. `pathp`'s and `transp`'s rows are never consulted --
+/// `type_check_cubical` routes both to their own rules (`type_check_pathp`,
+/// `type_check_transp`) because each result depends on the LINE, which no
+/// prim-keyed table can state -- but the rows exist all the same: with no
+/// exhaustiveness checking a missing arm is a silent future crash, not a
+/// compile error.
 def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.interval => sort_n 1,
     CubicalPrim.i0 => cub_interval,
@@ -4271,6 +4357,7 @@ def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.imeet => cub_interval,
     CubicalPrim.ijoin => cub_interval,
     CubicalPrim.pathp => Term.hole,
+    CubicalPrim.transp => Term.hole,
 }
 
 /// Every Stage 1 argument is a dimension, i.e. an `I`. When `PathP` lands

@@ -17,7 +17,7 @@
 //
 // The scope is built by the REAL parse + scope-build pipeline
 // (`try_parse_decls` + `build_scope_from_decls`) over the exact
-// seven-declaration source of `proofs/src/cubical.mo`, because what is
+// eight-declaration source of `proofs/src/cubical.mo`, because what is
 // under test includes the marker's survival from source text to
 // `ScopeData.cubical_prims`. The same string is pinned from the scope
 // side in `lang/src/tests/cubical_bind_tests.mo`; if the declaration
@@ -27,16 +27,17 @@ use lang::module {try_parse_decls}
 use lang::scope {build_scope_from_decls}
 use lang::typecheck::cubical {peels_to_bare_interval}
 use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
+use lang::typecheck::whnf {whnf}
 use lang::types {
   CubicalPrim, ModulePath, Scope, ScopeData, Term,
-  cub_i0, cub_i1, cub_ineg, cub_interval, cub_pathp, cubical_prim_eq,
-  sentinel, sort_n,
+  cub_i0, cub_i1, cub_ineg, cub_interval, cub_pathp, cub_transp,
+  cubical_prim_eq, sentinel, sort_n,
 }
 
 def checker_synthetic_path : ModulePath :=
     ModulePath.mp (List.cons (Identifier.id "proofs_checker") List.empty)
 
-/// The seven Stage 1+2 declarations, spelled exactly as they are in
+/// The eight Stage 1+2+3 declarations, spelled exactly as they are in
 /// `proofs/src/cubical.mo`.
 def cubical_decls_source : String :=
     String.concat "#[cubical \"interval\"] def I : Type\n"
@@ -45,7 +46,8 @@ def cubical_decls_source : String :=
     (String.concat "#[cubical \"ineg\"] def ineg (i : I) : I\n"
     (String.concat "#[cubical \"imeet\"] def imeet (i : I) (j : I) : I\n"
     (String.concat "#[cubical \"ijoin\"] def ijoin (i : I) (j : I) : I\n"
-    "#[cubical \"pathp\"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type")))))
+    (String.concat "#[cubical \"pathp\"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type\n"
+    "#[cubical \"transp\"] def transp (A : I -> Type) (a : A i0) : A i1"))))))
 
 /// The scope the checker sees when `proofs/src/cubical.mo` is loaded.
 /// A parse failure yields an empty scope, which makes every pin below
@@ -510,3 +512,223 @@ def test_sym_rejects_when_the_endpoints_do_not_swap : Bool :=
     // normalizes to `p`'s RIGHT endpoint, and the type's left is `i0`.
     check_fails_against_with cubical_scope (List.cons path_typ empty_local_types)
         sym_body (cub_pathp const_line (cub_i0) (cub_i1))
+
+// ─── Stage 3: transp ───────────────────────────────────────────────────
+//
+// `transp (A : I -> Sort l) (a : A i0) : A i1` -- transport along a line
+// of types, chosen over CCHM's `comp` so that this stage lands without
+// the face lattice. The typing mirrors PathP's line discipline exactly
+// (a function out of the interval into a sort); the reduction is the
+// new thing: a CONSTANT family -- both endpoint substitutions yield
+// the same body -- reduces to the element, everything else stays
+// stuck. Constancy is read by substituting both endpoints into the
+// line's body and comparing, never by walking for the binder's
+// occurrences.
+
+/// The saturated source spine `transp line elem`, with the head in its
+/// source spelling so the pins exercise the cubical probe on the way
+/// through, exactly as a real call site would.
+def transp_call (line : Term) (elem : Term) : Term :=
+    Term.app (Term.app (free_var "transp") line) elem
+
+/// Does checking `t` against `expected` in `s` succeed and come back as
+/// the cubical `transp` primitive over exactly a LAMBDA line and an
+/// element matching `elem_is`? The line must be a lambda because the
+/// rule checks the line through the ordinary binder machinery and
+/// rebuilds from the checked one; the element is a PREDICATE because
+/// its shape is pin-specific -- a bare dimension for the constant
+/// family, a path lambda for the varying one.
+def checks_as_transp (s : Scope) (t : Term) (expected : Term)
+    (elem_is : Term -> Bool) : Bool :=
+    match type_check t expected s empty_local_types empty_locals {
+        ok tt =>
+            match tt.term {
+                Term.cubical c =>
+                    match c {
+                        { prim := q, args := as } =>
+                            cubical_prim_eq q CubicalPrim.transp
+                                && match as {
+                                    // Exactly two args, pinned by the peeling
+                                    // below reaching `List.empty` -- the arity
+                                    // table rejects any other count at
+                                    // formation, so this match is a shape
+                                    // read, not an arity check.
+                                    List.cons ln rest =>
+                                        match ln {
+                                            Term.lam _dbg _dom _body =>
+                                                match rest {
+                                                    List.cons el rest2 =>
+                                                        List.is_empty rest2 && elem_is el,
+                                                    List.empty => false,
+                                                },
+                                            _ => false,
+                                        },
+                                    List.empty => false,
+                                },
+                    },
+                _ => false,
+            },
+        err _ => false,
+    }
+
+#[test]
+def test_transp_formation_checks_and_rewrites : Bool :=
+    // `transp (fn i => I) i0` checks against `I` -- spelled as the
+    // cubical interval, because that is what CHECKING `I` produces, and
+    // the result type `A i1` is compared through unify, which reduces
+    // the application to exactly that term. The line is a function out
+    // of the interval into a sort, the element is a dimension at `A i0`,
+    // and the checked term is the cubical primitive.
+    checks_as_transp cubical_scope (transp_call const_line (free_var "i0"))
+        cub_interval (fn el => arg_is_bare_prim el CubicalPrim.i0)
+
+#[test]
+def test_transp_rejects_a_line_not_out_of_the_interval : Bool :=
+    // `transp (fn (i : Type) => I) i0`: the line discipline is
+    // `PathP`'s -- a dimension binder is the only domain a line over
+    // the interval can have.
+    check_fails_in cubical_scope
+        (transp_call
+            (Term.lam (DebugName.named (Identifier.id "i")) (sort_n 1) (free_var "I"))
+            (free_var "i0"))
+
+#[test]
+def test_transp_rejects_a_line_not_into_a_sort : Bool :=
+    // `transp (fn i => i0) i0`: the line lands in the interval, and a
+    // family of DIMENSIONS is not a family of types -- the sort guard
+    // is read off the line's codomain, and there is none.
+    check_fails_in cubical_scope
+        (transp_call
+            (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (free_var "i0"))
+            (free_var "i0"))
+
+#[test]
+def test_transp_rejects_a_line_into_a_non_sort_family : Bool :=
+    // The sort guard, ISOLATED. The line is `fn i => p` for a local
+    // `p : PathP (fn i => I) i0 i1` -- the family lands in `p`'s own
+    // TYPE, a `PathP` term, not a sort. The element `q : p` (local 1)
+    // checks fine against `A i0 = p`, and the expected type is a
+    // hole, so the ONLY rule that can reject this call is the guard
+    // reading the line's codomain. A family of paths is not a family
+    // of types, even when both the line and the element check.
+    check_fails_against_with cubical_scope
+        (List.cons path_typ (List.cons (local_at 0 "p") empty_local_types))
+        (transp_call
+            (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (local_at 1 "p"))
+            (local_at 1 "q"))
+        Term.hole
+
+#[test]
+def test_transp_rejects_an_element_not_in_the_line : Bool :=
+    // `transp (fn i => I) (fn j => i0)`: the element is checked AGAINST
+    // `A i0` -- the interval -- not merely collected, and a function is
+    // not a dimension.
+    check_fails_in cubical_scope
+        (transp_call const_line
+            (Term.lam (DebugName.named (Identifier.id "j")) Term.hole (free_var "i0")))
+
+// ─── Stage 3: the direction of the endpoint reads ───────────────────────
+//
+// The pins above cannot discriminate WHICH endpoint each read uses --
+// over a constant line, `A i0` and `A i1` are the same type. This one
+// needs a family that genuinely varies.
+
+/// `fn j => I` in its CHECKED spelling: checking `I` rewrites the free
+/// variable to the cubical interval, so every type the rule derives
+/// over the varying family below carries this inner line, and the
+/// pin's expected type must spell it the same way to unify.
+def inner_line_checked : Term :=
+    Term.lam (DebugName.named (Identifier.id "j")) Term.hole cub_interval
+
+/// A genuinely varying line into a sort, in its SOURCE spelling so the
+/// pin exercises the rewrites on the way through:
+/// `fn i => PathP (fn j => I) i0 (ineg i)`. `A i0` is a path `i0 -> i1`
+/// (De Morgan folds `ineg i0` to `i1`); `A i1` is a path `i0 -> i0`.
+/// The endpoints differ, which is exactly what the direction pin needs.
+def dependent_line : Term :=
+    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
+        (Term.app (Term.app (Term.app (free_var "PathP") inner_line_checked)
+            (cub_i0))
+            (Term.app (free_var "ineg")
+                (Term.var 0 (DebugName.named (Identifier.id "i")))))
+
+/// The identity path `fn j => j`: an element of `A i0` -- a path whose
+/// boundaries are the endpoints themselves -- and of no OTHER member of
+/// the family.
+def id_path : Term :=
+    Term.lam (DebugName.named (Identifier.id "j")) Term.hole
+        (Term.var 0 (DebugName.named (Identifier.id "j")))
+
+/// Does `t` peel to a lambda? The varying family's element is a path
+/// abstraction, and the pin must observe the rule checked it as one.
+def is_a_lambda (t : Term) : Bool :=
+    match t {
+        Term.lam _dbg _dom _body => true,
+        _ => false,
+    }
+
+#[test]
+def test_transp_reads_both_endpoints_off_the_line : Bool :=
+    // `transp A (fn j => j)` for the varying family checks against
+    // `A i1`, spelled in its whnf'd shape `PathP (fn j => I) i0 i0`.
+    // Both endpoint reads are pinned at once: the element lives at
+    // `A i0` -- where `fn j => j` fits and no CONSTANT path does, so a
+    // rule reading the element against `A i1` rejects it -- and the
+    // result is `A i1`, not `A i0` -- a rule returning `A i0` fails
+    // against this expected type, whose right endpoint is `i0` while
+    // the identity path's is `i1`.
+    checks_as_transp cubical_scope (transp_call dependent_line id_path)
+        (cub_pathp inner_line_checked (cub_i0) (cub_i0)) is_a_lambda
+
+// ─── Stage 3: the reducer ───────────────────────────────────────────────
+//
+// `whnf` observed directly: the constant-family rule is the only
+// reduction, and its complement is the refusal -- a varying family and
+// a stuck line must both stay the cubical application.
+
+/// Is `t` the cubical `transp` primitive, still applied -- i.e. did
+/// whnf decline to reduce the transport?
+def stays_transp (t : Term) : Bool :=
+    match t {
+        Term.cubical c =>
+            match c {
+                { prim := p, args := _as } => cubical_prim_eq p CubicalPrim.transp,
+            },
+        _ => false,
+    }
+
+#[test]
+def test_transp_in_a_constant_family_reduces_to_the_element : Bool :=
+    // `transp (fn i => I) i0` in whnf is just `i0`: the line's body
+    // does not mention its binder, both endpoint substitutions yield
+    // the same body, and transporting in a constant family is the
+    // identity.
+    arg_is_bare_prim
+        (whnf cubical_scope empty_locals (cub_transp const_line (cub_i0)))
+        CubicalPrim.i0
+
+/// The varying family in its whnf-facing spelling -- the pins here are
+/// reducer probes, so the terms are hand-built rather than routed
+/// through `type_check`: `fn i => PathP (fn j => I) i0 (ineg i)`, the
+/// same family the direction pin checks through.
+def varying_line : Term :=
+    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
+        (cub_pathp inner_line_checked (cub_i0)
+            (cub_ineg (Term.var 0 (DebugName.named (Identifier.id "i")))))
+
+#[test]
+def test_transp_in_a_varying_family_stays_stuck : Bool :=
+    // `transp A i0` for the varying family stays the cubical
+    // application: the two substituted bodies genuinely differ. The
+    // STRUCTURAL reductions -- transporting in a pi or `PathP` family,
+    // or across an inductive head -- are the recorded limit of Stage 3;
+    // they wait for R5's recursors.
+    stays_transp (whnf cubical_scope empty_locals (cub_transp varying_line (cub_i0)))
+
+#[test]
+def test_transp_with_a_stuck_line_stays_stuck : Bool :=
+    // `transp I i0` where the line is a RIGID reference: `I` is
+    // body-less (P1), delta cannot unfold it, and there is no lambda
+    // body to substitute into. The reducer declines to guess -- a stuck
+    // line is not treated as constant.
+    stays_transp (whnf cubical_scope empty_locals (cub_transp (free_var "I") (cub_i0)))
