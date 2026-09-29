@@ -539,7 +539,7 @@ For scale: the standard library is about 440 public definitions, 35 classes, and
 ## CLI
 
 ```bash
-monad compile file.mo -o "$PWD/out"  # compile to a native binary
+monad build file.mo -o "$PWD/out"  # compile to a native binary
 monad run file.mo                    # compile and execute
 monad eval file.mo                   # interpret (pure programs only)
 monad check file.mo                  # type-check, no execution

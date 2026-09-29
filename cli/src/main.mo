@@ -104,7 +104,7 @@ def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir
 // it is now simply absent.)
 
 /// The output name a mote's `[bin]` target is built as, given what the
-/// caller asked for. Split out of `compile_target` because a `let … in`
+/// caller asked for. Split out of `build_target` because a `let … in`
 /// inside a do-block does not parse (see that def), and this is the
 /// value it needs there.
 ///
@@ -122,22 +122,24 @@ def compile_out_name (requested : String) (manifest : MoteManifest) (src : Strin
         Option.none => module_name_from_path src,
     }
 
-/// `monad compile <path>` with a mote-aware path.
+/// `monad build [<path>]` with a mote-aware path. The one build verb --
+/// `monad compile` was removed rather than kept as an alias, because two
+/// verbs that both produce a binary differ only in which one you
+/// remember.
 ///
-/// A FILE compiles exactly as before. A DIRECTORY is read as a mote and
-/// its `[bin]` target decides what is built -- `monad compile cli` from
-/// the workspace root, or `monad compile .` from inside `cli/`, builds
-/// `cli/src/main.mo` as `monad`, which is what `cli/mote.toml`'s
-/// `[bin] path`/`[bin] name` declare that binary to be. This is the
-/// mirror, in the only spelling `compile` has, of `check`/`test`'s
-/// "with no paths, the mote containing the working directory": it takes
-/// one positional path, so handing it a directory is the request to
-/// build that mote.
+/// Three input forms, one mechanism. A FILE compiles directly. A
+/// DIRECTORY is read as a mote and its `[bin]` target decides what is
+/// built -- `monad build cli` from the workspace root, or `monad build .`
+/// from inside `cli/`, builds `cli/src/main.mo` as `monad`, which is what
+/// `cli/mote.toml`'s `[bin] path`/`[bin] name` declare that binary to be.
+/// NO path is the third, and it is just `.`: `Command.from_args` supplies
+/// it, so the mote containing the working directory gets built, matching
+/// `check`/`test`'s own "with no paths" default instead of printing usage.
 ///
 /// `manifest.bin_path` arrives already joined onto the mote's own `dir`
 /// (`Mote.bin_target_path`), so it is a path relative to the working
 /// directory exactly as stored -- which is what `compile_file` wants,
-/// and what makes `monad compile cli` work from the workspace root.
+/// and what makes `monad build cli` work from the workspace root.
 ///
 /// A directory that is not a mote, or is one with no `[bin]` target, is
 /// an error rather than a guess: `[bin]` is the manifest's own statement
@@ -146,7 +148,7 @@ def compile_out_name (requested : String) (manifest : MoteManifest) (src : Strin
 /// with a binary target needs a `[bin]` table at all -- `lang`, `std`,
 /// `llvm`, `init` and `runtime` are libraries and correctly have none.
 #[partial]
-def compile_target (path : String) (out_name : String) (verbose : Bool) (debug : Bool) : IO I64 := do {
+def build_target (path : String) (out_name : String) (verbose : Bool) (debug : Bool) : IO I64 := do {
     let is_a_dir : Bool <- IO.is_dir (Path.path path);
     if Bool.not is_a_dir
     then compile_file path default_output_dir (Path.path out_name) verbose debug
@@ -155,7 +157,7 @@ def compile_target (path : String) (out_name : String) (verbose : Bool) (debug :
         match m {
             Option.none => do {
                 println ("error: " ++ path ++ " is a directory, and no mote.toml was found in it or above it");
-                println "hint: `monad compile <file.mo>` compiles a single file";
+                println "hint: `monad build <file.mo>` builds a single file";
                 return 1
             },
             Option.some manifest => do {
@@ -410,7 +412,7 @@ def show_lower_error (e : LowerError) : String :=
 /// failed, in which case this redundant re-attempt produces the same
 /// real, rendered diagnostic the old code already did via its own
 /// fallback path below, rather than a bare "gate failed").
-/// `debug` (from `Command.compile`'s own field -- on by default,
+/// `debug` (from `Command.build`'s own field -- on by default,
 /// `--release` opts out, `--debug`/`-g` opts back in) gates whether DWARF
 /// is EMITTED, and nothing else. It used to also decide the SHAPE of the
 /// term tree: the wrappers the debug info is built from were added by
@@ -1104,7 +1106,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
 // helpers with the macro-derived demo in cli/src/tests/cli_derive_tests.mo,
 // though — same argv-munging primitives either way.
 type Command {
-    compile (file: Path) (out_name: Path) (verbose: Bool) (debug: Bool),
+    build (file: Path) (out_name: Path) (verbose: Bool) (debug: Bool),
     run (file: Path) (verbose: Bool) (debug: Bool),
     eval (file: Path) (verbose: Bool),
     pretty (file: String),
@@ -1128,7 +1130,7 @@ type Command {
 def Command.from_args (args : List String) : Command :=
     match args {
         List.cons cmd rest =>
-            if cmd == "compile" then
+            if cmd == "build" then
                 match Cli.take_flag "verbose" "v" rest {
                     Cli.FlagResult.flag_result verbose rest1 =>
                         match Cli.take_flag "debug" "g" rest1 {
@@ -1155,20 +1157,24 @@ def Command.from_args (args : List String) : Command :=
                                                             else
                                                                 opt_out_name
                                                         in
-                                                        match path_opt {
-                                                            // A path/out_name that fails to validate (currently:
-                                                            // only the empty string) falls back to `Command.help`,
-                                                            // mirroring the sibling `Option.none => Command.help`
-                                                            // arm right below for a simply-missing positional arg.
-                                                            Option.some path =>
-                                                                match Path.of path {
-                                                                    err _ => Command.help,
-                                                                    ok p => match Path.of out_name {
-                                                                        err _ => Command.help,
-                                                                        ok o => Command.compile p o verbose debug,
-                                                                    },
-                                                                },
-                                                            Option.none => Command.help,
+                                                        // No positional path means the mote containing the
+                                                        // working directory -- the same default `check` and
+                                                        // `test` already have. Reached by handing `.` to
+                                                        // `build_target`, whose `Mote.discover` walks up from
+                                                        // there, so `monad build` and `monad build .` are one
+                                                        // spelling of one thing rather than two code paths.
+                                                        let path : String := match path_opt {
+                                                            Option.some p => p,
+                                                            Option.none => ".",
+                                                        } in
+                                                        // A path/out_name that fails to validate (currently:
+                                                        // only the empty string) falls back to `Command.help`.
+                                                        match Path.of path {
+                                                            err _ => Command.help,
+                                                            ok p => match Path.of out_name {
+                                                                err _ => Command.help,
+                                                                ok o => Command.build p o verbose debug,
+                                                            },
                                                         },
                                                 },
                                         },
@@ -1262,10 +1268,10 @@ def Command.from_args (args : List String) : Command :=
 def main (args : List String) : IO I64 {
     let cmd : Command := Command.from_args args;
     match cmd {
-        compile file_path out_name verbose debug => do {
-            // A directory is a mote to build (`compile_target`); a file
-            // goes straight to `compile_file`, unchanged.
-            compile_target (Path.to_string file_path) (Path.to_string out_name) verbose debug
+        build file_path out_name verbose debug => do {
+            // A directory is a mote to build (`build_target`); a file goes
+            // straight to `compile_file`.
+            build_target (Path.to_string file_path) (Path.to_string out_name) verbose debug
         },
         run file_path verbose debug => do {
             run_file (Path.to_string file_path) default_output_dir verbose debug
@@ -1323,10 +1329,11 @@ def print_help : IO I64 {
     println "Monad is in alpha mode and under heavy development.";
     println "Expect breaking changes, bugs, and incomplete features.";
     println "";
-    println "Usage: monad compile <path> [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]";
-    println "         Parse and compile a .mo source file";
+    println "Usage: monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]";
+    println "         Compile a .mo source file, or a mote, to a native binary";
     println "         <path> may be a mote DIRECTORY, in which case its [bin] target is built";
-    println "           (`monad compile cli` builds cli/src/main.mo as `monad`)";
+    println "           (`monad build cli` builds cli/src/main.mo as `monad`)";
+    println "         With no <path>, builds the mote containing the working directory";
     println "         --verbose/-v prints each module as it loads and one line per pipeline stage";
     println "         --debug/-g emits DWARF debug info (one source location per top-level def)";
     println "       monad run <path> [--verbose/-v] [--debug/-g] [--release]  Compile and execute a .mo source file";

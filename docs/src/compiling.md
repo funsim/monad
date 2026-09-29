@@ -16,7 +16,7 @@ host](./bootstrap-host.md) is for:
 
 ```bash
 cargo build --release
-cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$PWD/monad"
+cargo run --release -- run cli/src/main.mo build cli/src/main.mo -o "$PWD/monad"
 ```
 
 That produces `monad`, a native binary that needs nothing else. Everything below
@@ -97,18 +97,25 @@ Or compile it and keep the binary — with an absolute output path, for the reas
 just above:
 
 ```bash
-monad compile hello.mo -o "$PWD/hello"
+monad build hello.mo -o "$PWD/hello"
 ./hello
 ```
 
 ## The Commands
 
 ```text
-monad compile <path> [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]
+monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]
         Parse, type-check and compile a .mo source file to a native binary.
         <path> may also be a mote DIRECTORY, in which case its [bin] target is
-        built: `monad compile cli` builds cli/src/main.mo as `monad`, the name
+        built: `monad build cli` builds cli/src/main.mo as `monad`, the name
         that mote's [bin] declares.
+        With NO <path>, builds the mote containing the working directory --
+        the same default `check` and `test` have. `monad build` and
+        `monad build .` are one code path.
+
+        This verb was called `monad compile` until 2026-09-29. There is no
+        alias: two verbs that both produce a binary differ only in which one
+        you remember.
 
 monad run <path> [--verbose/-v] [--debug/-g] [--release]
         Compile and then execute. The binary is always called `run_out`, so
@@ -143,8 +150,8 @@ monad version
 
 Running `monad` with no arguments prints this usage.
 
-Flags are position-independent — `monad compile -v hello.mo` and
-`monad compile hello.mo -v` are the same command. `--output`/`-o` takes its value
+Flags are position-independent — `monad build -v hello.mo` and
+`monad build hello.mo -v` are the same command. `--output`/`-o` takes its value
 as a **separate argument**: `--output=NAME` is not recognised.
 
 `monad test` with no paths covers the mote containing the working directory, so
@@ -174,8 +181,8 @@ An **absolute** output name replaces that directory outright; a relative one is
 placed inside it. So:
 
 ```bash
-monad compile hello.mo -o hello          # -> /tmp/monad_out_1234/hello
-monad compile hello.mo -o "$PWD/hello"   # -> ./hello
+monad build hello.mo -o hello          # -> /tmp/monad_out_1234/hello
+monad build hello.mo -o "$PWD/hello"   # -> ./hello
 ```
 
 This surprises everyone once. When you want the binary in the working directory,
@@ -225,7 +232,7 @@ def main : I64 := 42
 ```
 
 ```bash
-monad compile main.mo -o "$PWD/main" && ./main; echo $?   # 42
+monad build main.mo -o "$PWD/main" && ./main; echo $?   # 42
 ```
 
 It may also take the command line, which the C runtime builds from `argc`/`argv`:
@@ -246,7 +253,7 @@ def main (args : List String) : I64 := 0
 Once you have a `monad` binary, it can build its own successor:
 
 ```bash
-monad compile cli/src/main.mo -o "$PWD/monad-next" --release
+monad build cli/src/main.mo -o "$PWD/monad-next" --release
 ./monad-next check cli/src/main.mo
 ```
 

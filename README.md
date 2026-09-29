@@ -50,7 +50,7 @@ git clone https://tangled.org/monad-lang.org/monad
 cd monad
 devenv shell          # provides Rust, clang, llc, Boehm GC, mdbook
 cargo build --release
-cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$PWD/monad" --release
+cargo run --release -- run cli/src/main.mo build cli/src/main.mo -o "$PWD/monad" --release
 ```
 
 The `-o` must be **absolute**: a relative output name lands in the compiler's
@@ -71,19 +71,19 @@ monad run /tmp/hello.mo
 ```
 
 `monad run` compiles and executes in one step — a Monad program is always a
-native binary. To keep the binary, use `monad compile` with an absolute output
+native binary. To keep the binary, use `monad build` with an absolute output
 path:
 
 ```bash
-monad compile /tmp/hello.mo -o "$PWD/hello"
+monad build /tmp/hello.mo -o "$PWD/hello"
 ./hello
 ```
 
 ## Commands
 
 ```text
-monad compile <path> [-o <name>] [--verbose/-v] [--debug/-g] [--release]
-        Parse, type-check and compile a .mo source file to a native binary.
+monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]
+        Parse, type-check and compile a source file, or a mote, to a native binary.
 
 monad run <path> [--verbose/-v] [--debug/-g] [--release]
         Compile and execute. The program's exit code becomes monad's.

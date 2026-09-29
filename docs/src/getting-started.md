@@ -45,7 +45,7 @@ native binary. To keep the binary, use `compile` and give it an **absolute**
 output path, since a relative one lands in the compiler's scratch directory:
 
 ```bash
-monad compile hello.mo -o "$PWD/hello"
+monad build hello.mo -o "$PWD/hello"
 ./hello
 ```
 
@@ -70,10 +70,10 @@ anywhere inside the directory:
 cd game
 monad check              # check the mote containing the working directory
 monad test               # build and run its #[test] defs
-monad compile . -o "$PWD/game"   # build the mote's [bin] target
+monad build . -o "$PWD/game"   # build the mote's [bin] target
 ```
 
-Two more tables are worth having. `[bin]` is what `monad compile .` reads to
+Two more tables are worth having. `[bin]` is what `monad build .` reads to
 decide which file is the program and what to call it; `[dependencies.X]` is a
 `path` to another mote — the form to reach for when you have a **compiler
 checkout** rather than an install, and want `init`/`std` out of it:

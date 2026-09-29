@@ -106,6 +106,6 @@ if [ -n "$needs_build" ]; then
     MONAD_BUILD_COMMIT="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
     export MONAD_BUILD_COMMIT
   fi
-  $MONAD_HOST_BIN run cli/src/main.mo compile cli/src/main.mo -o "$out/monad" "$@"
+  $MONAD_HOST_BIN run cli/src/main.mo build cli/src/main.mo -o "$out/monad" "$@"
 fi
 test -x "$out/monad"

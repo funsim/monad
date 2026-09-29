@@ -3,7 +3,7 @@
 /// This used to say `cargo run -- run cli/src/main.mo ...` (actually
 /// executing `main`) hit a separate, pre-existing `instance-Monad-IO
 /// not found` failure — no longer reproduces (confirmed via many real
-/// `compile`/`check`/`pretty`/`test` invocations, 2026-08-19); whatever
+/// `build`/`check`/`pretty`/`test` invocations, 2026-08-19); whatever
 /// that was has since been fixed elsewhere, or this repro was itself
 /// stale. Kept testing `Command.from_args` directly anyway (isolating
 /// argv-parsing from everything downstream is still the more precise
@@ -11,49 +11,49 @@
 use lib::main {*}
 
 #[test]
-def test_from_args_compile_positional_name : Bool :=
-    match Command.from_args ["compile", "a.mo", "myname"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_positional_name : Bool :=
+    match Command.from_args ["build", "a.mo", "myname"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "myname" && verbose == false && debug == true,
         _ => false,
     }
 
 #[test]
-def test_from_args_compile_default_name : Bool :=
-    match Command.from_args ["compile", "a.mo"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_default_name : Bool :=
+    match Command.from_args ["build", "a.mo"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "source" && verbose == false && debug == true,
         _ => false,
     }
 
 #[test]
-def test_from_args_compile_output_flag : Bool :=
-    match Command.from_args ["compile", "a.mo", "--output", "out", "--verbose"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_output_flag : Bool :=
+    match Command.from_args ["build", "a.mo", "--output", "out", "--verbose"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "out" && verbose == true && debug == true,
         _ => false,
     }
 
 #[test]
-def test_from_args_compile_short_flags : Bool :=
-    match Command.from_args ["compile", "a.mo", "-o", "out", "-v"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_short_flags : Bool :=
+    match Command.from_args ["build", "a.mo", "-o", "out", "-v"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "out" && verbose == true && debug == true,
         _ => false,
     }
 
 #[test]
-def test_from_args_compile_debug_flag : Bool :=
-    match Command.from_args ["compile", "a.mo", "--debug"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_debug_flag : Bool :=
+    match Command.from_args ["build", "a.mo", "--debug"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && verbose == false && debug == true,
         _ => false,
     }
 
 #[test]
-def test_from_args_compile_debug_short_flag : Bool :=
-    match Command.from_args ["compile", "a.mo", "-g", "-v"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_debug_short_flag : Bool :=
+    match Command.from_args ["build", "a.mo", "-g", "-v"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && verbose == true && debug == true,
         _ => false,
     }
@@ -61,9 +61,9 @@ def test_from_args_compile_debug_short_flag : Bool :=
 /// Debug info is ON by default (rustc's own dev-profile default);
 /// `--release` is how you opt out.
 #[test]
-def test_from_args_compile_release_opts_out_of_debug : Bool :=
-    match Command.from_args ["compile", "a.mo", "--release"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_release_opts_out_of_debug : Bool :=
+    match Command.from_args ["build", "a.mo", "--release"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && verbose == false && debug == false,
         _ => false,
     }
@@ -71,10 +71,44 @@ def test_from_args_compile_release_opts_out_of_debug : Bool :=
 /// An explicit `--debug` wins over `--release` -- asking twice, with
 /// the more specific request, is not an error.
 #[test]
-def test_from_args_compile_debug_beats_release : Bool :=
-    match Command.from_args ["compile", "a.mo", "--release", "--debug"] {
-        Command.compile path out_name verbose debug =>
+def test_from_args_build_debug_beats_release : Bool :=
+    match Command.from_args ["build", "a.mo", "--release", "--debug"] {
+        Command.build path out_name verbose debug =>
             Path.to_string path == "a.mo" && verbose == false && debug == true,
+        _ => false,
+    }
+
+/// `monad build` with no path is `monad build .` -- the mote containing
+/// the working directory, matching `check`/`test`'s own default. It used
+/// to print usage, which is what made `compile` the one verb with no
+/// zero-argument form.
+#[test]
+def test_from_args_build_with_no_path_defaults_to_the_mote : Bool :=
+    match Command.from_args ["build"] {
+        Command.build path out_name verbose debug =>
+            Path.to_string path == "." && Path.to_string out_name == "source" && verbose == false && debug == true,
+        _ => false,
+    }
+
+/// `build .` and a bare `build` are one code path, so they must parse to
+/// the same command.
+#[test]
+def test_from_args_build_bare_and_dot_agree : Bool :=
+    match Command.from_args ["build"] {
+        Command.build p1 o1 _v1 _d1 => match Command.from_args ["build", "."] {
+            Command.build p2 o2 _v2 _d2 =>
+                Path.to_string p1 == Path.to_string p2 && Path.to_string o1 == Path.to_string o2,
+            _ => false,
+        },
+        _ => false,
+    }
+
+/// The removed verb must not be silently accepted as something else --
+/// `compile` is now an ordinary unknown word, so it falls to `help`.
+#[test]
+def test_from_args_compile_is_no_longer_a_verb : Bool :=
+    match Command.from_args ["compile", "a.mo"] {
+        Command.help => true,
         _ => false,
     }
 

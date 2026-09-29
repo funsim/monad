@@ -31,5 +31,5 @@ ulimit -s 131072 2>/dev/null ||
 compiler="$1"; out="$2"; name="$3"; shift 3
 
 mkdir -p "$out"
-"$compiler" compile cli/src/main.mo -o "$out/$name" "$@"
+"$compiler" build cli/src/main.mo -o "$out/$name" "$@"
 test -x "$out/$name"

@@ -34,7 +34,7 @@
 # beside the binary; a store copy of this derivation has no such directory to
 # point at and cannot name one (see MONAD_BUILD_COMMIT below for the same
 # "a store copy cannot name itself" constraint). Bare, then, a packaged
-# `monad compile` runs from a checkout, exactly as CI runs it.
+# `monad build` runs from a checkout, exactly as CI runs it.
 #
 # The step that builds rung 1 is `scripts/build-self-hosted.sh`, not a shell
 # command spelled out here: CI builds rung 1 through that same script in
@@ -63,7 +63,7 @@
       gcDev = lib.getDev pkgs.boehmgc;
 
       # What the packaged compiler needs at RUNTIME, as opposed to at build
-      # time: every `monad compile` shells out to `llc` and `clang` by bare
+      # time: every `monad build` shells out to `llc` and `clang` by bare
       # name (llvm/src/link.mo), plus `mkdir`/`rm` for the link stage's own
       # output directory and the codegen harnesses' artifacts. `bash` is what
       # the build-commit probe's `sh -c` used to need; the probe is gone (the

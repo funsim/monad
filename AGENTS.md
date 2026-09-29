@@ -249,7 +249,7 @@ cargo run -- test init/src/tests.mo
 bootstrap
 
 # Compile to native binary in devenv shell
-bootstrap compile examples/hello.mo
+bootstrap build examples/hello.mo
 
 # Use the REPL (interactive, requires repl feature)
 cargo run -- repl

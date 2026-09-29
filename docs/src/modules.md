@@ -218,14 +218,15 @@ rather than only listing the modules it could not resolve.
 `--workspace`/`-w` (every mote in the enclosing workspace), or bare — the mote
 containing the working directory. A bare `check` or `test` outside any mote
 says there is nothing to do and exits non-zero; it does not print usage and
-report success. `compile` takes an explicit path or a mote directory, and a
-bare `monad compile` prints its usage rather than compiling the mote you are
-standing in:
+report success. `build` now has the same three forms: an explicit file, a mote
+directory, or bare — the mote you are standing in. It used to print usage
+instead, which made it the one verb with no zero-argument form:
 
 ```bash
 monad check --workspace
 monad test src/main.mo
-monad compile cli/src/main.mo
+monad build cli/src/main.mo
+monad build                       # the mote containing the working directory
 ```
 
 A file with no `mote.toml` above it is a **script module**: it declares the

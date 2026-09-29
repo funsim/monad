@@ -214,7 +214,7 @@ do_install_sources() {
     rm -f "$tarball"
     echo "monadup: note: ${LATEST_TAG} ships no ${SRC_ASSET_NAME}"
     echo "monadup:       the binary is installed and usable inside a compiler checkout,"
-    echo "monadup:       but 'monad compile'/'run'/'test' elsewhere will not find init,"
+    echo "monadup:       but 'monad build'/'run'/'test' elsewhere will not find init,"
     echo "monadup:       std, llvm or the C runtime: declare [dependencies.runtime] and run"
     echo "monadup:       from a checkout, or install a tag that ships the sources."
     return 0

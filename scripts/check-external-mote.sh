@@ -205,7 +205,7 @@ ok "config 1: test compiles, links against the declared runtime and runs the tes
 
 # The same in the strongest form: a real binary, linked against the C
 # runtime found through `[dependencies.runtime]`, executed.
-"$monad" compile src/main.mo -o "$work/out1" > "$work/compile1.log" 2>&1 \
+"$monad" build src/main.mo -o "$work/out1" > "$work/compile1.log" 2>&1 \
   || { cat "$work/compile1.log" >&2; die "config 1: compile failed on the C runtime"; }
 [ "$("$work/out1")" = "/var/lib/game/data" ] \
   || die "config 1: the compiled binary printed the wrong thing"
@@ -262,7 +262,7 @@ ok "config 3: test resolves init/std/runtime from \$MONAD_ROOT"
 
 # The acceptance test for the whole feature: nothing declared, nothing
 # relative, and a program that runs.
-MONAD_ROOT="$toolchain" "$monad" compile src/main.mo -o "$work/out3" > "$work/compile3.log" 2>&1 \
+MONAD_ROOT="$toolchain" "$monad" build src/main.mo -o "$work/out3" > "$work/compile3.log" 2>&1 \
   || { cat "$work/compile3.log" >&2; die "config 3: compile did not find runtime.c in the toolchain root"; }
 [ "$("$work/out3")" = "/var/lib/game/data" ] \
   || die "config 3: the compiled binary printed the wrong thing"
@@ -301,7 +301,7 @@ grep -q "1/1 total tests passed" "$monad_home_test" \
   || { cat "$monad_home_test" >&2; die "config 4: the test did not run and pass"; }
 ok "config 4: test resolves init/std/runtime from \$MONAD_HOME + active"
 
-MONAD_HOME="$home" "$monad" compile src/main.mo -o "$work/out4" > "$work/compile4.log" 2>&1 \
+MONAD_HOME="$home" "$monad" build src/main.mo -o "$work/out4" > "$work/compile4.log" 2>&1 \
   || { cat "$work/compile4.log" >&2; die "config 4: compile did not find runtime.c through \$MONAD_HOME"; }
 [ "$("$work/out4")" = "/var/lib/game/data" ] \
   || die "config 4: the compiled binary printed the wrong thing"
@@ -330,7 +330,7 @@ fresh "$monad" check > "$work/bare5.log" 2>&1 || bare_rc=$?
   || { cat "$work/bare5.log" >&2; die "config 5: a bare 'monad check' outside any mote exited 0"; }
 grep -q "no mote.toml above this directory" "$work/bare5.log" \
   || { cat "$work/bare5.log" >&2; die "config 5: the bare check did not say there was no mote to check"; }
-if grep -q "Usage: monad compile" "$work/bare5.log"; then
+if grep -q "Usage: monad build" "$work/bare5.log"; then
   die "config 5: the bare check printed the usage screen instead of the reason"
 fi
 ok "config 5: a bare check outside any mote says why and exits $bare_rc"

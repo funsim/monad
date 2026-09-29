@@ -42,7 +42,7 @@ signature itself is mandatory.
 
 > **A hole in *value* position is accepted and then goes nowhere.** Writing `_`
 > where a value belongs parses, but lowering rejects it as a type-level term
-> under `monad eval` and emits a void placeholder under `monad compile`. Use
+> under `monad eval` and emits a void placeholder under `monad build`. Use
 > holes for types you want inferred, not as a stand-in for code you have not
 > written.
 

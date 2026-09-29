@@ -302,7 +302,7 @@ def main (args : List String) : IO Unit :=
 ```
 
 ```bash
-monad compile program.mo -o program
+monad build program.mo -o program
 ./program arg1 arg2      # args reach `main`
 ```
 
