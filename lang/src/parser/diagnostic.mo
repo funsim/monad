@@ -45,6 +45,21 @@ def render_parse_error (source : String) (path : Option String) (err : ParseErro
 			String.concat header (String.concat arrow context)
 	}
 
+/// WHERE a parse failure was detected, as a point.
+///
+/// `render_parse_error` above folds exactly this into a rendered string,
+/// which is right for a terminal and wrong for an editor: a language server
+/// needs the position as DATA, and by the time a caller holds the rendered
+/// message the `Location` is gone. Same `location_of_remaining` call, and
+/// the same caveat -- `source` must be the full text `err`'s remaining came
+/// from, or the position is silently nonsense.
+///
+/// A `Location` is a point, so a caller turning this into a range
+/// synthesizes the end; using the same point twice is correct and honest,
+/// marking the spot rather than inventing an extent.
+pub def parse_error_location (source : String) (err : ParseError) : Location :=
+	location_of_remaining source (parse_error_remaining err)
+
 #[partial]
 def render_header (msg : String) (line : I64) (col : I64) : String :=
 	let loc_str : String := String.concat (I64.to_string line) (String.concat ":" (I64.to_string col)) in

@@ -282,6 +282,39 @@ pub def collect_decl_rems (ds : List ParseDecl) (acc : List I64) : List I64 := m
     List.cons d rest => collect_decl_rems rest (collect_decl_kind_rems d.kind acc),
 }
 
+/// Every TOP-LEVEL declaration's own span, as `(start_rem, end_rem)`, in
+/// the order `lower_parse_decls` consumes them.
+///
+/// `collect_decl_rems` above does not carry this and is not meant to: it
+/// walks *into* each declaration hunting for the terms that need locating,
+/// so a declaration's own extent -- the thing an outline or a
+/// declaration-granular diagnostic wants -- is dropped on the floor. This
+/// collects exactly that dropped piece and nothing else.
+///
+/// THE ORDER IS THE CONTRACT. `lower_parse_decls` is a strict 1:1
+/// `List.cons`-map over `List ParseDecl`: no filtering, no desugaring, no
+/// length change. So the nth span here belongs to the nth lowered `Decl`,
+/// and a caller may zip the two lists. That is load-bearing and it is not
+/// enforced by any type -- a later change that filters or expands a
+/// declaration inside that map would shift every range from that point on,
+/// silently and only in the presence of a diagnostic. `lang/src/tests/
+/// decl_range_tests.mo` therefore pins the COUNT equality rather than
+/// trusting this paragraph.
+///
+/// Unlike `collect_decl_kind_rems`, this does NOT recurse into a
+/// `scoped_open_d`/`decl_gen_d`'s inner declarations. Those are still one
+/// element of the list `lower_parse_decls` maps over, so descending would
+/// break the alignment this exists to provide.
+///
+/// A reversed accumulator, like `collect_decl_rems`: callers reverse once.
+#[partial]
+pub def collect_decl_spans (ds : List ParseDecl) (acc : List (Pair I64 I64)) : List (Pair I64 I64) :=
+    match ds {
+        List.empty => acc,
+        List.cons d rest =>
+            collect_decl_spans rest (List.cons (Pair.pair d.span.start_rem d.span.end_rem) acc),
+    }
+
 #[partial]
 def collect_decl_kind_rems (k : ParseDeclKind) (acc : List I64) : List I64 := match k {
     ParseDeclKind.def_d d => collect_def_rems d acc,

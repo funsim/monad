@@ -7,17 +7,20 @@ use std::process {exec_cmd, process_id}
 use lib::elaborate {free_vars, names_of_decls, elaborate_def}
 use lang::types {
   Attribute, Class, ClassDef, DebugName, Decl, DeclGroup, Def, Identifier,
-  InductConstructor, Inductive, Infix, Instance, LocalScope, LocalVar, ModulePath,
-  NamePath, NameRef, Param, Scope, ScopeData, ScopeInstance, Struct, StructField,
-  Term, TypeConstraint, TypeError, UseFilter, UseItem, concrete, id_eq,
-  list_reverse, many, module_path_to_string_colon, package_private, priv_,
+  InductConstructor, Inductive, Infix, Instance, LocalScope, LocalVar, Location,
+  ModulePath, NamePath, NameRef, Param, Scope, ScopeData, ScopeInstance, SourceRange,
+  Struct, StructField, Term, TypeConstraint, TypeError, UseFilter, UseItem, concrete,
+  id_eq, list_reverse, many, module_path_to_string_colon, package_private, priv_,
   show_identifier, show_module_path, show_name_path, term_peel, union_ids,
   use_bare, use_glob, use_items, use_name, use_rename, use_sub, use_sub_rename,
   visibility_beq,
 }
-use lib::parser {decls_parser, decls_parser_located, decls_parser_strict, module_path_to_string}
+use lib::parser {
+  LocatedDecls, decls_parser, decls_parser_located, decls_parser_located_with_ranges,
+  decls_parser_strict, module_path_to_string,
+}
 use lib::parser::core {ParseResult}
-use lib::parser::diagnostic {render_parse_error}
+use lib::parser::diagnostic {parse_error_location, render_parse_error}
 use lang::mote {
   Mote.discover, Mote.manifest_of_attr, Mote.mote_attr_unknown_keys,
   Mote.parse_manifest, Mote.toolchain_candidates, Mote.toolchain_missing_hint,
@@ -156,6 +159,133 @@ pub def try_parse_decls_strict (input : String) (path : Option String) : Result 
     match decls_parser_strict input {
         ParseResult.success _ decl_list => Result.ok (expand_decls decl_list),
         ParseResult.fail e => Result.err (render_parse_error input path e),
+    }
+
+// --- Declaration ranges (what navigation reads) ---
+//
+// An outline, a go-to-definition and a hover all need one thing `Decl`
+// cannot give them: where in the file a declaration is. `Term.ctx`'s own
+// doc comment (`lang/types.mo`) rejects a location FIELD, and `Attribute`'s
+// says "Deliberately has no `source_location`" -- the corpus convention is
+// wrap or side-table, never a field. The parser's `ParseDecl` does carry a
+// span per declaration, so the side table is read out of the parse here, in
+// terms a consumer outside `lang/parser*` can name.
+
+/// One top-level declaration's extent, with enough identity to be useful
+/// as an outline entry.
+///
+/// The range's own `path` is `Option.none`: the parser is handed text, not
+/// a filename. A consumer that knows the file -- a language server has the
+/// URI -- fills it in.
+pub struct DeclRange {
+    name : String,
+    kind : String,
+    range : SourceRange,
+}
+
+// Every field read below is routed through a one-line typed accessor rather
+// than written inline. A `#[test]` def that touches two fields of different
+// types is the recorded self-hosted codegen hazard -- the def picks up one
+// FIELD's LLVM type as its own return type -- and `lang/src/tests/
+// decl_range_tests.mo` reads exactly these. Same remedy the five LSP probes
+// in `lang/src/tests/unify_tests.mo` use.
+
+pub def decl_range_name (dr : DeclRange) : String := dr.name
+
+pub def decl_range_kind (dr : DeclRange) : String := dr.kind
+
+pub def decl_range_span (dr : DeclRange) : SourceRange := dr.range
+
+pub def located_decl_list (l : LocatedDecls) : List Decl := l.decl_list
+
+pub def located_decl_spans (l : LocatedDecls) : List SourceRange := l.spans
+
+// `Inductive`/`Struct`/`Class`/`Instance` have no name accessor of their
+// own (`Def.name` is the only one, `lang/types.mo`), and `decl_name_and_kind`
+// below needs four. Each is its own def for the reason just stated: one
+// field read, one explicit return type, per def.
+
+def inductive_decl_name (i : Inductive) : NamePath := i.name
+
+def struct_decl_name (s : Struct) : Identifier := s.name
+
+def class_decl_name (c : Class) : Identifier := c.name
+
+def instance_decl_name (i : Instance) : Identifier := i.name
+
+/// A declaration's display name and its kind, for an outline.
+///
+/// `Decl.to_name` cannot serve here: it answers "what does this DECLARE",
+/// and returns the EMPTY name (`npath []`) for every kind but `def_d`, by
+/// design. An outline wants the opposite -- something printable for every
+/// kind, even when that is only the module a `use` names.
+///
+/// The kind strings are the Rust reference's own vocabulary ("def",
+/// "type", "struct", "class", "instance"), so the wire output reads like
+/// the tool being replaced rather than like this compiler's internals.
+/// `use`/`open`/`mote` have no declaration-level name in that sense and are
+/// named after what they name; both macro spellings report "defmacro"
+/// because they are one concept to a reader.
+#[partial]
+def decl_name_and_kind (d : Decl) : Pair String String := match d {
+    Decl.def_d df => Pair.pair (show_name_path (Def.name df)) "def",
+    Decl.inductive_d i => Pair.pair (show_name_path (inductive_decl_name i)) "type",
+    Decl.struct_d s => Pair.pair (show_identifier (struct_decl_name s)) "struct",
+    Decl.class_d c => Pair.pair (show_identifier (class_decl_name c)) "class",
+    Decl.instance_d i => Pair.pair (show_identifier (instance_decl_name i)) "instance",
+    Decl.infix_d _op path _vis => Pair.pair (show_name_path path) "infix",
+    Decl.use_d path _filter _public => Pair.pair (show_module_path path) "use",
+    Decl.open_d path _filter => Pair.pair (show_name_path path) "open",
+    Decl.scoped_open_d path _filter _decl => Pair.pair (show_name_path path) "open",
+    Decl.def_macro_d df => Pair.pair (show_name_path (Def.name df)) "defmacro",
+    Decl.decl_gen_d name _params _decl_list _attrs => Pair.pair (show_name_path name) "defmacro",
+    Decl.macro_call_d name _args => Pair.pair (show_identifier name) "macro",
+    Decl.mote_d _attr => Pair.pair "" "mote",
+}
+
+/// Every top-level declaration in `src`, with its name, kind and range.
+///
+/// `List.empty` on a parse failure. A caller that wants the failure itself
+/// -- `check_file_cached_from_source_ranged` does -- parses separately
+/// rather than reading it out of an empty list, because a parse error is
+/// not a declaration range and pretending otherwise would make "clean
+/// file" and "unparseable file" the same answer.
+///
+/// PRE-EXPANSION, deliberately: this is what the user wrote, not what a
+/// macro generated. `parse_all_decls` runs `expand_decls` after lowering
+/// and this does not.
+#[partial]
+pub def decl_ranges_of_source (src : String) : List DeclRange :=
+    match decls_parser_located_with_ranges src {
+        ParseResult.success _rem located => decl_ranges_of_located located,
+        ParseResult.fail _e => List.empty,
+    }
+
+#[partial]
+def decl_ranges_of_located (located : LocatedDecls) : List DeclRange :=
+    zip_decl_ranges (located_decl_list located) (located_decl_spans located) List.empty
+
+/// Pair each declaration with its range, one for one.
+///
+/// A SHORT `spans` list stops the walk and returns what it has, rather than
+/// running off the end or mis-pairing the tail: a declaration with no range
+/// is a visible absence, while a declaration with the NEXT one's range is a
+/// silently wrong answer. `lang/src/tests/decl_range_tests.mo` pins the
+/// count equality that makes this branch unreachable.
+#[partial]
+def zip_decl_ranges (ds : List Decl) (spans : List SourceRange) (acc : List DeclRange) : List DeclRange :=
+    match ds {
+        List.empty => list_reverse acc,
+        List.cons d rest => match spans {
+            List.empty => list_reverse acc,
+            List.cons s srest => zip_decl_ranges rest srest (List.cons (mk_decl_range d s) acc),
+        },
+    }
+
+#[partial]
+def mk_decl_range (d : Decl) (range : SourceRange) : DeclRange :=
+    match decl_name_and_kind d {
+        Pair.pair n k => DeclRange.mk n k range,
     }
 
 // --- Module dependency loading ---
@@ -978,26 +1108,11 @@ def load_module_decls (base_dir : String) (mp : ModulePath) : IO (Option (List D
     }
 }
 
-/// Read and parse an ALREADY-RESOLVED module file.
-///
-/// This is the half of module loading that touches the disk, and it is
-/// PATH-driven on purpose: one resolution, one read. `load_module_with_info`
-/// resolves a module, records the resolved path as `ModuleInfo.file_path`,
-/// and used to hand the LOADER only that path's DIRECTORY -- so the module
-/// was resolved a SECOND time, from the resolved file's own directory, and
-/// the second answer is not always the first. Measured (strace): a
-/// `prelude` from inside `cli/` resolved correctly to
-/// `../init/src/prelude.mo` through `cli`'s manifest, and re-resolved from
-/// `../init/src` to nothing at all, because by then the only candidates
-/// left are `init`'s own manifest -- where `init` is not a dependency of
-/// itself (`MoteManifest.dep_dir_of`'s self arm is what closes that, but
-/// the second resolution should not exist in the first place). `prelude`
-/// therefore never loaded inside a mote, and a check there reported its
-/// names as `unknown variable` -- 23 of them for `cli/src/main.mo`, with
-/// the module trace showing the identical 74 modules as a clean root run,
-/// because the line is printed BEFORE the load that then failed. The same
-/// shape could also silently load a DIFFERENT file than the one
-/// `file_path` named.
+/// The parse-and-leniency-gate half of `load_module_decls_at`, split out
+/// so the same gate runs over text that did NOT come from disk -- see
+/// `load_module_with_info_from_source`, which supplies an editor buffer.
+/// `mp` names the module in the truncation message and is read for
+/// nothing else.
 ///
 /// `decls_parser`/`parse_all_decls` are LENIENT by design (`decls_try`'s
 /// own doc comment, `lang/parser.mo`): any real parse failure partway
@@ -1018,24 +1133,50 @@ def load_module_decls (base_dir : String) (mp : ModulePath) : IO (Option (List D
 /// a genuinely fully-parsed file always leaves it empty; non-empty means
 /// real, un-parsed source content remains.
 #[partial]
+def load_module_decls_of_text (mp : ModulePath) (content : String) : IO (Option (List Decl)) := do {
+    let result : ParseResult (List Decl) := parse_all_decls content;
+    match result {
+        ParseResult.success rem decl_list =>
+            if String.is_empty rem
+            then do { return Option.some decl_list }
+            else do {
+                println (String.concat "parse error: " (String.concat (module_path_to_string mp) " did not fully parse (stopped before end of file) -- remaining text starts:"));
+                println (String.slice rem 0 (if I64.gt (String.length rem) 300 then 300 else String.length rem));
+                return Option.none
+            },
+        ParseResult.fail _ => do { return Option.none }
+    }
+}
+
+/// Read an ALREADY-RESOLVED module file from disk, then hand it to the
+/// gate above. `Option.none` if there is no such file.
+///
+/// This is the half of module loading that touches the disk, and it is
+/// PATH-driven on purpose: one resolution, one read. `load_module_with_info`
+/// resolves a module, records the resolved path as `ModuleInfo.file_path`,
+/// and used to hand the LOADER only that path's DIRECTORY -- so the module
+/// was resolved a SECOND time, from the resolved file's own directory, and
+/// the second answer is not always the first. Measured (strace): a
+/// `prelude` from inside `cli/` resolved correctly to
+/// `../init/src/prelude.mo` through `cli`'s manifest, and re-resolved from
+/// `../init/src` to nothing at all, because by then the only candidates
+/// left are `init`'s own manifest -- where `init` is not a dependency of
+/// itself (`MoteManifest.dep_dir_of`'s self arm is what closes that, but
+/// the second resolution should not exist in the first place). `prelude`
+/// therefore never loaded inside a mote, and a check there reported its
+/// names as `unknown variable` -- 23 of them for `cli/src/main.mo`, with
+/// the module trace showing the identical 74 modules as a clean root run,
+/// because the line is printed BEFORE the load that then failed. The same
+/// shape could also silently load a DIFFERENT file than the one
+/// `file_path` named.
+#[partial]
 def load_module_decls_at (file_path : String) (mp : ModulePath) : IO (Option (List Decl)) {
     let present : Bool <- file_exists (Path.path file_path);
     if Bool.not present
     then do { return Option.none }
     else do {
         let content : String <- IO.read_file (Path.path file_path);
-        let result : ParseResult (List Decl) := parse_all_decls content;
-        match result {
-            ParseResult.success rem decl_list =>
-                if String.is_empty rem
-                then do { return Option.some decl_list }
-                else do {
-                    println (String.concat "parse error: " (String.concat (module_path_to_string mp) " did not fully parse (stopped before end of file) -- remaining text starts:"));
-                    println (String.slice rem 0 (if I64.gt (String.length rem) 300 then 300 else String.length rem));
-                    return Option.none
-                },
-            ParseResult.fail _ => do { return Option.none }
-        }
+        load_module_decls_of_text mp content
     }
 }
 
@@ -1753,6 +1894,135 @@ pub def check_module_with_scope (scope : Scope) (decl_list : List Decl) (locals 
     return (list_append diags (check_termination_all decl_list))
 }
 
+// --- Ranged diagnostics (the language server's view) ---
+//
+// Everything above returns rendered strings -- what a terminal wants, and
+// all a terminal can use. A language server cannot work that way: the
+// editor needs a RANGE beside each message, and the range is discarded the
+// moment a message is rendered. So this is a parallel surface, not a change
+// to the one `check` runs.
+
+/// One diagnostic, with the declaration it was reported against.
+///
+/// `range` is `Option` because not every diagnostic HAS a declaration: the
+/// termination pass reports per module and a load failure reports per file.
+/// `Option.none` is that case, stated rather than filled in with an
+/// invented range.
+///
+/// THERE IS DELIBERATELY NO SEVERITY FIELD YET, and the reason binds
+/// whoever adds one. `cli/src/main.mo`'s `run_check_loop` counts EVERY
+/// diagnostic as an error and prints `FAIL` for any non-empty list, and it
+/// reads `FileCheckResult.diagnostics : List String`, which has no severity
+/// to consult. So the first non-error diagnostic -- the self-hosted
+/// checker's warning passes, explicitly not in this cut -- has to land
+/// TOGETHER with a severity-aware `run_check_loop` and a `FileCheckResult`
+/// that carries severity, or self-hosted `check` starts failing on warnings
+/// and takes CI with it. Adding the field now, when nothing can produce a
+/// warning, would be an untestable channel.
+///
+/// `message` IS THE RENDERED MULTI-LINE STRING, not a one-line summary, and
+/// that is a binding note on the wire layer rather than a defect. The ranged
+/// walk tags what `check_decl_with_scope` already returns, and that is
+/// `render_type_error`'s / `render_parse_error`'s output: a header line, a
+/// `--> path:line:col` arrow, and three lines of source with a caret. Right
+/// for `check`'s terminal, wrong for an editor, which wants the header line
+/// alone in its popup. The reduction belongs where the wire diagnostic is
+/// built (`motes/toolkit`'s diagnostic module), and the plain forms to
+/// reduce TO already exist: `type_error_message` and `error_message`
+/// (`lang/src/typecheck/diagnostic.mo:40`, `lang/src/parser/diagnostic.mo:23`).
+/// Do not add a second message field here -- `check` reads this one.
+pub struct Diagnostic {
+    message : String,
+    range : Option SourceRange,
+}
+
+pub def diagnostic_message (dg : Diagnostic) : String := dg.message
+
+pub def diagnostic_range (dg : Diagnostic) : Option SourceRange := dg.range
+
+#[partial]
+def attach_range_go (r : Option SourceRange) (msgs : List String) (acc : List Diagnostic) : List Diagnostic :=
+    match msgs {
+        List.empty => acc,
+        List.cons m rest => attach_range_go r rest (List.cons (Diagnostic.mk m r) acc),
+    }
+
+/// Tag every message one declaration produced with that declaration's range.
+#[partial]
+def attach_range (r : Option SourceRange) (msgs : List String) : List Diagnostic :=
+    list_reverse (attach_range_go r msgs List.empty)
+
+/// The range recorded for a declaration, matched by NAME.
+///
+/// NOT by position, and this is the part that looks like it should be a zip
+/// and must not be. `ElaboratedModules.target_decls` -- the list the checker
+/// actually walks -- is the EXPANDED declaration list: `parse_all_decls`
+/// runs `expand_decls`, which turns one `macro_call_d` into many
+/// declarations, and the elaborate pipeline's `promote_instance_defs` and
+/// `resolve_infix_decls` add more again. This table is pre-expansion, by
+/// design. So the two lists differ in LENGTH and in ORDER, and zipping them
+/// would silently attach the wrong range to every declaration from the first
+/// macro call onwards -- wrong in the way that still looks plausible.
+///
+/// A name that expanded away, or that elaboration minted, simply has no
+/// range: `Option.none`, which every consumer already handles.
+///
+/// Names are not unique in the abstract -- nothing stops a file from
+/// declaring `foo` twice under different kinds -- so this takes the FIRST
+/// match in declaration order. Two same-named declarations in one file is
+/// the only way to observe the difference, and it costs a line or two of
+/// range error, never a wrong file.
+#[partial]
+def range_for_decl (decl_ranges : List DeclRange) (d : Decl) : Option SourceRange :=
+    match decl_name_and_kind d {
+        Pair.pair n _kind => find_decl_range decl_ranges n,
+    }
+
+#[partial]
+def find_decl_range (decl_ranges : List DeclRange) (n : String) : Option SourceRange :=
+    match decl_ranges {
+        List.empty => Option.none,
+        List.cons dr rest =>
+            if String.beq (decl_range_name dr) n then Option.some (decl_range_span dr)
+            else find_decl_range rest n,
+    }
+
+/// `check_module_decls_with_scope`'s ranged sibling: the same per-decl walk,
+/// the same `check_decl_with_scope` calls, each declaration's message list
+/// tagged with that declaration's range.
+///
+/// A SIBLING rather than a rewrite, and the duplication is the point: the
+/// string version stays byte-identical, and because the two walk
+/// independently, neither `check`'s rendered output nor its cost can move.
+/// Threading a range table through the string version would make every
+/// `check` build and consult a table it never reads.
+#[partial]
+def check_module_decls_with_scope_ranged (scope : Scope) (decl_list : List Decl) (locals : LocalScope)
+    (path : Option String) (decl_ranges : List DeclRange) (verbose : Bool) : IO (List Diagnostic) :=
+    match decl_list {
+        List.empty => do { return List.empty },
+        List.cons d rest => do {
+            let here : List String <- check_decl_with_scope d scope locals path verbose;
+            let there <- check_module_decls_with_scope_ranged scope rest locals path decl_ranges verbose;
+            return (list_append (attach_range (range_for_decl decl_ranges d) here) there)
+        }
+    }
+
+/// `check_module_with_scope`'s ranged sibling: the same two gates in the
+/// same order, the per-declaration walk and then the module-level
+/// termination pass.
+///
+/// `check_termination_all` reports on the module as a whole -- it is a
+/// decl-list walk building a call graph, not a per-decl check -- so its
+/// messages carry `Option.none` rather than a range borrowed from whichever
+/// declaration happens to sit nearby.
+pub def check_module_with_scope_ranged (scope : Scope) (decl_list : List Decl) (locals : LocalScope)
+    (path : Option String) (decl_ranges : List DeclRange) (verbose : Bool) : IO (List Diagnostic) := do {
+    let diags <- check_module_decls_with_scope_ranged scope decl_list locals path decl_ranges verbose;
+    let no_range : Option SourceRange := Option.none;
+    return (list_append diags (attach_range no_range (check_termination_all decl_list)))
+}
+
 /// `promote_instance_defs`'s own `__Dict_ClassName_Args` value def
 /// (`lang/scope.mo`'s `promote_instance`, e.g. `__Dict_Speak_Dog`) is a
 /// pure codegen artifact -- its `.typ` is a bare sort but its
@@ -2353,6 +2623,158 @@ pub def check_file_cached (cache : ModuleInfoCache) (file_path : String) (verbos
         return missing_bundle
     }
 }
+
+/// `check_file_cached` for text that is not (yet) on disk -- the language
+/// server's entry point. The same body minus the `file_exists` gate: a
+/// buffer is checked from what the editor holds, so whether a file of
+/// that name exists is no longer the question.
+///
+/// The checking is `check_module_with_scope`, byte-identical to the disk
+/// path's, so a buffer and the file it stands for report the same
+/// diagnostics once saved.
+///
+/// `verbose` must be false on any path whose stdout is a protocol stream.
+#[partial]
+pub def check_file_cached_from_source (cache : ModuleInfoCache) (file_path : String) (source : String) (verbose : Bool) : IO FileCheckAndCache := do {
+    let ec <- elaborate_loaded_modules_cached_go file_path false (Option.some source) cache verbose;
+    let out_cache : ModuleInfoCache := ec.cache;
+    match ec.elaborated {
+        Result.ok em => do {
+            let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
+            let diags <- check_module_with_scope em.scope em.target_decls empty_locs (Option.some file_path) verbose;
+            let ok_result : FileCheckResult := { path := file_path, diagnostics := diags };
+            let ok_bundle : FileCheckAndCache := { result := ok_result, cache := out_cache };
+            return ok_bundle
+        },
+        Result.err e => do {
+            let err_result : FileCheckResult := { path := file_path, diagnostics := [e] };
+            let err_bundle : FileCheckAndCache := { result := err_result, cache := out_cache };
+            return err_bundle
+        },
+    }
+}
+
+// --- The ranged file check (what `monad lsp` calls) ---
+
+/// `FileCheckAndCache` for the ranged path: the same three pieces, with
+/// `Diagnostic` in place of the rendered string.
+pub struct RangedFileCheck {
+    path : String,
+    diagnostics : List Diagnostic,
+    cache : ModuleInfoCache,
+}
+
+pub def ranged_file_path (f : RangedFileCheck) : String := f.path
+
+pub def ranged_file_diagnostics (f : RangedFileCheck) : List Diagnostic := f.diagnostics
+
+pub def ranged_file_cache (f : RangedFileCheck) : ModuleInfoCache := f.cache
+
+/// The one-diagnostic result for a buffer that did not parse, at the
+/// position the parse gave up.
+///
+/// A `Location` is a point, so the range's two ends are the same value:
+/// a zero-width range marks the spot rather than inventing an extent the
+/// parser never measured.
+#[partial]
+def ranged_parse_failure (cache : ModuleInfoCache) (file_path : String) (source : String)
+    (e : ParseError) : RangedFileCheck :=
+    let msg : String := render_parse_error source (Option.some file_path) e in
+    let loc : Location := parse_error_location source e in
+    let span : SourceRange := SourceRange.mk loc loc (Option.some file_path) in
+    let one_diag : Diagnostic := Diagnostic.mk msg (Option.some span) in
+    let one : RangedFileCheck := { path := file_path, diagnostics := [one_diag], cache := cache } in
+    one
+
+/// A buffer the lenient top-level walk truncated.
+///
+/// THIS is the real parse-failure path, not the `fail` arm above, and
+/// finding that out is most of why this function exists. `decls_try`
+/// reports `success` on a malformed declaration -- it keeps everything it
+/// accumulated and stops, discarding the rest of the file with no
+/// diagnostic (its own comment records the reasoning and the reverted
+/// resync attempt). So `decls_parser_located` almost never answers `fail`,
+/// and the only signal that a file did not parse is a NON-EMPTY
+/// remainder -- the very gate `load_module_decls_of_text` applies before it
+/// will accept a module at all.
+///
+/// Running the strict twin here turns that signal back into a real
+/// `ParseError`, so the message and the position come from
+/// `render_parse_error`, the same renderer the rest of the tree uses,
+/// instead of a second and worse spelling of the same fact.
+#[partial]
+def ranged_truncation (cache : ModuleInfoCache) (file_path : String) (source : String) : RangedFileCheck :=
+    match decls_parser_strict source {
+        ParseResult.fail e => ranged_parse_failure cache file_path source e,
+        // Unreachable in practice: `decls_skip_strict` consumes the whole
+        // input or fails, so a lenient truncation implies a strict failure.
+        // Kept as a stated `Option.none` rather than an invented position,
+        // because a wrong range is worse than an absent one. The message
+        // mirrors `load_module_decls_of_text`'s own truncation wording.
+        ParseResult.success _ _ =>
+            let msg : String := "error: " ++ file_path ++ " did not fully parse (stopped before end of file)" in
+            let none_range : Option SourceRange := Option.none in
+            let one : RangedFileCheck := { path := file_path, diagnostics := [Diagnostic.mk msg none_range], cache := cache } in
+            one,
+    }
+
+/// The buffer parsed, so elaborate it and check it -- the ordinary path.
+#[partial]
+def check_buffer_ranged (cache : ModuleInfoCache) (file_path : String) (source : String)
+    (located : LocatedDecls) (verbose : Bool) : IO RangedFileCheck := do {
+    let decl_ranges : List DeclRange := decl_ranges_of_located located;
+    let ec <- elaborate_loaded_modules_cached_go file_path false (Option.some source) cache verbose;
+    let out_cache : ModuleInfoCache := ec.cache;
+    match ec.elaborated {
+        Result.ok em => do {
+            let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
+            let diags <- check_module_with_scope_ranged em.scope em.target_decls empty_locs (Option.some file_path) decl_ranges verbose;
+            let ok : RangedFileCheck := { path := file_path, diagnostics := diags, cache := out_cache };
+            return ok
+        },
+        Result.err e => do {
+            // An elaborate-path failure is a rendered `String` by then --
+            // the `Location` was discarded on the way down -- so this one
+            // genuinely has no range to report.
+            let none_range : Option SourceRange := Option.none;
+            let err_diag : Diagnostic := Diagnostic.mk e none_range;
+            let err : RangedFileCheck := { path := file_path, diagnostics := [err_diag], cache := out_cache };
+            return err
+        },
+    }
+}
+
+/// `check_file_cached_from_source`'s ranged sibling: the language server's
+/// entry point, and the whole reason the in-memory load path exists.
+///
+/// The buffer is parsed ONCE up front, for two reasons. The ranges have to
+/// come from the text the editor is showing, which is the buffer and not
+/// the file on disk. And a buffer that does not parse has to be reportable
+/// WITH a range, which the elaborate path cannot do -- it reports load
+/// failures as a rendered `String`, `load_module_decls_of_text` included.
+///
+/// When the parse does not complete, this returns that one diagnostic and
+/// does NOT call elaborate. Both paths run the same grammar over the same
+/// text and the same remainder gate, so continuing would report one problem
+/// twice.
+///
+/// `verbose` must be false on any path whose stdout is a protocol stream.
+/// Note the one hazard this does not remove: `load_module_decls_of_text`
+/// prints its truncation message with an UNCONDITIONAL `println` (stdout,
+/// not gated on `verbose`), so a DEPENDENCY that fails to parse -- a real
+/// file on disk, reached by the walk -- still writes to stdout. That is
+/// fine for `check` and must be dealt with before a server relies on it;
+/// see the language-server plan's stdout rule.
+#[partial]
+pub def check_file_cached_from_source_ranged (cache : ModuleInfoCache) (file_path : String)
+    (source : String) (verbose : Bool) : IO RangedFileCheck :=
+    match decls_parser_located_with_ranges source {
+        ParseResult.fail e => do { return (ranged_parse_failure cache file_path source e) },
+        ParseResult.success rem located =>
+            if String.is_empty rem
+            then check_buffer_ranged cache file_path source located verbose
+            else do { return (ranged_truncation cache file_path source) },
+    }
 
 // --- Directory-recursive corpus collection (self-hosted `find *.mo`) ---
 //
@@ -3064,6 +3486,51 @@ pub def load_module_with_info (base_dir : String) (mp : ModulePath) : IO (Option
         }
     }
 }
+
+/// `load_module_with_info`, but the target module's DECLS come from
+/// `source` rather than from disk -- the language server's path, so an
+/// editor buffer is checked without being written out first.
+///
+/// The path is still resolved from `base_dir`/`mp`, so the returned
+/// `ModuleInfo.file_path` is the real file, and a URI naming no workspace
+/// module still fails here. Deliberate: it keeps the dependency WALK
+/// (`collect_dep_module_infos`) reading real files, so only the single
+/// module under the cursor comes from memory.
+///
+/// Both of `load_module_with_info`'s traps are preserved, and they are
+/// load-bearing: `load_module_decls_of_text` carries the truncation gate,
+/// and `resolve_lib_alias_decls_opt` is what makes a `use lib::x` inside
+/// the buffer resolve. Dropping either surfaces much later as a wall of
+/// `unknown variable`, never as the real cause.
+#[partial]
+def load_module_with_info_from_source (base_dir : String) (mp : ModulePath) (source : String) : IO (Option ModuleInfo) {
+    let resolved_path_opt <- resolve_module_file base_dir mp;
+    match resolved_path_opt {
+        Option.none => do { return Option.none },
+        Option.some file_path => do {
+            let actual_base_dir : String := extract_directory file_path;
+            let raw_decls : Option (List Decl) <- load_module_decls_of_text mp source;
+            let decl_list <- resolve_lib_alias_decls_opt actual_base_dir raw_decls;
+            match decl_list {
+                Option.some decl_list => do {
+                    let info : ModuleInfo := { path := mp, file_path := file_path, decl_list := decl_list };
+                    return (Option.some info)
+                },
+                Option.none => do { return Option.none }
+            }
+        }
+    }
+}
+
+/// Pick the target module's loader: the disk one normally, the buffer one
+/// when the caller supplied source. The branch lives here, in one place,
+/// so the dependency walk and both `_go` bodies below stay untouched.
+#[partial]
+def load_target_module (base_dir : String) (mp : ModulePath) (source : Option String) : IO (Option ModuleInfo) :=
+    match source {
+        Option.none => load_module_with_info base_dir mp,
+        Option.some src => load_module_with_info_from_source base_dir mp src,
+    }
 
 // --- Declared-dependency enforcement (package-system.md 5d) ---------
 //
@@ -4112,13 +4579,20 @@ def report_missing_toolchain (base_dir : String) : IO Unit := do {
 /// `collect_dep_module_infos`. This used to print the target
 /// unconditionally and nothing else -- the whole "only the main module
 /// is printed" problem the trace exists to fix.
+///
+/// `source` is the in-memory variant: `Option.some` takes the target
+/// module's text from the caller instead of from disk, which is what a
+/// language server needs for an editor buffer. Only the TARGET module is
+/// affected -- the dependency walk below still reads real files. Every
+/// non-server caller goes through the `Option.none` wrapper under this
+/// one.
 #[partial]
-def load_file_modules_cached (file_path : String) (cache : ModuleInfoCache) (verbose : Bool) : IO LoadedAndCache {
+def load_file_modules_cached_go (file_path : String) (source : Option String) (cache : ModuleInfoCache) (verbose : Bool) : IO LoadedAndCache {
     let base_dir : String := extract_directory file_path;
     let module_name : String := module_name_from_path file_path;
     let mp : ModulePath := ModulePath.mp [Identifier.id module_name];
     module_line verbose module_name;
-    let module <- load_module_with_info base_dir mp;
+    let module <- load_target_module base_dir mp source;
     match module {
         Option.some main_module =>
             match main_module {
@@ -4184,6 +4658,12 @@ def load_file_modules_cached (file_path : String) (cache : ModuleInfoCache) (ver
         }
     }
 }
+
+/// Read the target module from disk. The shape every non-server caller
+/// wants; see `load_file_modules_cached_go` for the in-memory variant.
+#[partial]
+def load_file_modules_cached (file_path : String) (cache : ModuleInfoCache) (verbose : Bool) : IO LoadedAndCache :=
+    load_file_modules_cached_go file_path Option.none cache verbose
 
 /// Backwards-compatible wrapper: a standalone load with a fresh cache.
 /// Every caller that isn't threading a whole-run cache uses this.
@@ -4785,10 +5265,20 @@ def replace_main_decls (loaded : LoadedModules) (target_mp : ModulePath) (decls 
             LoadedModules.mk new_main new_all
     }
 
+/// Read the target module from disk and elaborate it. The shape every
+/// non-server caller wants; `check_file_cached` and `elaborate_loaded_
+/// modules` both land here.
 #[partial]
-pub def elaborate_loaded_modules_cached (file_path : String) (check_deps : Bool) (cache : ModuleInfoCache) (verbose : Bool) : IO ElaboratedAndCache := do {
+pub def elaborate_loaded_modules_cached (file_path : String) (check_deps : Bool) (cache : ModuleInfoCache) (verbose : Bool) : IO ElaboratedAndCache :=
+    elaborate_loaded_modules_cached_go file_path check_deps Option.none cache verbose
+
+/// The real body; `source` is threaded down to the target module's load,
+/// so a language server can elaborate a buffer. `Option.none` is every
+/// existing caller -- see the wrapper above.
+#[partial]
+def elaborate_loaded_modules_cached_go (file_path : String) (check_deps : Bool) (source : Option String) (cache : ModuleInfoCache) (verbose : Bool) : IO ElaboratedAndCache := do {
     let t_load : I64 <- Bench.now;
-    let lc <- load_file_modules_cached file_path cache verbose;
+    let lc <- load_file_modules_cached_go file_path source cache verbose;
     // Declared-dependency enforcement (package-system.md 5d) before any
     // elaboration work: a mote reaching into one it never declared is a
     // manifest error, and saying so beats letting it surface as whatever

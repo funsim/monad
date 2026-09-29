@@ -6,8 +6,8 @@ use lang::types {
   NameRef, OpenFilter, Param, ParseClass, ParseClassDef, ParseDecl, ParseDef,
   ParseInductConstructor, ParseInstance, ParseMatchCase, ParseParam, ParseSpan,
   ParseStruct, ParseStructField, ParseStructLitField, ParseTerm, ParsedParam,
-  QualifiedName, Term, TypeConstraint, UseFilter, UseItem, Visibility, affine,
-  app, char, char_to_string, concrete, destructured, f32, f64, flt, group,
+  QualifiedName, SourceRange, Term, TypeConstraint, UseFilter, UseItem, Visibility,
+  affine, app, char, char_to_string, concrete, destructured, f32, f64, flt, group,
   has_attr, i64, id_eq, ident, if_, linear, list_reverse, many, match_, mc, mk,
   named, num, operator, package_private, parse_param_many, parse_param_with_mult,
   pd_at, pd_class_d, pd_decl_gen_d, pd_def_d, pd_def_macro_d, pd_inductive_d,
@@ -22,11 +22,11 @@ use std::list {List.intercalate, List.length}
 // helpers over it -- never `Map.insert`/`Map.lookup`, whose generic
 // dispatch can resolve to the wrong instance.
 use std::map {HashMap}
-use llvm::strmap {str_map_empty, str_map_insert}
+use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
 use lang::parser::lower_parse {
-  ParseLowerCtx, collect_decl_rems, lower_ctx_bare, lower_ctx_bind_all,
-  lower_ctx_locating, lower_parse_decl, lower_parse_decls, lower_parse_term,
-  name_ref_to_string,
+  ParseLowerCtx, collect_decl_rems, collect_decl_spans, lower_ctx_bare,
+  lower_ctx_bind_all, lower_ctx_locating, lower_parse_decl, lower_parse_decls,
+  lower_parse_term, name_ref_to_string,
 }
 use lang::parser::core {
   ParseResult, custom, is_empty, op_char_member, op_chars, op_entry_prec,
@@ -3869,16 +3869,22 @@ pub def decls_parser (input : String) : ParseResult (List Decl) :=
 
 // ─── The located parser ────────────────────────────────────────────────
 //
-// `decls_parser`'s twin, and the ONLY entry point that builds location
-// wrappers. Everything else -- `check`, `test`, a non-debug `compile` --
-// goes through the plain one and produces byte-identical terms, which is
-// what keeps the 67%-of-elaboration parse phase (AGENTS.md item 27) out of
-// this feature's way.
+// `decls_parser`'s twin, and the only entry point that builds location
+// wrappers. THIS comment used to claim `check`, `test` and a non-debug
+// `compile` "go through the plain one and produces byte-identical terms".
+// Both halves are false, and have been since `parse_all_decls`
+// (`lang/module.mo`) moved to this entry point on EVERY path -- see that
+// function's own doc comment for why wrapper transparency has to be
+// exercised continuously rather than only under `--debug`. This IS the
+// production parse; `decls_parser` survives as the plain grammar entry
+// point and for tests. Corrected rather than deleted because this is the
+// comment a reader opens to decide which parser actually runs, and
+// believing it is exactly how the language-server design goes wrong.
 //
 // Three linear passes, not one scan per term: collect the spans, resolve
-// them all at once (`resolve_offsets_in_file`, which is O(n) where the
-// per-position path is O(n^2) -- AGENTS.md item 34), then lower with O(1)
-// lookups.
+// them all at once (one `resolve_offsets_in_file` call instead of a
+// whole-file rescan per position -- AGENTS.md item 34), then lower with
+// O(1) lookups.
 
 #[partial]
 pub def decls_parser_located (input : String) : ParseResult (List Decl) :=
@@ -3891,6 +3897,61 @@ def locate_and_lower (whole_file : String) (r : ParseResult (List ParseDecl)) : 
 			success rem (lower_parse_decls (lower_ctx_locating (build_loc_table whole_file ds)) ds),
 		fail e => fail e,
 	}
+
+/// A located parse, as both things a consumer needs: the lowered
+/// declarations, and one `SourceRange` per declaration IN THE SAME ORDER.
+///
+/// `SourceRange` rather than a fresh type because `lang/types.mo` already
+/// has exactly this shape and -- until this milestone -- had no user at
+/// all: nothing outside its own declaration mentioned it. Reusing it keeps
+/// one vocabulary for "a span in a file" across the parser, the checker and
+/// the language server, and `Location.offset` is there for any consumer
+/// that wants byte arithmetic back.
+///
+/// `path` is `Option.none` throughout: the parser is handed text, never a
+/// filename. A consumer that knows the file fills it in.
+///
+/// No `Parse*` type appears here, per the section comment above.
+pub struct LocatedDecls {
+	decl_list : List Decl,
+	spans : List SourceRange,
+}
+
+/// `decls_parser_located`'s sibling: the same located parse, plus one
+/// `SourceRange` per declaration.
+///
+/// A SEPARATE entry point on purpose. The ranges cost a second
+/// `resolve_offsets_in_file` pass over the declaration spans, and the
+/// production parse must not pay for a feature only navigation reads.
+/// Nothing here changes `decls_parser_located`, `locate_and_lower` or
+/// `build_loc_table`: `decl_list` is built by calling exactly those, so a
+/// caller can swap one entry point for the other and the terms do not move.
+///
+/// The ranges are PRE-EXPANSION, deliberately. `parse_all_decls` runs
+/// `expand_decls` after lowering and this does not, because an outline
+/// should show the declarations the user wrote rather than the ones a
+/// macro generated -- and because expansion changes the declaration COUNT,
+/// which would break the one-per-declaration alignment below.
+///
+/// That alignment is positional and rests on `lower_parse_decls` being a
+/// 1:1 map (see `collect_decl_spans`'s own comment for the full statement
+/// of the contract and the test that pins it).
+#[partial]
+pub def decls_parser_located_with_ranges (input : String) : ParseResult LocatedDecls :=
+	located_decls_with_ranges input (decls_skip (skip_docstrings (skip_spaces input)) List.empty)
+
+#[partial]
+def located_decls_with_ranges (whole_file : String) (r : ParseResult (List ParseDecl)) : ParseResult LocatedDecls :=
+	match r {
+		success rem ds => success rem (build_located_decls whole_file ds),
+		fail e => fail e,
+	}
+
+#[partial]
+def build_located_decls (whole_file : String) (ds : List ParseDecl) : LocatedDecls :=
+	LocatedDecls.mk
+		(lower_parse_decls (lower_ctx_locating (build_loc_table whole_file ds)) ds)
+		(build_decl_ranges whole_file ds)
 
 /// Resolve every span in the parse tree to a position, keyed back by
 /// `start_rem` so lowering needs no arithmetic per node.
@@ -3934,6 +3995,118 @@ def rekey_one (total : I64) (p : Pair I64 Location) (acc : HashMap String Locati
 	match p {
 		Pair.pair off loc => str_map_insert (I64.to_string (total - off)) loc acc,
 	}
+
+// ─── Declaration ranges (what navigation reads) ────────────────────────
+//
+// A SECOND table, built by a SECOND resolve pass, reached only through
+// `decls_parser_located_with_ranges` above. The production parse calls
+// none of this.
+
+/// Resolve every declaration's start and end to a position, keyed by
+/// ABSOLUTE offset.
+///
+/// Keyed by offset rather than by `start_rem` -- which is what
+/// `build_loc_table` keys the term table by -- because the two are read
+/// back differently. A term's wrapper is fetched by the offset the
+/// lowering pass is holding as a `start_rem`; a declaration's range is
+/// read out in declaration order and has to name BOTH ends, and the
+/// absolute offset is the one key both ends share.
+///
+/// Duplicate offsets are harmless, for the reason
+/// `resolve_offsets_in_file` documents: resolution is a pure function of
+/// (file, offset), so two entries for one offset carry equal locations and
+/// the later `str_map_insert` writes back the same value.
+#[partial]
+def build_offset_loc_table (whole_file : String) (ds : List ParseDecl) : HashMap String Location :=
+	let total : I64 := String.length whole_file in
+	let offsets : List I64 := span_offsets total (collect_decl_spans ds List.empty) List.empty in
+	index_by_offset (resolve_offsets_in_file whole_file offsets) str_map_empty
+
+/// `(start_rem, end_rem)` -> absolute `[start, end)`.
+///
+/// Nothing reverses `collect_decl_spans`'s accumulator here:
+/// `resolve_offsets_in_file` sorts internally, so the order it is handed
+/// does not matter.
+///
+/// The `-1` guard is `parse_span_unknown`'s sentinel. `decl_at`/`pd_at`
+/// stamp every top-level declaration, so it does not fire today -- but an
+/// unknown span must contribute NOTHING rather than be inverted into
+/// `total + 1`, which is a real offset resolving to a real location: a
+/// silently wrong range, which is worse than a missing one.
+#[partial]
+def span_offsets (total : I64) (spans : List (Pair I64 I64)) (acc : List I64) : List I64 :=
+	match spans {
+		List.empty => acc,
+		List.cons p rest => match p {
+			Pair.pair s e => span_offsets total rest (span_offsets_one total s e acc),
+		},
+	}
+
+#[partial]
+def span_offsets_one (total : I64) (s : I64) (e : I64) (acc : List I64) : List I64 :=
+	if I64.beq s -1 then acc
+	else if I64.beq e -1 then List.cons (total - s) acc
+	else List.cons (total - s) (List.cons (total - e) acc)
+
+#[partial]
+def index_by_offset (pairs : List (Pair I64 Location)) (acc : HashMap String Location) : HashMap String Location :=
+	match pairs {
+		List.empty => acc,
+		List.cons p rest => match p {
+			Pair.pair off loc => index_by_offset rest (str_map_insert (I64.to_string off) loc acc),
+		},
+	}
+
+/// The one place a `HashMap String Location` turns into an answer.
+///
+/// `V` is pinned to `Location` in the signature rather than left to be
+/// inferred per call site: `str_map_lookup` is generic in its value type,
+/// and this file's own import notes carry the warning that generic map
+/// dispatch can resolve to the wrong instance. One def with the type
+/// written down removes the question.
+#[partial]
+def loc_at_offset (table : HashMap String Location) (off : I64) : Option Location :=
+	str_map_lookup (I64.to_string off) table
+
+#[partial]
+def offset_loc_or (table : HashMap String Location) (off : I64) (fallback : Location) : Location :=
+	match loc_at_offset table off {
+		Option.some l => l,
+		Option.none => fallback,
+	}
+
+/// One declaration's `SourceRange`. `fallback` stands in for an end that
+/// did not resolve -- `Location.mk 0 1 1`, the start of the file, which
+/// reads as "unknown" to a human without being a sentinel the resolver
+/// could itself produce.
+#[partial]
+def span_range (total : I64) (table : HashMap String Location) (fallback : Location) (s : I64) (e : I64) : SourceRange :=
+	SourceRange.mk (offset_loc_or table (total - s) fallback) (offset_loc_or table (total - e) fallback) Option.none
+
+/// One range per span, accumulated in reverse: the caller reverses once.
+#[partial]
+def ranges_of_spans (total : I64) (table : HashMap String Location) (fallback : Location)
+	(spans : List (Pair I64 I64)) (acc : List SourceRange) : List SourceRange :=
+	match spans {
+		List.empty => acc,
+		List.cons p rest => match p {
+			Pair.pair s e =>
+				ranges_of_spans total table fallback rest (List.cons (span_range total table fallback s e) acc),
+		},
+	}
+
+/// Every top-level declaration's range, in DECLARATION ORDER -- i.e.
+/// element-for-element with `lower_parse_decls`'s output for the same `ds`.
+///
+/// The reversals cancel exactly: `collect_decl_spans` accumulates in
+/// reverse, `ranges_of_spans` accumulates in reverse, and one
+/// `list_reverse` is applied to each.
+#[partial]
+def build_decl_ranges (whole_file : String) (ds : List ParseDecl) : List SourceRange :=
+	let total : I64 := String.length whole_file in
+	let table : HashMap String Location := build_offset_loc_table whole_file ds in
+	let spans : List (Pair I64 I64) := list_reverse (collect_decl_spans ds List.empty) in
+	list_reverse (ranges_of_spans total table (Location.mk 0 1 1) spans List.empty)
 
 #[partial]
 pub def decls_skip (input : String) (acc : List ParseDecl) : ParseResult (List ParseDecl) :=
