@@ -14,7 +14,7 @@ use lang::parser::core {
 use lib::parser::char_preds {is_space}
 use lib::parser::combinators {
   alt, alt_fold, delimited_by, many0, map_parse, opt, separated_by, tag,
-  take_while, terminated_by,
+  take_while, terminated_by, utf8_char_width,
 }
 use lib::parser::number {number}
 
@@ -274,13 +274,26 @@ def Json.parse_number (input : String) : ParseResult Json.Number :=
 // ─── Parser: string ───
 
 /// Parse a single character that is not a quote or backslash
+///
+/// THE STEP IS `utf8_char_width`, AND A ONE-BYTE STEP IS WRONG. `String.slice`/`String.drop`
+/// are byte-oriented and answer "" rather than splitting a character (see the note beside
+/// `utf8_char_width` in `combinators.mo`), so stepping one byte into a multi-byte character
+/// produced `ch = ""` together with a remainder that read as end-of-input. Every JSON string
+/// holding an em dash, a curly quote or any other non-ASCII character failed to parse, and it
+/// failed with `expected }, found ` -- an EMPTY `found`, which is the collapsed remainder
+/// rather than the text the parser could not read.
+///
+/// That is not an edge case for this repository. The LSP parses whole source files as JSON
+/// string payloads, and this corpus's comments are full of em dashes and curly quotes, so a
+/// one-byte step here silently refused to open a file the user can see is fine.
 def Json.parse_string_char (input : String) : ParseResult String :=
   if is_empty input
   then fail (ParseError.custom "expected string character" input)
   else
-    let ch : String := String.slice input 0 1 in
+    let width : I64 := utf8_char_width input in
+    let ch : String := String.slice input 0 width in
     if is_json_string_char ch
-    then success (String.drop 1 input) ch
+    then success (String.drop width input) ch
     else fail (ParseError.custom "invalid string character" input)
 
 #[partial]
@@ -508,13 +521,20 @@ def Json.escape_char (c : String) : String :=
 /// Escape special characters in a string for JSON output.
 /// NOTE: raw control characters (0x00-0x1F) other than \b \f \n \r \t are passed
 /// through unescaped rather than emitted as \u00XX — deferred, see plan notes.
+///
+/// THE STEP IS `utf8_char_width`, for the reason `Json.parse_string_char` records: a one-byte
+/// step into a multi-byte character answered `""` for the character and then re-entered on a
+/// remainder that read as end-of-input, so the escaped output stopped at the first non-ASCII
+/// character. The parser's half of this bug was loud; this half is silent, because a serializer
+/// has no error channel -- a truncated document and a correct one are the same shape.
 #[partial]
 def Json.escape_string (input : String) : String :=
   if is_empty input
   then ""
   else
-    let ch := String.slice input 0 1 in
-    String.concat (Json.escape_char ch) (Json.escape_string (String.drop 1 input))
+    let width : I64 := utf8_char_width input in
+    let ch : String := String.slice input 0 width in
+    String.concat (Json.escape_char ch) (Json.escape_string (String.drop width input))
 
 // ─── Serializer: numbers ───
 
@@ -1175,6 +1195,39 @@ def test_person_deserialize_missing_field : Bool :=
         ok _ => false,
         err _ => true
       },
+    err _ => false
+  }
+
+/// A two-byte character inside a JSON string -- which is `café` in a comment, or any
+/// accented word. `String.slice`/`String.drop` are byte-oriented and answer "" at a
+/// non-boundary index, so a one-byte step in `Json.parse_string_char` took the character
+/// as "" and left a remainder that read as end-of-input: this used to fail with
+/// `expected }, found ` -- an EMPTY `found`, which is the collapsed remainder rather than
+/// the text it could not read. Non-ASCII is not an edge case here; the LSP parses whole
+/// source files as JSON string payloads and this corpus's comments are full of it.
+#[test]
+def test_parse_a_string_with_a_two_byte_character : Bool :=
+  match Json.parse "{\"x\":\"café\"}" {
+    ok j => Json.to_string j == "{\"x\":\"café\"}",
+    err _ => false
+  }
+
+/// The three-byte case: an em dash, which this corpus's comments are full of.
+#[test]
+def test_parse_a_string_with_a_three_byte_character : Bool :=
+  match Json.parse "{\"x\":\"a—b\"}" {
+    ok j => Json.to_string j == "{\"x\":\"a—b\"}",
+    err _ => false
+  }
+
+/// The serializer's half of the same defect, which has no error channel and so was SILENT:
+/// `Json.escape_string` stopped at the first non-ASCII character, and a truncated document
+/// is the same shape as a correct one. A round trip is the assertion because truncation is
+/// only visible against the input.
+#[test]
+def test_a_round_trip_preserves_a_non_ascii_string : Bool :=
+  match Json.parse (Json.to_string (Json.str "café — naïve")) {
+    ok j => Json.to_string j == "\"café — naïve\"",
     err _ => false
   }
 
