@@ -1,7 +1,8 @@
 use std::list {List.length}
 use lib::types {
-  Con, DebugName, Identifier, Literal, LocalScope, MatchCase, NamePath,
-  NameRef, Scope, Term, id_eq, show_identifier, sentinel, term_peel,
+  Con, Cubical, CubicalPrim, DebugName, Identifier, Literal, LocalScope, MatchCase,
+  NamePath, NameRef, Scope, Similar, Term,
+  cub_i0, cub_i1, cubical_prim_eq, id_eq, show_identifier, sentinel, term_peel,
 }
 use lib::scope {
   flatten_call_spine, last_dot_index, scope_find_def_body,
@@ -20,7 +21,7 @@ use lib::typecheck::subst {beta_reduce, term_shift, term_subst}
 // after a structural comparison has already failed, so the happy path
 // pays nothing.
 //
-// Three reduction rules, which is what conversion checking at this stage
+// Four reduction rules, which is what conversion checking at this stage
 // needs:
 //
 //   beta   `(fn x => body) arg`  ->  `body[x := arg]`
@@ -28,6 +29,8 @@ use lib::typecheck::subst {beta_reduce, term_shift, term_subst}
 //   iota   `match c { K xs => body }` (c a KNOWN constructor
 //          application) -> `body[xs := c's fields]`; same for `if` on
 //          `Bool.true`/`Bool.false`
+//   demorgan  the interval's lattice simplifications (Stage 1 step 5,
+//          `whnf_cubical` below): `ineg i0 -> i1`, `imeet i1 j -> j`, ...
 //
 // Beta and delta are needed together, and neither is useful alone
 // here: a type-level application like `identity_type foo` is headed by
@@ -138,6 +141,10 @@ def whnf_go (fuel : I64) (scope : Scope) (locals : LocalScope) (t0 : Term) : Ter
                     // struct forms are rigid. Already in WHNF.
                     _ => t,
                 },
+            // The interval's De Morgan lattice (Stage 1 step 5): a
+            // cubical head is reducible, not rigid -- see the section
+            // below this def.
+            Term.cubical c => whnf_cubical (fuel - 1) scope locals c,
             // Rigid heads: `pi`, `forall`, `type_`, `sort`, `ntv`, `con`,
             // `hole`, and the two macro-only forms. Already in WHNF.
             //
@@ -148,6 +155,170 @@ def whnf_go (fuel : I64) (scope : Scope) (locals : LocalScope) (t0 : Term) : Ter
             // built so that stays true; see `unify_sort`).
             _ => t,
         }
+
+// ─── De Morgan lattice normalization (Stage 1 step 5) ────────────────
+//
+// The interval carries the free De Morgan algebra on dimension
+// generators -- CCHM's cartesian cubes. Conversion of two dimension
+// terms is syntactic identity (`Similar.similar`, which is what
+// cartesian cubical type theory wants: interval conversion is DECIDED,
+// never reduced to anything else), but only once both sides are in the
+// form these rules compute. `imeet i1 j` and `j` are the same
+// dimension, and nothing above `whnf` can see that until this step
+// rewrites one to the other.
+//
+// The rules are the standard De Morgan simplifications, applied to
+// ALREADY-REDUCED arguments -- arguments reduce first, so no rule ever
+// fires on a still-reducible subterm and every step's result is built
+// from pieces that are themselves in WHNF:
+//
+//   ineg i0       = i1
+//   ineg i1       = i0
+//   ineg (ineg i) = i            -- involutivity
+//   imeet i0 _    = i0          -- the absorbing constant
+//   imeet i1 j    = j           -- the unit
+//   imeet i i     = i           -- idempotence
+//   ijoin i1 _    = i1          -- dual of absorbing
+//   ijoin i0 j    = j           -- dual of unit
+//   ijoin i i     = i
+//
+// Deliberately absent: absorption (`imeet i (ijoin i j) = i`) and
+// distribution. They are sound, but every rule here is one step at a
+// SPINE head -- `whnf` is weak-head, and no argument position is ever
+// re-entered -- while absorption has to look INSIDE an argument, which
+// would make normalization quadratic in exchange for no conversion the
+// current corpus asks of it. `sym (sym p) ≡ p` -- the one soundness pin
+// Stage 2 has on this normalizer -- needs `ineg (ineg i) = i` and
+// nothing more.
+//
+// Idempotence compares its two arguments with `Similar.similar`, which
+// peels `Term.ctx` on both sides -- the debug-transparency property --
+// and needs no scope: a dimension variable is a de Bruijn index, and
+// two indices are similar or they are not.
+
+/// Is `t` the bare, argument-free primitive `p`? `cubical_prim_eq` is
+/// the dense-tag comparison (the `Term`-arm style rule), and arity 0 is
+/// part of the test: a cubical term WITH arguments is a dimension
+/// expression, not the constant the rules look for.
+def whnf_term_is_bare_prim (t : Term) (p : CubicalPrim) : Bool :=
+    match t {
+        // Two-step match: a variant constructor with a single struct
+        // payload has no field names at the constructor level, so the
+        // payload match is its own `match` (verified -- the directly
+        // nested form does not parse).
+        Term.cubical c =>
+            match c {
+                { prim := q, args := as } => cubical_prim_eq q p && List.is_empty as,
+            },
+        _ => false,
+    }
+
+/// The De Morgan step for `ineg` on its single, already-reduced
+/// argument, or `Option.none` when no rule applies.
+def whnf_demorgan_ineg (i : Term) : Option Term :=
+    match i {
+        Term.cubical inner =>
+            match inner {
+                { prim := q, args := inner_as } =>
+                    if cubical_prim_eq q CubicalPrim.i0 && List.is_empty inner_as then Option.some cub_i1
+                    else if cubical_prim_eq q CubicalPrim.i1 && List.is_empty inner_as then Option.some cub_i0
+                    else if cubical_prim_eq q CubicalPrim.ineg then
+                        // Involutivity. The inner `ineg` must itself be
+                        // well-formed (arity 1) -- `args` is
+                        // arity-unchecked by design (smart constructors
+                        // plus `type_check_cubical`), so a malformed
+                        // inner term does not get to reduce.
+                        match inner_as {
+                            List.cons x rest => if List.is_empty rest then Option.some x else Option.none,
+                            List.empty => Option.none,
+                        }
+                    else Option.none,
+            },
+        _ => Option.none,
+    }
+
+/// The De Morgan step `imeet` and `ijoin` share -- the two lattice
+/// operations have the same shape of rule, parameterized by which
+/// constant absorbs and which is the unit. For `imeet` the absorbing
+/// constant is `i0` and the unit is `i1`; for `ijoin` the dual. Both
+/// arguments are already reduced.
+def whnf_demorgan_meet_join (left : Term) (right : Term)
+    (absorbing : CubicalPrim) (unit : CubicalPrim) : Option Term :=
+    if whnf_term_is_bare_prim left absorbing then Option.some left
+    else if whnf_term_is_bare_prim left unit then Option.some right
+    else if Similar.similar left right then Option.some left
+    else Option.none
+
+/// The De Morgan step for one primitive on already-reduced arguments,
+/// or `Option.none` when no rule applies and the term is stuck. Arity
+/// is checked before any rule fires, for the same reason as in
+/// `whnf_demorgan_ineg`: a malformed `args` list is representable and
+/// must not silently reduce.
+def whnf_demorgan (c : Cubical) : Option Term :=
+    match c {
+        { prim := p, args := as } =>
+            match p {
+                CubicalPrim.ineg =>
+                    match as {
+                        List.cons i rest => if List.is_empty rest then whnf_demorgan_ineg i else Option.none,
+                        List.empty => Option.none,
+                    },
+                CubicalPrim.imeet =>
+                    match as {
+                        List.cons i rest =>
+                            match rest {
+                                List.cons j rest2 =>
+                                    if List.is_empty rest2
+                                    then whnf_demorgan_meet_join i j CubicalPrim.i0 CubicalPrim.i1
+                                    else Option.none,
+                                List.empty => Option.none,
+                            },
+                        List.empty => Option.none,
+                    },
+                CubicalPrim.ijoin =>
+                    match as {
+                        List.cons i rest =>
+                            match rest {
+                                List.cons j rest2 =>
+                                    if List.is_empty rest2
+                                    then whnf_demorgan_meet_join i j CubicalPrim.i1 CubicalPrim.i0
+                                    else Option.none,
+                                List.empty => Option.none,
+                            },
+                        List.empty => Option.none,
+                    },
+                // The interval and the two endpoints carry no reduction.
+                _ => Option.none,
+            },
+    }
+
+/// Reduce every argument of a cubical term to WHNF, preserving order.
+#[partial]
+def whnf_cubical_args (fuel : I64) (scope : Scope) (locals : LocalScope) (as : List Term) : List Term :=
+    match as {
+        List.empty => List.empty,
+        List.cons a rest =>
+            List.cons (whnf_go (fuel - 1) scope locals a) (whnf_cubical_args (fuel - 1) scope locals rest),
+    }
+
+/// Normalize a cubical head: reduce each argument to WHNF, then take
+/// one De Morgan step if any applies. No further pass over the step's
+/// result is needed -- it is assembled from pieces that are already in
+/// WHNF, and a stuck head keeps its reduced arguments, so a caller
+/// comparing two stuck terms compares them as reduced as they can be.
+#[partial]
+def whnf_cubical (fuel : I64) (scope : Scope) (locals : LocalScope) (c : Cubical) : Term :=
+    match c {
+        { prim := p, args := as } =>
+            let as_r : List Term := whnf_cubical_args fuel scope locals as in
+            // Annotated local, never a bare struct literal in argument
+            // position (the miscompile trap; AGENTS.md).
+            let c_r : Cubical := { prim := p, args := as_r } in
+            match whnf_demorgan c_r {
+                Option.some t => t,
+                Option.none => Term.cubical c_r,
+            },
+    }
 
 // ─── Iota ────────────────────────────────────────────────────────────
 //

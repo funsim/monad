@@ -1,6 +1,7 @@
 use lang::types {
   DebugName, Identifier, Literal, LocalScope, LocalVar, Location, MatchCase,
-  ModulePath, Scope, ScopeData, Similar, Term, many, sentinel, sort_n,
+  ModulePath, Scope, ScopeData, Similar, Term, cub_i0, cub_i1, cub_ijoin,
+  cub_imeet, cub_ineg, many, sentinel, sort_n,
 }
 use lib::module {parse_all_decls}
 use parsec::core {fail, success}
@@ -410,3 +411,136 @@ def test_whnf_iota_iota_chain_terminates_on_fuel : Bool :=
         _ => true,
     }
 
+// --- De Morgan lattice normalization (Stage 1 step 5) ---
+//
+// The interval's rules (`whnf_cubical`): constants, involutivity, and
+// both lattice operations, fired on already-reduced arguments. None of
+// these pins needs a def in scope -- a dimension variable is a de
+// Bruijn index, not a name -- so the honest input is an empty scope,
+// and `Similar.similar` is the comparison, which is exactly what
+// cartesian cubical type theory makes interval conversion: syntactic
+// identity, never reduction to something else.
+
+/// Nothing to look up -- but the reducer's signature takes a scope, so
+/// the empty one is passed rather than borrowed from a test that needs
+/// more.
+def lattice_scope : Scope := scope_of ""
+
+#[test]
+def test_whnf_ineg_i0_is_i1 : Bool :=
+    Similar.similar (whnf lattice_scope empty_locals (cub_ineg cub_i0)) cub_i1
+
+#[test]
+def test_whnf_ineg_i1_is_i0 : Bool :=
+    Similar.similar (whnf lattice_scope empty_locals (cub_ineg cub_i1)) cub_i0
+
+#[test]
+def test_whnf_double_negation_is_identity : Bool :=
+    // The involutivity rule. This is the rule `sym (sym p) ≡ p` rests
+    // on -- the one soundness pin Stage 2 has on this normalizer.
+    Similar.similar
+        (whnf lattice_scope empty_locals (cub_ineg (cub_ineg (Term.var 0 dbg_x))))
+        (Term.var 0 dbg_x)
+
+#[test]
+def test_whnf_meet_absorbs_at_i0 : Bool :=
+    Similar.similar (whnf lattice_scope empty_locals (cub_imeet cub_i0 (Term.var 0 dbg_x))) cub_i0
+
+#[test]
+def test_whnf_meet_unit_is_i1 : Bool :=
+    Similar.similar (whnf lattice_scope empty_locals (cub_imeet cub_i1 (Term.var 0 dbg_x))) (Term.var 0 dbg_x)
+
+#[test]
+def test_whnf_meet_is_idempotent : Bool :=
+    Similar.similar
+        (whnf lattice_scope empty_locals (cub_imeet (Term.var 0 dbg_x) (Term.var 0 dbg_x)))
+        (Term.var 0 dbg_x)
+
+#[test]
+def test_whnf_meet_of_distinct_dimensions_is_stuck : Bool :=
+    // The negative control on idempotence: DISTINCT generators are not
+    // identified. A checker that compared arguments up to conversion
+    // rather than `Similar.similar` would fold `imeet i j` into `i`
+    // here, which on the interval is wrong -- `i` and `j` are
+    // independent dimensions.
+    Similar.similar
+        (whnf lattice_scope empty_locals (cub_imeet (Term.var 0 dbg_x) (Term.var 1 dbg_x)))
+        (cub_imeet (Term.var 0 dbg_x) (Term.var 1 dbg_x))
+
+#[test]
+def test_whnf_join_absorbs_at_i1 : Bool :=
+    Similar.similar (whnf lattice_scope empty_locals (cub_ijoin cub_i1 (Term.var 0 dbg_x))) cub_i1
+
+#[test]
+def test_whnf_join_unit_is_i0 : Bool :=
+    Similar.similar (whnf lattice_scope empty_locals (cub_ijoin cub_i0 (Term.var 0 dbg_x))) (Term.var 0 dbg_x)
+
+#[test]
+def test_whnf_join_is_idempotent : Bool :=
+    Similar.similar
+        (whnf lattice_scope empty_locals (cub_ijoin (Term.var 0 dbg_x) (Term.var 0 dbg_x)))
+        (Term.var 0 dbg_x)
+
+#[test]
+def test_whnf_arguments_reduce_before_the_rule_fires : Bool :=
+    // `imeet (ineg (ineg i0)) (ijoin i1 j)`: neither argument is yet a
+    // constant, so the meet rule can only fire after the left argument
+    // reduces to `i0` (double negation then the i1 rule) and the right
+    // to `i1` (the join's absorbing constant). The whole term is then
+    // `i0`. Also the fuel measurement: three nested reducible layers
+    // inside one `whnf` call, all inside the budget of 64.
+    Similar.similar
+        (whnf lattice_scope empty_locals
+            (cub_imeet (cub_ineg (cub_ineg cub_i0)) (cub_ijoin cub_i1 (Term.var 0 dbg_x))))
+        cub_i0
+
+#[test]
+def test_whnf_a_three_variable_lattice_term_normalizes : Bool :=
+    // Three generators, deep enough to be a real measurement against
+    // `whnf_fuel = 64`: the innermost meet is stuck (distinct
+    // generators), the join over it is stuck, `imeet i1` unwraps to
+    // the join, and the negation stays -- four nested cubical descents
+    // plus every argument reduction underneath, in one budget.
+    let t : Term :=
+        cub_ineg (cub_imeet cub_i1 (cub_ijoin (Term.var 0 dbg_x)
+            (cub_imeet (Term.var 1 dbg_x) (Term.var 2 dbg_x)))) in
+    let expected : Term :=
+        cub_ineg (cub_ijoin (Term.var 0 dbg_x)
+            (cub_imeet (Term.var 1 dbg_x) (Term.var 2 dbg_x))) in
+    Similar.similar (whnf lattice_scope empty_locals t) expected
+
+#[test]
+def test_whnf_a_stuck_head_keeps_its_reduced_arguments : Bool :=
+    // `imeet j (ineg i1)` fires no rule (`j` is a generator), but the
+    // right argument must still come back reduced to `i0` -- a caller
+    // comparing two stuck terms compares them as reduced as they can
+    // be, and this is the pin that keeps the reducer from returning its
+    // input untouched whenever the head itself is stuck.
+    Similar.similar
+        (whnf lattice_scope empty_locals (cub_imeet (Term.var 0 dbg_x) (cub_ineg cub_i1)))
+        (cub_imeet (Term.var 0 dbg_x) cub_i0)
+
+#[test]
+def test_whnf_absorption_is_deliberately_absent : Bool :=
+    // `imeet i (ijoin i j)` is a true De Morgan identity, but it is not
+    // one of the rules: firing it means looking INSIDE an argument,
+    // which makes normalization quadratic, so the term stays as
+    // written. Pin so the absence is a recorded decision rather than an
+    // oversight a later fix quietly corrects without the corpus
+    // noticing the cost.
+    let t : Term :=
+        cub_imeet (Term.var 0 dbg_x) (cub_ijoin (Term.var 0 dbg_x) (Term.var 1 dbg_x)) in
+    Similar.similar (whnf lattice_scope empty_locals t) t
+
+#[test]
+def test_whnf_a_malformed_arity_does_not_reduce : Bool :=
+    // `args` is arity-unchecked by design (the smart-constructor-plus-
+    // `type_check_cubical` mitigation), so a malformed cubical term is
+    // representable and must come back UNCHANGED rather than firing a
+    // rule against the wrong argument slot.
+    Similar.similar
+        (whnf lattice_scope empty_locals (cub CubicalPrim.ineg List.empty))
+        (cub CubicalPrim.ineg List.empty)
+        && Similar.similar
+        (whnf lattice_scope empty_locals (cub CubicalPrim.imeet [cub_i0]))
+        (cub CubicalPrim.imeet [cub_i0])
