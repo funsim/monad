@@ -61,7 +61,7 @@ pub def free_level_vars (t: Term) : List Identifier := match t {
     // one. Falling through to `List.empty` would drop it, and
     // `wrap_level_forall` would then fail to generalize a level the def
     // really is polymorphic in.
-    Term.cubical c => match c { Cubical.mk _prim args => free_level_vars_of_terms args },
+    Term.cubical c => match c { { prim := _, args := args } => free_level_vars_of_terms args },
     _ => List.empty,
 }
 

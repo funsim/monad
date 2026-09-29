@@ -79,7 +79,7 @@ def free_vars (typ : Term) (known_names : List Identifier) : List Identifier :=
         // `wrap_forall` reads this, and a name occurring only under a
         // cubical argument would otherwise not be generalized.
         Term.cubical c =>
-            match c { Cubical.mk _prim args => free_vars_of_terms args known_names },
+            match c { { prim := _, args := args } => free_vars_of_terms args known_names },
     }
 
 #[partial]

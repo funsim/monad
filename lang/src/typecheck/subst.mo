@@ -405,7 +405,7 @@ def test_term_shift_through_cubical_arg_is_depth_zero : Bool :=
     let t : Term := cub_ineg (Term.var 0 DebugName.unnamed) in
     match term_shift 3 t {
         Term.cubical c => match c {
-            Cubical.mk _prim args => match args {
+            { prim := _, args := args } => match args {
                 List.cons a rest =>
                     if List.is_empty rest then I64.beq (term_var_idx a) 3 else false,
                 List.empty => false,
@@ -424,7 +424,7 @@ def test_term_shift_cubical_under_lam_respects_the_binder : Bool :=
     match term_shift 5 t {
         Term.lam _ _ body => match body {
             Term.cubical c => match c {
-                Cubical.mk _prim args => match args {
+                { prim := _, args := args } => match args {
                     List.cons a _ => I64.beq (term_var_idx a) 0,
                     List.empty => false,
                 },

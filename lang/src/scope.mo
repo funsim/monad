@@ -805,12 +805,20 @@ def find_inductive_by_constructor_in_pairs (pairs : List (Pair String Inductive)
 
 def scope_data_find_all_inductives_by_constructor (sd : ScopeData) (con_name : NamePath) : List Inductive :=
     match sd {
-        // 11 binders, one per ScopeData field (def_bodies, the
-        // side-table behind `scope_find_def_body`, is the newest) --
-        // a positional match here must track the struct's field
-        // count exactly or matching a real ScopeData value fails at
-        // runtime with an arity mismatch.
-        mk _ _ _ inds _ _ _ _ _ _ _ => find_all_inductives_by_constructor_in_pairs (HashMap.to_list inds) con_name
+        // Field syntax, not positional. This match used to bind one `_`
+        // per ScopeData field, so every field added to the struct had to
+        // widen the pattern by hand or every call failed at RUNTIME with
+        // "expected N constructor fields, got N+1" -- an abort with no
+        // location, which took down the whole self-hosted check run
+        // rather than reporting a diagnostic, and no static arity check
+        // catches it (`mk _ _ _ x _ _ _ _ _ _` typechecked fine against
+        // an 11-field struct). The `{ field, .. }` spelling cannot go
+        // stale; it is why the 12th field (`cubical_prims`, the cubical
+        // name-binding table) needed no edit here.
+        // `test_find_all_inductives_by_constructor_matches_scope_data_arity`
+        // below still calls this against a real `ScopeData`, so a runtime
+        // arity failure of any future re-edit stays caught.
+        { inductives := inds, .. } => find_all_inductives_by_constructor_in_pairs (HashMap.to_list inds) con_name
     }
 
 def scope_find_all_inductives_by_constructor (con_name : NamePath) (s : Scope) : List Inductive :=
@@ -2685,7 +2693,7 @@ def def_references_class (cls_str : String) (t : Term) : Bool :=
         Term.hole => false,
         Term.quote_ inner => def_references_class cls_str inner,
         Term.ctx _loc inner => def_references_class cls_str inner,
-        Term.cubical c => match c { Cubical.mk _prim args => terms_reference_class cls_str args },
+        Term.cubical c => match c { { prim := _, args := args } => terms_reference_class cls_str args },
     }
 
 #[partial]
@@ -7198,7 +7206,7 @@ def find_unresolved_class_calls_term (classes : List Class) (t : Term) (acc : Li
     Term.ctx _loc inner => find_unresolved_class_calls_term classes inner acc,
     // Must recurse, same as `ctx`: an unresolved class call under a cubical
     // argument is still unresolved.
-    Term.cubical c => match c { Cubical.mk _prim args => find_unresolved_class_calls_terms classes args acc },
+    Term.cubical c => match c { { prim := _, args := args } => find_unresolved_class_calls_terms classes args acc },
 }
 
 #[partial]

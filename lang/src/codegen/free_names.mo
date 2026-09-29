@@ -44,7 +44,7 @@ def free_names_of_term (bound : List Identifier) (t : Term) : List Identifier :=
     Term.ctx _loc inner => free_names_of_term bound inner,
     // A cubical primitive binds nothing, so its arguments are walked under
     // the same `bound` set.
-    Term.cubical c => match c { Cubical.mk _prim args => free_names_of_terms bound args },
+    Term.cubical c => match c { { prim := _, args := args } => free_names_of_terms bound args },
 }
 
 #[partial]
@@ -179,7 +179,7 @@ def collect_referenced_names (t : Term) (acc : List String) : List String := mat
     // MUST recurse, for the same reason the `ctx` arm above must: a name
     // referenced only under a cubical argument would be invisible to
     // `filter_reachable_decls` and the link would fail with `undefined @X`.
-    Term.cubical c => match c { Cubical.mk _prim args => collect_referenced_names_terms args acc },
+    Term.cubical c => match c { { prim := _, args := args } => collect_referenced_names_terms args acc },
 }
 
 #[partial]
