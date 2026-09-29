@@ -15,8 +15,15 @@
 // carry name resolution, and they type the UNDER-APPLIED case
 // (`imeet i` as a value is an `I -> I`). What they cannot yet do is
 // carry dependent meaning -- that is R2 (`pi`/`lam` gaining named
-// binders), and it is why `PathP`'s signature is absent here: a line of
-// types is not stateable until named binders exist.
+// binders). `PathP`'s signature is the case in point: the general line
+// `(A : I -> Sort l) -> A i0 -> A i1 -> Sort l` cannot state its `l`
+// until level binders are first-class, so what is declared here is the
+// `l = 1` instance -- a line into `Type`. The checker does not read
+// this signature for the saturated case anyway (the cubical probe in
+// `type_check_app` fires first, and `type_check_pathp` derives the
+// result level from the line's own inferred type, which is the honest
+// rule); the signature carries name resolution and types the
+// under-applied `PathP A`.
 //
 // The interval carries the De Morgan algebra of CCHM / Cubical Agda
 // over cartesian cubes: `ineg` is an involution, `imeet`/`ijoin` are
@@ -37,3 +44,12 @@
 #[cubical "ineg"] def ineg (i : I) : I
 #[cubical "imeet"] def imeet (i : I) (j : I) : I
 #[cubical "ijoin"] def ijoin (i : I) (j : I) : I
+
+// The path former (Stage 2). The signature is the `l = 1` instance of
+// the general rule -- see the header note above. A path ABSTRACTION is
+// not a cubical term: `fn i => body` against a `PathP` is an ordinary
+// `Term.lam` with an `I`-typed binder (`check_path_lam`), and a path
+// APPLICATION is an ordinary application whose callee's type is a
+// `PathP` (`extract_pi_ret`), which is why there is no `cub_path`
+// primitive beside this one.
+#[cubical "pathp"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type

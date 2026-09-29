@@ -26,7 +26,7 @@ use lib::scope {build_scope_from_decls, scope_find_cubical_prim}
 
 def synthetic_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "synthetic") List.empty)
 
-/// The six Stage 1 declarations, spelled exactly as they are in
+/// The seven Stage 1+2 declarations, spelled exactly as they are in
 /// `proofs/src/cubical.mo`. One literal per decl, concatenated: a single
 /// spanning literal would need line continuations the string lexer does
 /// not have, and one literal per line keeps each under the width the
@@ -37,7 +37,8 @@ def cubical_source : String :=
     (String.concat "#[cubical \"i1\"] def i1 : I\n"
     (String.concat "#[cubical \"ineg\"] def ineg (i : I) : I\n"
     (String.concat "#[cubical \"imeet\"] def imeet (i : I) (j : I) : I\n"
-    "#[cubical \"ijoin\"] def ijoin (i : I) (j : I) : I"))))
+    (String.concat "#[cubical \"ijoin\"] def ijoin (i : I) (j : I) : I\n"
+    "#[cubical \"pathp\"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type")))))
 
 /// A scope carrying whatever `source` declares. A snippet that fails to
 /// parse yields an empty scope, which makes the binding tests below
@@ -74,11 +75,11 @@ def binds_nothing (s : Scope) (nm : String) : Bool :=
 
 #[test]
 def test_cubical_decls_parse : Bool :=
-    // All six, not "at least one": a parser that stops after the first
+    // All seven, not "at least one": a parser that stops after the first
     // body-less def (the reference host's does) still hands back a
     // successful non-empty parse.
     match parse_all_decls cubical_source {
-        success _ decls => I64.beq (List.length decls) 6,
+        success _ decls => I64.beq (List.length decls) 7,
         fail _ => false,
     }
 
@@ -91,6 +92,7 @@ def test_cubical_names_bind : Bool :=
         && binds s "ineg" CubicalPrim.ineg
         && binds s "imeet" CubicalPrim.imeet
         && binds s "ijoin" CubicalPrim.ijoin
+        && binds s "PathP" CubicalPrim.pathp
 
 #[test]
 def test_unmarked_def_of_the_same_name_binds_nothing : Bool :=

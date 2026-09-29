@@ -609,6 +609,13 @@ pub type CubicalPrim {
     ineg,
     imeet,
     ijoin,
+    /// The heterogeneous path former `PathP A a b`, over a line
+    /// `A : I -> Sort l` (Stage 2, plans/type-system/univalence.md).
+    /// The one primitive whose arguments are NOT dimensions: a line of
+    /// types and the two endpoint values. A path abstraction is an
+    /// ordinary `Term.lam` with an `I`-typed binder, so this primitive is
+    /// never a binder either.
+    pathp,
 }
 
 /// One cubical primitive applied to `args`, whose length is its arity.
@@ -2055,6 +2062,11 @@ pub def cub_ineg (i : Term) : Term := cub CubicalPrim.ineg [i]
 pub def cub_imeet (i : Term) (j : Term) : Term := cub CubicalPrim.imeet [i, j]
 /// `ijoin i j` -- the De Morgan join.
 pub def cub_ijoin (i : Term) (j : Term) : Term := cub CubicalPrim.ijoin [i, j]
+/// `PathP A a b` -- a path over the line `A` from `a` to `b`. The line is
+/// checked to be `I -> Sort l` and the endpoints to live at `A i0`/`A i1`
+/// by `type_check_pathp` (`lang/src/typecheck/infer.mo`).
+pub def cub_pathp (a_line : Term) (a_left : Term) (a_right : Term) : Term :=
+    cub CubicalPrim.pathp [a_line, a_left, a_right]
 
 /// How many arguments a primitive takes. `args` is positional and this is
 /// the only statement of its expected length; `type_check_cubical` is what
@@ -2068,6 +2080,7 @@ pub def cubical_arity (prim : CubicalPrim) : I64 := match prim {
     CubicalPrim.ineg => 1,
     CubicalPrim.imeet => 2,
     CubicalPrim.ijoin => 2,
+    CubicalPrim.pathp => 3,
 }
 
 /// Is this primitive one of the two interval ENDPOINTS? The reducer and the
@@ -2080,6 +2093,7 @@ pub def cubical_is_endpoint (prim : CubicalPrim) : Bool := match prim {
     CubicalPrim.ineg => false,
     CubicalPrim.imeet => false,
     CubicalPrim.ijoin => false,
+    CubicalPrim.pathp => false,
 }
 
 /// A dense tag per primitive. Total over `CubicalPrim`, so a primitive added
@@ -2099,6 +2113,7 @@ pub def cubical_prim_tag (prim : CubicalPrim) : I64 := match prim {
     CubicalPrim.ineg => 3,
     CubicalPrim.imeet => 4,
     CubicalPrim.ijoin => 5,
+    CubicalPrim.pathp => 6,
 }
 
 pub def cubical_prim_eq (a : CubicalPrim) (b : CubicalPrim) : Bool :=
@@ -2113,6 +2128,7 @@ pub def cubical_prim_name (prim : CubicalPrim) : String := match prim {
     CubicalPrim.ineg => "ineg",
     CubicalPrim.imeet => "imeet",
     CubicalPrim.ijoin => "ijoin",
+    CubicalPrim.pathp => "PathP",
 }
 
 /// Every primitive, in `cubical_prim_tag` order. Exists as one list so the
@@ -2121,7 +2137,7 @@ pub def cubical_prim_name (prim : CubicalPrim) : String := match prim {
 pub def cubical_prims_all : List CubicalPrim :=
     List.cons CubicalPrim.interval (List.cons CubicalPrim.i0 (List.cons CubicalPrim.i1
         (List.cons CubicalPrim.ineg (List.cons CubicalPrim.imeet (List.cons CubicalPrim.ijoin
-            List.empty)))))
+        (List.cons CubicalPrim.pathp List.empty))))))
 
 /// The string a `#[cubical "..."]` MARKER names a primitive by -- the
 /// marker key, which is NOT the surface name `cubical_prim_name` returns:
@@ -2138,6 +2154,7 @@ pub def cubical_marker_key (prim : CubicalPrim) : String := match prim {
     CubicalPrim.ineg => "ineg",
     CubicalPrim.imeet => "imeet",
     CubicalPrim.ijoin => "ijoin",
+    CubicalPrim.pathp => "pathp",
 }
 
 /// Decode a `#[cubical "..."]` marker's string back to the primitive it

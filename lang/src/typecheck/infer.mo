@@ -5,11 +5,11 @@ use lang::types {
   LocalScope, LocalVar, Location, MatchCase, ModulePath, NamePath, NameRef,
   Native, NumSuffix, Param, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, Similar, SortLevel, StructLitField, Term, TypeConstraint,
-  TypeError, concrete, cub_interval, cubical_arity, cubical_prim_eq,
-  cubical_prim_name, cubical_result_type, field_access_chain, id_eq, id_member,
-  level_lt, level_of_type, list_rev_loop, list_reverse, many, max,
-  package_private, sentinel, show_identifier, show_name_path, sort_level_of,
-  succ, term_peel,
+  TypeError, concrete, cub_i0, cub_i1, cub_interval, cub_pathp, cubical_arity,
+  cubical_prim_eq, cubical_prim_name, cubical_result_type, field_access_chain,
+  id_eq, id_member, level_lt, level_of_type, list_rev_loop, list_reverse, many,
+  max, package_private, sentinel, show_identifier, show_name_path,
+  sort_level_of, sort_n, succ, term_peel,
 }
 use lang::scope {
   ClassMethodRef, DictBinding, build_dict_field_projection_checked,
@@ -28,8 +28,12 @@ use lang::scope {
 }
 use lib::typecheck::name_subst {name_subst_term}
 use lib::typecheck::levels {is_level_binder_kind}
-use lib::typecheck::subst {term_permute, term_shift, term_subst}
+use lib::typecheck::subst {term_permute, term_subst, term_shift}
+use lib::typecheck::cubical {
+  PathParts, endpoint_of, path_parts_of, peels_to_bare_interval,
+}
 use lib::typecheck::unify {unify, unify_structural}
+use lib::typecheck::whnf {whnf}
 use std::list {List.length}
 
 /// A type-checked term paired with its type.
@@ -2432,6 +2436,20 @@ def is_hole (t : Term) : Bool :=
     }
 
 /// Type check a lambda expression.
+///
+/// `#[terminating]` for the same reason as `names_of_decls_go`
+/// (`lang/src/elaborate.mo`): the `type_check` cycle terminates on the
+/// structure of the TERM being checked, not on any one parameter
+/// position, and the lexical decrease check cannot see across a mutual
+/// edge. Every other member of the cycle happens to pass it -- their
+/// in-cycle calls sit in match-scrutinee position, which the check does
+/// not judge -- but Stage 2's lambda dispatch calls cycle members as
+/// plain tail calls (`check_path_lam`, `type_check_lam_inferring`), and
+/// those are judged. The recursion is well-founded (each descends into
+/// a strict subterm of the lambda being checked); it is just not
+/// structurally measurable, so it is asserted here rather than gamed
+/// into scrutinee position.
+#[terminating]
 def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match expected_type {
         Term.pi arg_typ ret_typ =>
@@ -2499,28 +2517,234 @@ def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : T
         // into this binder -- so removing the binder renumbers nothing.
         Term.forall _dbg _kind inner =>
             type_check_lam dbg t body inner scope local_types locals,
-        _ =>
-            match type_check t Term.hole scope local_types locals {
-                ok t_tt =>
-                    let inferred_typ : Term := t_tt.typ in
-                    let extended_types : List Term := List.cons t local_types in
-                    let lv : LocalVar := {
-                        name := debug_name_to_id dbg,
-                        typ := t,
-                        multiplicity := Multiplicity.many,
-                    } in
-                    let extended_locals : LocalScope := scope_push_local lv locals in
-                    match type_check body Term.hole scope extended_types extended_locals {
-                        ok body_tt =>
-                            let checked_body : Term := body_tt.term in
-                            let body_typ : Term := body_tt.typ in
-                            let pi_typ : Term := Term.pi t body_typ in
-                            let lam_term : Term := Term.lam dbg t checked_body in
-                            ok (mk_typed lam_term pi_typ),
-                        err e => err e,
-                    },
+        // Stage 2: a path ABSTRACTION. `fn i => body` checked against a
+        // `PathP A a b` binds the binder at the interval, checks the body
+        // against the line applied to the fresh dimension, and requires
+        // the body's two boundaries to match the type's endpoints --
+        // `body[i:=i0] ≡ a`, `body[i:=i1] ≡ b`. Matched BEFORE the
+        // inferring arm below because that arm discards the expected
+        // type, and the boundary is the whole content of this rule.
+        Term.cubical _c => check_path_lam dbg t body expected_type scope local_types locals,
+        _ => type_check_lam_inferring dbg t body scope local_types locals,
+    }
+
+/// The inferring arm of `type_check_lam`, factored out so the path
+/// arm above can fall back to it verbatim instead of duplicating the
+/// body. No expected type to check against: the binder's type is the
+/// written annotation (checked on its own), and the result is the Pi
+/// built from it and the body's inferred type.
+def type_check_lam_inferring (dbg : DebugName) (t : Term) (body : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match type_check t Term.hole scope local_types locals {
+        ok t_tt =>
+            let inferred_typ : Term := t_tt.typ in
+            let extended_types : List Term := List.cons t local_types in
+            let lv : LocalVar := {
+                name := debug_name_to_id dbg,
+                typ := t,
+                multiplicity := Multiplicity.many,
+            } in
+            let extended_locals : LocalScope := scope_push_local lv locals in
+            match type_check body Term.hole scope extended_types extended_locals {
+                ok body_tt =>
+                    let checked_body : Term := body_tt.term in
+                    let body_typ : Term := body_tt.typ in
+                    let pi_typ : Term := Term.pi t body_typ in
+                    let lam_term : Term := Term.lam dbg t checked_body in
+                    ok (mk_typed lam_term pi_typ),
                 err e => err e,
             },
+        err e => err e,
+    }
+
+/// The path-abstraction half of the Stage 2 rules: `fn i => body`
+/// against `PathP A a b`. The binder is a DIMENSION -- `I` when the
+/// annotation is a hole, and a written annotation must check AS the
+/// bare interval (the CHECKED term is compared because a source
+/// annotation lowers to a bare name reference that only becomes the
+/// cubical term inside `type_check`).
+///
+/// The body's expected type is the line applied to the fresh dimension:
+/// `A i`. The line lives OUTSIDE the new binder, so it shifts up one
+/// before the application; the dimension is de Bruijn 0 under it.
+///
+/// The result echoes the expected `PathP` back: unlike the Pi arm there
+/// is no return type to rebuild, and unlike the inferring arm the
+/// expected type here is the one thing the boundary rule was checked
+/// against. PathP stays rigid -- a body-less declaration never enters
+/// `def_bodies` (P1), so the `Term.pi` arm above can never win over this
+/// one by delta.
+///
+/// `parts` is peeled here rather than passed in: the dispatch in
+/// `type_check_lam` knows only that the expected type is cubical, and
+/// this rule -- not the caller -- decides what shape of cubical type
+/// makes a path binder.
+///
+/// `#[terminating]` for the same reason `type_check_lam` above carries
+/// it: the non-PathP fallback tail-calls `type_check_lam_inferring`, a
+/// member of the `type_check` cycle, and that call has no lexical
+/// decrease to show. The recursion it feeds descends into a strict
+/// subterm of the lambda being checked.
+#[terminating]
+def check_path_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term)
+    (scope : Scope) (local_types : List Term) (locals : LocalScope)
+    : Result TypeError TypedTerm :=
+    match path_parts_of expected_type {
+        // A cubical expected type that is not a saturated PathP is not a
+        // binder shape; the same inferring fallback as `type_check_lam`'s
+        // `_` arm is the honest answer for it.
+        Option.none => type_check_lam_inferring dbg t body scope local_types locals,
+        Option.some parts =>
+            match type_check t Term.hole scope local_types locals {
+                err e => err e,
+                ok t_tt =>
+                    match Bool.or (is_hole t) (peels_to_bare_interval t_tt.term) {
+                        false => err (TypeError.custom
+                            "a path abstraction's binder is a dimension: its type must be the interval"),
+                        true =>
+                            let binder_typ : Term := cub_interval in
+                            let extended_types : List Term := List.cons binder_typ local_types in
+                            let lv : LocalVar := {
+                                name := debug_name_to_id dbg,
+                                typ := binder_typ,
+                                multiplicity := Multiplicity.many,
+                            } in
+                            let extended_locals : LocalScope := scope_push_local lv locals in
+                            let body_expected : Term :=
+                                Term.app (term_shift 1 parts.line) (Term.var 0 dbg) in
+                            match type_check body body_expected scope extended_types extended_locals {
+                                err e => err e,
+                                ok body_tt =>
+                                    match check_path_boundary body_tt.term parts scope local_types locals {
+                                        err e => err e,
+                                        ok _ =>
+                                            let lam_term : Term := Term.lam dbg binder_typ body_tt.term in
+                                            ok (mk_typed lam_term expected_type),
+                                    },
+                            },
+                    },
+            },
+    }
+
+/// The boundary rule of the path abstraction: `body[i:=i0] ≡ a` and
+/// `body[i:=i1] ≡ b`, the one-binder substitution removing the dimension
+/// so both sides compare at the outer level the endpoints live at.
+///
+/// The substituted body is first put through `normalize_path_boundary`:
+/// a body like `fn i => p (ineg i)` lands on `p (ineg i0)`, and while
+/// `whnf` folds the DIMENSION (`ineg i0` to `i1`), the application
+/// `p i1` itself is stuck -- `whnf_go`'s app arm needs a `Term.lam`
+/// head -- and the comparison would fail against the endpoint for a
+/// rule this module is in the middle of implementing. This is the same
+/// mitigation `extract_pi_ret` applies on the type side; recorded limit:
+/// it covers a stuck head applied at a SUBSTITUTED endpoint, which is
+/// every Stage 2/3 shape, and not Stage 5's eta-expanded paths.
+def check_path_boundary (checked_body : Term) (parts : PathParts) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError Term :=
+    let at_i0 : Term :=
+        normalize_path_boundary (term_subst 0 cub_i0 checked_body) scope local_types locals in
+    match unify at_i0 parts.left scope locals {
+        err _ => err (TypeError.custom
+            "the path body's i0 boundary does not match the type's left endpoint"),
+        ok _ =>
+            let at_i1 : Term :=
+                normalize_path_boundary (term_subst 0 cub_i1 checked_body) scope local_types locals in
+            match unify at_i1 parts.right scope locals {
+                err _ => err (TypeError.custom
+                    "the path body's i1 boundary does not match the type's right endpoint"),
+                ok _ => ok at_i0,
+            },
+    }
+
+/// Normalize a path body's boundary for comparison: weak-head reduce,
+/// then rewrite a stuck path application at an endpoint into the
+/// endpoint value the path's own type carries, recursing into the
+/// arguments of a stuck spine so a boundary like `f (p i0)` (`ap`'s)
+/// compares as `f a`, and into constructor arguments so
+/// `mk (p i0) (p i0)` (`path_pair`'s) compares as `mk a a`.
+///
+/// The recursion is bounded by the term itself, not by reduction: every
+/// recursive call is on a strict subterm, and `whnf` carries the fuel.
+#[partial]
+def normalize_path_boundary (t : Term) (scope : Scope) (local_types : List Term)
+    (locals : LocalScope) : Term :=
+    let t_whnf : Term := whnf scope locals t in
+    match term_peel t_whnf {
+        Term.app f d =>
+            match rewrite_stuck_path_app f d scope local_types locals {
+                Option.some boundary => boundary,
+                Option.none =>
+                    Term.app (normalize_path_boundary f scope local_types locals)
+                        (normalize_path_boundary d scope local_types locals),
+            },
+        Term.con c =>
+            match c {
+                { name := name, typ_name := typ_name, num_args := num_args, args := cargs } =>
+                    let norm_args : List (Option Term) :=
+                        normalize_con_args cargs scope local_types locals in
+                    let rebuilt : Con :=
+                        { name := name, typ_name := typ_name, num_args := num_args, args := norm_args } in
+                    Term.con rebuilt,
+            },
+        _ => t_whnf,
+    }
+
+#[partial]
+def normalize_con_args (args : List (Option Term)) (scope : Scope) (local_types : List Term)
+    (locals : LocalScope) : List (Option Term) :=
+    match args {
+        List.empty => List.empty,
+        List.cons hd rest =>
+            match hd {
+                Option.some a =>
+                    List.cons (Option.some (normalize_path_boundary a scope local_types locals))
+                        (normalize_con_args rest scope local_types locals),
+                Option.none =>
+                    List.cons Option.none (normalize_con_args rest scope local_types locals),
+            },
+    }
+
+/// `p d` where `p` is a LOCAL path-typed variable and `d` an endpoint:
+/// the endpoint value the path's own type carries (`p : PathP A a b`
+/// means `p i0 = a`, `p i1 = b` -- the boundary is part of the type, so
+/// the comparison is sound, which is why it is a REWRITE rather than a
+/// heuristic unification step). `Option.none` unless BOTH hold. A
+/// free/global head is refused: a def reference is a `whnf` job, and
+/// `normalize_path_boundary` has already given it that chance to unfold
+/// into a reducible body. Only the head is path-typed; an applied path
+/// under further arguments (`p x i0` -- `funext`'s boundary) is not
+/// rewritten here, which is the recorded reason `funext` waits for
+/// lambda-eta in `unify` alongside R2.
+def rewrite_stuck_path_app (f : Term) (d : Term) (scope : Scope) (local_types : List Term)
+    (locals : LocalScope) : Option Term :=
+    match term_peel f {
+        Term.var idx _dbg =>
+            // `if`, not `match`, on the `I64.beq`: the native bool ops
+            // (`op_eq`/`op_lt`/`op_gt`/`op_ne`, `term_is_native_bool_op`)
+            // compile to a RAW `icmp` i1, and the match scrutinee path
+            // would box it with `monad_get_tag` -- a `match` on the result
+            // is a codegen trap the corpus never hits (this was its first
+            // site). An `if` condition goes through `ensure_i1_cond`,
+            // which expects exactly that raw shape.
+            if I64.beq idx sentinel then Option.none
+            else
+                match nth_type idx local_types {
+                    Option.none => Option.none,
+                    Option.some f_typ =>
+                        match path_parts_of f_typ {
+                            Option.none => Option.none,
+                            Option.some parts =>
+                                match endpoint_of (whnf scope locals d) {
+                                    Option.some ep =>
+                                        match cubical_prim_eq ep CubicalPrim.i0 {
+                                            true => Option.some parts.left,
+                                            false => Option.some parts.right,
+                                        },
+                                    Option.none => Option.none,
+                                },
+                        },
+                },
+        _ => Option.none,
     }
 
 /// Extract an identifier from a DebugName (for scope registration).
@@ -3605,28 +3829,75 @@ def extract_pi_ret (f_term : Term) (a_term : Term) (f_typ : Term) (a_typ : Term)
                 ok (mk_typed app_term (subst_typevars_term pi_ret pi_subst)),
         Term.forall _ _ body_ =>
             extract_pi_ret f_term a_term body_ a_typ expected_type scope local_types locals,
+        // Stage 2: a path APPLICATION. The callee's type is a `PathP`,
+        // which is not a Pi -- it reaches this arm because
+        // `type_check_var` returns a variable's own type without
+        // unifying it against the synthesized Pi the application was
+        // checked against, and `try_type_check_def_call` declines
+        // non-Pi signatures. The argument must be a DIMENSION, and the
+        // result type is the line applied to it: `A d`.
+        Term.cubical c =>
+            match path_parts_of f_typ {
+                Option.some parts =>
+                    match unify a_typ cub_interval scope locals {
+                        err _ => err (TypeError.custom
+                            "a path is applied at a dimension of the interval, not at a value"),
+                        ok _ =>
+                            let result_typ : Term := Term.app parts.line a_term in
+                            // `p i0`/`p i1` for a stuck `p` never reduces
+                            // (`whnf_go`'s app arm needs a `Term.lam`
+                            // head), but the path's own type CARRIES the
+                            // endpoint, so checking the application AS
+                            // the boundary term makes `p i0 ≡ a` hold by
+                            // construction. Recorded limit: sufficient
+                            // through `transp`/Stage 3, where boundary
+                            // terms are paths applied at substituted
+                            // endpoints, and NOT for Stage 5's
+                            // eta-expanded paths.
+                            match endpoint_of (whnf scope locals a_term) {
+                                Option.some ep =>
+                                    match cubical_prim_eq ep CubicalPrim.i0 {
+                                        true => ok (mk_typed parts.left result_typ),
+                                        false => ok (mk_typed parts.right result_typ),
+                                    },
+                                Option.none =>
+                                    ok (mk_typed (Term.app f_term a_term) result_typ),
+                            },
+                    },
+                // A cubical callee type that is not a saturated PathP is
+                // in no shape to peel a return from: same fallback as
+                // the `_` arm.
+                Option.none => extract_non_pi_ret f_term a_term expected_type scope,
+            },
         _ =>
-            let app_term : Term := Term.app f_term a_term in
-            // `f_typ` is not a pi chain, so there is no return type to
-            // peel -- which is exactly the shape a CONSTRUCTOR reference
-            // has: `type_check_free_var_con` has no per-constructor
-            // signature to build a pi from (a constructor's params live
-            // on its `InductConstructor`, and `ScopeDef.sig` is
-            // unconditionally hole by design), so it returns the owning
-            // inductive's named type directly (`con_ref_result_type`).
-            // For a saturated `Slim.mk 1` that named type IS the
-            // application's type, so echoing back a hole `expected_type`
-            // discarded the one thing that was known -- leaving every
-            // `let`-bound constructor value untyped and sending
-            // `find_inductive_for_cases` into its ambiguous bare-name
-            // scan (see `con_ref_result_type` for the stack-death that
-            // followed). Prefer a real ambient expectation whenever
-            // there is one; a genuinely unknown callee makes this a
-            // no-op, since `f_typ` is then hole too.
-            if is_hole expected_type
-            then ok (mk_typed app_term (con_spine_result_typ f_term expected_type scope))
-            else ok (mk_typed app_term expected_type),
+            extract_non_pi_ret f_term a_term expected_type scope,
     }
+
+/// The not-a-Pi continuation of `extract_pi_ret`: no return type to
+/// peel. Factored out because both the `_` arm and the cubical arm's
+/// fallback are this exact body.
+def extract_non_pi_ret (f_term : Term) (a_term : Term) (expected_type : Term)
+    (scope : Scope) : Result TypeError TypedTerm :=
+    let app_term : Term := Term.app f_term a_term in
+    // `f_typ` is not a pi chain, so there is no return type to
+    // peel -- which is exactly the shape a CONSTRUCTOR reference
+    // has: `type_check_free_var_con` has no per-constructor
+    // signature to build a pi from (a constructor's params live
+    // on its `InductConstructor`, and `ScopeDef.sig` is
+    // unconditionally hole by design), so it returns the owning
+    // inductive's named type directly (`con_ref_result_type`).
+    // For a saturated `Slim.mk 1` that named type IS the
+    // application's type, so echoing back a hole `expected_type`
+    // discarded the one thing that was known -- leaving every
+    // `let`-bound constructor value untyped and sending
+    // `find_inductive_for_cases` into its ambiguous bare-name
+    // scan (see `con_ref_result_type` for the stack-death that
+    // followed). Prefer a real ambient expectation whenever
+    // there is one; a genuinely unknown callee makes this a
+    // no-op, since `f_typ` is then hole too.
+    if is_hole expected_type
+    then ok (mk_typed app_term (con_spine_result_typ f_term expected_type scope))
+    else ok (mk_typed app_term expected_type)
 
 /// The result type of an application spine whose head is a constructor
 /// reference: the head's own already-inferred type, threaded back out
@@ -3814,26 +4085,184 @@ def type_check_sort_full (sort_term : Term) (level : SortLevel) (expected_type :
 /// The arity check is here rather than in `Cubical` itself for the same
 /// reason `Con` carries `num_args` and `type_check_con` validates it: the
 /// representation stays simple and one place enforces the table.
+/// `#[terminating]` for the same reason `type_check_lam` carries it: the
+/// per-primitive dispatch tail-calls `type_check_pathp` and
+/// `check_cubical_args_then`, members of the `type_check` cycle, with
+/// nothing lexically smaller to pass. The recursion those calls feed
+/// descends into the arguments of the cubical node being checked.
+#[terminating]
 def type_check_cubical (c : Cubical) (expected_type : Term) (scope : Scope)
     (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     let want : I64 := cubical_arity c.prim in
     if Bool.not (I64.beq (List.length c.args) want) then
         err (TypeError.custom (cubical_arity_message c.prim want (List.length c.args)))
     else
-        match check_cubical_args c.args scope local_types locals {
-            err e => err e,
-            ok checked =>
-                let inferred : Term := cubical_result_type c.prim in
-                let rebuilt : Term := cub c.prim checked in
-                match unify inferred expected_type scope locals {
-                    ok unified => ok (mk_typed rebuilt unified),
-                    err e => err e,
-                },
+        // Every primitive gets an explicit arm: with no exhaustiveness
+        // checking, a `_ =>` here would let a future primitive silently
+        // fall into a rule that answers a dimension question about it.
+        match c.prim {
+            CubicalPrim.pathp => type_check_pathp c.args expected_type scope local_types locals,
+            CubicalPrim.interval =>
+                check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.i0 =>
+                check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.i1 =>
+                check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.ineg =>
+                check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.imeet =>
+                check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.ijoin =>
+                check_cubical_args_then c expected_type scope local_types locals,
         }
+
+/// The generic tail of `type_check_cubical` shared by every Stage 1
+/// primitive: every argument is a dimension and the result is read off
+/// the prim's own row of `cubical_result_type`. `PathP` is the exception
+/// that forced the factoring -- its arguments are a line and two
+/// endpoint VALUES, and its result type depends on the line -- so it
+/// dispatches to `type_check_pathp` instead.
+def check_cubical_args_then (c : Cubical) (expected_type : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match check_cubical_args c.args scope local_types locals {
+        err e => err e,
+        ok checked =>
+            let inferred : Term := cubical_result_type c.prim in
+            let rebuilt : Term := cub c.prim checked in
+            match unify inferred expected_type scope locals {
+                ok unified => ok (mk_typed rebuilt unified),
+                err e => err e,
+            },
+    }
+
+/// The formation rule for `PathP A a b : Sort l` where
+/// `A : I -> Sort l` (Stage 2, plans/type-system/univalence.md).
+///
+/// The line is INFERRED, not checked against a `pi I _` expected type:
+/// checking would echo that expected type back as the line's own type,
+/// and the codomain's level -- the `l` of the result -- would be lost
+/// before it could be read. Inference is safe here because both line
+/// spellings infer: a named line carries its declared signature, and a
+/// lambda infers a Pi whose domain is a hole (unannotated binder) or the
+/// checked interval (annotated one).
+///
+/// The endpoints are checked against `A i0`/`A i1` and then UNIFIED
+/// against it explicitly: the var and constructor arms return their own
+/// types without comparing against the expectation, so without the
+/// `unify` a boundary endpoint of the wrong type would be accepted
+/// vacuously. The result type is `Sort l` -- the sort the line lands
+/// in, which `pi_domain_level` already made an `I` domain contribute
+/// `concrete 0` to, so a `Prop`-valued path family stays in `Prop`.
+def type_check_pathp (args : List Term) (expected_type : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    // Nested constructor patterns do not parse; the three args are
+    // peeled one level at a time.
+    match args {
+        List.cons a_line rest =>
+            match rest {
+                List.cons a_left rest2 =>
+                    match rest2 {
+                        List.cons a_right rest3 =>
+                            match rest3 {
+                                List.empty =>
+                                    type_check_pathp_go a_line a_left a_right expected_type
+                                        scope local_types locals,
+                                _ => err (TypeError.custom "PathP takes 3 argument(s)"),
+                            },
+                        _ => err (TypeError.custom "PathP takes 3 argument(s)"),
+                    },
+                _ => err (TypeError.custom "PathP takes 3 argument(s)"),
+            },
+        // The arity table rejects every other argument count before this
+        // runs; the arm exists only because the list has to be peeled.
+        _ => err (TypeError.custom "PathP takes 3 argument(s)"),
+    }
+
+/// The body of the formation rule once the three arguments have been
+/// peeled apart (the nested `List.cons` pattern does not parse, so
+/// `type_check_pathp` peels and delegates here).
+def type_check_pathp_go (a_line : Term) (a_left : Term) (a_right : Term) (expected_type : Term)
+    (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match type_check a_line Term.hole scope local_types locals {
+        err e => err e,
+        ok line_tt =>
+            match term_peel line_tt.typ {
+                Term.pi dom cod =>
+                    match path_line_dom_ok dom scope local_types locals {
+                        false => err (TypeError.custom
+                            "PathP's first argument must be a line over the interval"),
+                        true =>
+                            match sort_level_of cod {
+                                Option.some l =>
+                                    match type_check_pathp_endpoints line_tt.term a_left a_right
+                                        scope local_types locals {
+                                        err e => err e,
+                                        ok rebuilt =>
+                                            match unify (Term.sort l) expected_type scope locals {
+                                                err e => err e,
+                                                ok unified => ok (mk_typed rebuilt unified),
+                                            },
+                                    },
+                                Option.none => err (TypeError.custom
+                                    "PathP's first argument must be a line into a sort"),
+                            },
+                    },
+                _ => err (TypeError.custom
+                    "PathP's first argument must be a line over the interval"),
+            },
+    }
+
+/// The line-domain half of the `PathP` formation rule. A HOLE domain is
+/// an unannotated line binder (`fn i => ...`): nothing is knowable about
+/// it, and the rule's own `I` domain is forced below by the boundary
+/// application, so it is accepted as-is. Anything else must check AS the
+/// bare interval -- the CHECKED term is compared because a source
+/// spelling lowers the domain to a bare name reference, which only
+/// becomes the cubical term inside `type_check` (Stage 1 step 3's
+/// rewrite), so the raw domain a Pi hands in can be a `var`.
+def path_line_dom_ok (dom : Term) (scope : Scope) (local_types : List Term)
+    (locals : LocalScope) : Bool :=
+    if is_hole dom
+    then true
+    else match type_check dom Term.hole scope local_types locals {
+        err _ => false,
+        ok dom_tt => peels_to_bare_interval dom_tt.term,
+    }
+
+/// The endpoint half of the `PathP` formation rule: `a` against `A i0`,
+/// `b` against `A i1`, each checked with the real expected type (so
+/// bidirectional checking sees it) and then unified against it (so the
+/// comparison cannot be skipped). Returns the rebuilt `PathP` over the
+/// checked components.
+def type_check_pathp_endpoints (line : Term) (a_left : Term) (a_right : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError Term :=
+    let left_typ : Term := Term.app line cub_i0 in
+    match type_check a_left left_typ scope local_types locals {
+        err e => err e,
+        ok left_tt =>
+            match unify left_tt.typ left_typ scope locals {
+                err e => err e,
+                ok _ =>
+                    let right_typ : Term := Term.app line cub_i1 in
+                    match type_check a_right right_typ scope local_types locals {
+                        err e => err e,
+                        ok right_tt =>
+                            match unify right_tt.typ right_typ scope locals {
+                                err e => err e,
+                                ok _ =>
+                                    ok (cub_pathp line left_tt.term right_tt.term),
+                            },
+                    },
+            },
+    }
 
 /// What a primitive's application is a term OF. `interval` is the type
 /// former, so it answers a sort; everything else in Stage 1 is interval-
-/// valued.
+/// valued. `pathp`'s row is never consulted -- `type_check_cubical`
+/// routes it to `type_check_pathp` because its result level is read off
+/// the LINE, which no prim-keyed table can state -- but the row exists
+/// all the same: with no exhaustiveness checking a missing arm is a
+/// silent future crash, not a compile error.
 def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.interval => sort_n 1,
     CubicalPrim.i0 => cub_interval,
@@ -3841,6 +4270,7 @@ def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.ineg => cub_interval,
     CubicalPrim.imeet => cub_interval,
     CubicalPrim.ijoin => cub_interval,
+    CubicalPrim.pathp => Term.hole,
 }
 
 /// Every Stage 1 argument is a dimension, i.e. an `I`. When `PathP` lands
