@@ -75,7 +75,7 @@ def show_param (p : Param) : String := match p {
 }
 
 #[partial]
-def show_term (t : Term) : String := match t {
+pub def show_term (t : Term) : String := match t {
     var idx dbg => show_debug_name dbg,
     lam dbg typ body =>
         let name_str := show_debug_name dbg in

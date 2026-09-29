@@ -23,7 +23,7 @@ use lib::pretty {show_term}
 /// own yet — the variants wrap `Identifier`/`NamePath`/`QualifiedName`/
 /// `Operator`, each of which already has one.
 #[partial]
-def name_ref_to_string (n : NameRef) : String :=
+pub def name_ref_to_string (n : NameRef) : String :=
 	match n {
 		// A `nid` may hold a FLATTENED qualified reference: the parse
 		// lowering renders a `nqn` in the def-side symbol convention
@@ -40,7 +40,7 @@ def name_ref_to_string (n : NameRef) : String :=
 /// A human-readable description of what went wrong — one line per
 /// `TypeError` variant (`lang/types.mo:252`).
 #[partial]
-def type_error_message (e : TypeError) : String :=
+pub def type_error_message (e : TypeError) : String :=
 	match e {
 		TypeError.mismatch expected actual =>
 			String.concat "type mismatch: expected " (String.concat (show_term expected) (String.concat ", found " (show_term actual))),
@@ -64,7 +64,7 @@ def type_error_message (e : TypeError) : String :=
 /// (`lang/parser/diagnostic.mo`), just without a line:col (see this
 /// file's header comment).
 #[partial]
-def render_type_error (context_name : String) (path : Option String) (e : TypeError) : String :=
+pub def render_type_error (context_name : String) (path : Option String) (e : TypeError) : String :=
 	let msg : String := type_error_message e in
 	let header : String := String.concat "error: " (String.concat msg (String.concat " in " (String.concat context_name "\n"))) in
 	let path_str : String := match path {

@@ -1200,7 +1200,7 @@ def scope_data_find_def_return_type (sd : ScopeData) (name : NamePath) : Option 
     npath_map_lookup name sd.def_return_types
 
 /// Top-level `Scope`-based wrapper, same shape as `scope_find_def_params`.
-def scope_find_def_return_type (name : NamePath) (s : Scope) : Option Term :=
+pub def scope_find_def_return_type (name : NamePath) (s : Scope) : Option Term :=
     let g : ScopeData := scope_globals s in
     scope_data_find_def_return_type g name
 
@@ -1223,7 +1223,7 @@ pub def scope_find_def_body (name : NamePath) (s : Scope) : Option Term :=
 
 /// Top-level `Scope`-based wrapper, same shape as
 /// `scope_find_def_return_type`.
-def scope_find_def_sig (name : NamePath) (s : Scope) : Option Term :=
+pub def scope_find_def_sig (name : NamePath) (s : Scope) : Option Term :=
     let g : ScopeData := scope_globals s in
     scope_data_find_def_sig g name
 

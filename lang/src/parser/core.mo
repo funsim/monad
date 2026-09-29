@@ -14,7 +14,7 @@ use std::list {}
 /// core/src/parser/locate.rs) — `ParseError` is the only type that
 /// needed to change, not `ParseResult` itself. See
 /// `location_of_remaining`'s own doc comment for the full rationale.
-type ParseError {
+pub type ParseError {
 	tag (expected: String) (remaining: String),
 	custom (msg: String) (remaining: String),
 	}

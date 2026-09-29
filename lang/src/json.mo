@@ -65,7 +65,7 @@ instance BEq Json.Number {
 }
 
 /// JSON value type
-type Json {
+pub type Json {
   null,
   num (n : Json.Number),
   str (s : String),
@@ -153,7 +153,7 @@ instance BEq (BTreeMap String Json) {
 }
 
 /// JSON ParseError type
-type Json.ParseError {
+pub type Json.ParseError {
   expected (e : String) (found : String),
   generic String,
 }
@@ -483,7 +483,7 @@ def Json.json (input : String) : ParseResult Json :=
 
 /// Main parse function
 #[partial]
-def Json.parse (s : String) : Result Json.ParseError Json :=
+pub def Json.parse (s : String) : Result Json.ParseError Json :=
   match Json.json s {
     success rem val =>
       if is_empty rem
@@ -533,7 +533,7 @@ def Json.string_to_string (s : String) : String :=
   String.concat "\"" (String.concat (Json.escape_string s) "\"")
 
 #[partial]
-def Json.to_string (j : Json) : String :=
+pub def Json.to_string (j : Json) : String :=
   match j {
     null => "null",
     bool b => Json.bool_to_string b,

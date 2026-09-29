@@ -1182,20 +1182,23 @@ pub type Term {
 /// shape probe that forgets does not fail loudly; it silently stops
 /// matching, and the call it was meant to resolve quietly does not.
 #[partial]
-def term_peel (t : Term) : Term := match t {
+pub def term_peel (t : Term) : Term := match t {
     Term.ctx _loc inner => term_peel inner,
     _ => t,
 }
 
-/// The innermost recorded position of a term, if it carries one.
+/// The OUTERMOST recorded position of a term, if it carries one: the
+/// wrapper chain is only ever entered from outside, so the first `ctx`
+/// met is returned and any inner one is dropped. (This said "innermost"
+/// until 2026-09-29, which was simply wrong.)
 #[partial]
-def term_loc (t : Term) : Option Location := match t {
+pub def term_loc (t : Term) : Option Location := match t {
     Term.ctx loc _inner => Option.some loc,
     _ => Option.none,
 }
 
 /// Canonical TypeError uses de Bruijn Term. TypeErrorV0 is the legacy V0 variant.
-type TypeError {
+pub type TypeError {
     mismatch (expected: Term) (actual: Term),
     unknown_var (name: NameRef),
     unknown_type (name: NameRef),
