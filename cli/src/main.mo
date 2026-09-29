@@ -9,7 +9,9 @@ use runtime {}
 use lang::codegen::emit {compile_db_module_with_debug, compile_loaded_modules_to_ir_with_debug, ok}
 use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, ElaboratedModules, FileCheckAndCache, LoadedModules, ModuleInfo, ModuleInfoCache, bench_step, check_file_cached, check_module_with_scope, elaborate_loaded_modules, elaborate_loaded_modules_cached, elaborate_module_decls_best_effort, expand_check_paths, extract_directory, load_file_modules, load_module_with_info, module_name_from_path, module_info_cache_empty, resolve_runtime_src, try_parse_decls, try_parse_decls_strict}
 use lang::scope {resolve_class_calls_decls}
-use lang::mote {MoteManifest}
+use lang::mote {MoteManifest, discover_build_dir}
+use build::closure {input_hash}
+use build::store {ensure_entry_dir, store_path, target_dir_of}
 use std::map {}
 use lang::pretty {show_decls}
 use lang::codegen::test_driver {TestIrResult, compile_loaded_modules_to_test_ir, is_no_tests_error, parse_driver_result}
@@ -148,10 +150,129 @@ def compile_out_name (requested : String) (manifest : MoteManifest) (src : Strin
 /// with a binary target needs a `[bin]` table at all -- `lang`, `std`,
 /// `llvm`, `init` and `runtime` are libraries and correctly have none.
 #[partial]
+/// The triple everything is compiled for today. One value, named rather
+/// than repeated: phase 4 of packaging/mote-build-deps-artifacts-targets.md
+/// varies it, and it is already an ingredient of the cache key so that
+/// entries written now do not have to be invalidated when it does.
+def host_triple : String := "x86_64-unknown-linux-gnu"
+
+/// `debug` or `release`, the two artifacts of one source tree that must
+/// never share a cache entry.
+def profile_name (debug : Bool) : String := if debug then "debug" else "release"
+
+/// The MOTE ROOT for `src`, which is what the closure digest must be
+/// taken over -- not the source directory.
+///
+/// The difference is load-bearing: a mote's `mote.toml` sits at the root
+/// while its sources sit in `src/`, so digesting `extract_directory src`
+/// would silently leave the manifest out of the key, and
+/// `gate_declared_deps` can fail a load on a manifest edit alone. Falls
+/// back to the source directory for a file outside any mote, which has no
+/// manifest to miss.
+#[partial]
+def mote_root_of (src : String) : IO String := do {
+    let m <- Mote.discover (extract_directory src);
+    match m {
+        Option.some manifest => return manifest.dir,
+        Option.none => return (extract_directory src)
+    }
+}
+
+/// Where a build's output goes by default, and where its store lives.
+///
+/// `--target-dir` is not wired to a flag yet, so the flag tier is empty
+/// and the env/manifest/default tiers do the work
+/// (`build/src/store.mo`'s `resolve_target_dir` owns the precedence).
+#[partial]
+def target_dir_for (src : String) : IO String := do {
+    // `Mote.discover_build_dir`, not `Mote.discover`: the latter stops at
+    // a virtual workspace root, so a script-mode file under one (anything
+    // in `examples/`) would never see the workspace's `[build]
+    // target-dir` and would write to `target/` -- straight into cargo's
+    // directory, which is the collision the setting exists to prevent.
+    let d <- Mote.discover_build_dir (extract_directory src);
+    Build.target_dir_of "" d ""
+}
+
+/// Build `src`, consulting the artifact store first.
+///
+/// A hit copies the stored binary to the destination and skips the
+/// compile entirely. A miss builds and then stores, so the next identical
+/// build is a hit.
+///
+/// When no SAFE key can be computed -- no digest tool, or no readable
+/// `/proc/<pid>/exe` to identify this compiler -- the cache turns itself
+/// OFF and the build proceeds normally. That is the rule the whole design
+/// hangs on: a weaker key would serve a stale binary, and a stale binary
+/// is worse than a slow build.
+#[partial]
+def build_cached (src : String) (dest_name : Path) (verbose : Bool) (debug : Bool) : IO I64 := do {
+    let root <- mote_root_of src;
+    let target_dir <- target_dir_for src;
+    let key <- Build.input_hash root (profile_name debug) host_triple;
+    match key {
+        err m => do {
+            stage verbose ("cache off: " ++ m);
+            compile_file src (Path.path (build_dest_dir target_dir debug)) dest_name verbose debug
+        },
+        ok h => build_cached_keyed src target_dir h dest_name verbose debug
+    }
+}
+
+/// The last path component of `p`, or `p` when it has no separator.
+///
+/// Used for the store slug, which must not contain directories.
+#[partial]
+def base_name (p : String) : String :=
+    let idx : I64 := String.find_last p "/" in
+    if I64.lt idx 0 then p else String.drop (idx + 1) p
+
+/// `<target-dir>/<profile>` -- where a binary lands when the caller did
+/// not name an absolute path.
+///
+/// This replaces `/tmp/monad_out_<pid>` as the DEFAULT only. An absolute
+/// `-o` still wins outright, because `link_ir` joins with `Path.join` and
+/// an absolute name replaces the directory -- which is what every ladder
+/// script relies on (`self-compile-turn.sh`, `build-self-hosted.sh` and
+/// `check-external-mote.sh` all pass absolute `-o` paths), so none of
+/// them change behaviour.
+def build_dest_dir (target_dir : String) (debug : Bool) : String :=
+    String.concat target_dir (String.concat "/" (profile_name debug))
+
+#[partial]
+def build_cached_keyed (src : String) (target_dir : String) (h : String) (dest_name : Path) (verbose : Bool) (debug : Bool) : IO I64 := do {
+    let dest_dir : String := build_dest_dir target_dir debug;
+    let dest : String := Path.to_string (Path.join (Path.path dest_dir) dest_name);
+    // The slug is the output's BARE NAME. `dest_name` may be an absolute
+    // path (every ladder script passes one to `-o`), and feeding that in
+    // whole produced `target/store/<hash>-/tmp/.../thing` -- a path with
+    // directories inside the slug, which `cp` cannot create. The slug is
+    // a human convenience only; nothing parses it back.
+    let entry : String := Build.store_path target_dir Entry.artifact h (base_name (Path.to_string dest_name));
+    let hit <- IO.file_exists (Path.path entry);
+    if hit
+    then do {
+        let _mk <- exec_cmd "mkdir" ["-p", dest_dir];
+        let rc <- exec_cmd "cp" ["-f", entry, dest];
+        ok_line ("cached: " ++ dest ++ " (" ++ h ++ ")");
+        return rc
+    }
+    else do {
+        let rc <- compile_file src (Path.path dest_dir) dest_name verbose debug;
+        if rc == 0
+        then do {
+            let _d <- Build.ensure_entry_dir target_dir Entry.artifact;
+            let _c <- exec_cmd "cp" ["-f", dest, entry];
+            return 0
+        }
+        else return rc
+    }
+}
+
 def build_target (path : String) (out_name : String) (verbose : Bool) (debug : Bool) : IO I64 := do {
     let is_a_dir : Bool <- IO.is_dir (Path.path path);
     if Bool.not is_a_dir
-    then compile_file path default_output_dir (Path.path out_name) verbose debug
+    then build_cached path (Path.path out_name) verbose debug
     else do {
         let m <- Mote.discover path;
         match m {
@@ -170,7 +291,7 @@ def build_target (path : String) (out_name : String) (verbose : Bool) (debug : B
                     Option.some src => do {
                         let name : String := compile_out_name out_name manifest src;
                         println ("building mote `" ++ manifest.name ++ "`'s [bin] target: " ++ src);
-                        compile_file src default_output_dir (Path.path name) verbose debug
+                        build_cached src (Path.path name) verbose debug
                     }
                 }
             }

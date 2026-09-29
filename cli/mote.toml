@@ -1,6 +1,6 @@
 # The self-hosted compiler's command-line front end -- the binary target.
 # `lang` is the compiler itself, as a library; everything here is argv
-# handling and the `compile`/`run`/`check`/`test` drivers on top of it.
+# handling and the `build`/`run`/`check`/`test` drivers on top of it.
 
 [mote]
 name = "cli"
@@ -19,6 +19,10 @@ path = "../init"
 
 [dependencies.std]
 path = "../std"
+
+# The build orchestrator: input hashing and the artifact store.
+[dependencies.build]
+path = "../build"
 
 [dependencies.lang]
 path = "../lang"

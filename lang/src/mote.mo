@@ -57,6 +57,18 @@ pub struct MoteManifest {
     /// `none` when the manifest declares a `[bin] path` without a name;
     /// the caller then falls back to the source file's own stem.
     bin_name : Option String,
+    /// Where build output goes, from `[build] target-dir = "..."`, joined
+    /// onto `dir` the way `bin_path` is so the value is usable as stored.
+    ///
+    /// It exists for one concrete collision: **cargo already owns
+    /// `target/debug` and `target/release` in this repository**. Without
+    /// an opt-out, `cargo clean` would delete monad's build store and
+    /// `monad clean` would delete cargo's artifacts. This repo's root
+    /// manifest therefore says `target/monad`, while a user with no
+    /// `Cargo.toml` gets the plain `target/` default and never has to
+    /// think about it. `build/src/store.mo`'s `resolve_target_dir` is
+    /// where this sits in the precedence order.
+    build_target_dir : Option String,
 }
 
 /// The mote's source root -- `<dir>/src`, always.
@@ -122,6 +134,55 @@ def list_contains_string (needle : String) (xs : List String) : Bool :=
         List.empty => false,
         List.cons x rest =>
             if String.beq x needle then true else list_contains_string needle rest
+    }
+
+/// Walk up from `dir` for a `[build] target-dir`, virtual workspace roots
+/// INCLUDED.
+///
+/// Deliberately not `Mote.discover`, which stops at a virtual root because
+/// nothing above one is part of the mote. That rule is right for module
+/// resolution and wrong here: `[build] target-dir` is a property of the
+/// WORKSPACE, and a script-mode file under it (anything in `examples/`,
+/// say) must land in the same place as everything else. Without this,
+/// `monad build examples/hello.mo` in this repository wrote to `target/`
+/// and collided with cargo, which is the exact collision the setting
+/// exists to avoid.
+#[partial]
+pub def Mote.discover_build_dir (dir : String) : IO (Option String) :=
+    Mote.discover_build_dir_go dir 32
+
+#[partial]
+def Mote.discover_build_dir_go (dir : String) (depth : I64) : IO (Option String) := do {
+    if I64.lt depth 1
+    then return Option.none
+    else do {
+        let candidate := mote_toml_in dir;
+        let exists <- IO.file_exists (Path.path candidate);
+        if exists
+        then do {
+            let text <- IO.read_file (Path.path candidate);
+            match Mote.build_dir_of_text dir text {
+                Option.some d => return (Option.some d),
+                // A manifest with no `[build] target-dir` does not stop the
+                // walk: a mote inside a workspace inherits the workspace's
+                // setting unless it states its own.
+                Option.none => Mote.discover_build_dir_above dir (depth - 1)
+            }
+        }
+        else Mote.discover_build_dir_above dir (depth - 1)
+    }
+}
+
+#[partial]
+def Mote.discover_build_dir_above (dir : String) (depth : I64) : IO (Option String) :=
+    if String.beq dir "" || String.beq dir "/"
+    then return Option.none
+    else Mote.discover_build_dir_go (parent_of dir) depth
+
+def Mote.build_dir_of_text (dir : String) (text : String) : Option String :=
+    match Toml.parse text {
+        err _ => Option.none,
+        ok root => Mote.joined_table_string dir (Toml.table_get "build" root) "target-dir"
     }
 
 /// Walk up from `dir` looking for a `mote.toml`, parse the first one found.
@@ -327,6 +388,7 @@ def Mote.manifest_of_table (dir : String) (root : BTreeMap String Toml.Value) : 
             let bin := Toml.table_get "bin" root in
             let bin_path := Mote.bin_target_path dir bin in
             let bin_name := Mote.table_string bin "name" in
+            let build_target_dir := Mote.joined_table_string dir (Toml.table_get "build" root) "target-dir" in
             let m : MoteManifest := {
                 name := name,
                 dir := dir,
@@ -335,6 +397,7 @@ def Mote.manifest_of_table (dir : String) (root : BTreeMap String Toml.Value) : 
                 link_libs := libs,
                 bin_path := bin_path,
                 bin_name := bin_name,
+                build_target_dir := build_target_dir,
             } in
             Option.some m
     }
@@ -380,7 +443,14 @@ def dep_dir_entries (mote_dir : String) (sub : BTreeMap String Toml.Value) : Lis
 /// `[bin] path`, joined onto the mote's own directory so the value is a
 /// path usable exactly as stored (see `MoteManifest.bin_path`).
 def Mote.bin_target_path (dir : String) (bin : Option Toml.Value) : Option String :=
-    match Mote.table_string bin "path" {
+    Mote.joined_table_string dir bin "path"
+
+/// A table's string field, joined onto the mote's own directory so the
+/// value is a path usable exactly as stored -- `raw_path_join`'s rules
+/// for an empty `dir` and an absolute value included. Shared by
+/// `[bin] path` and `[build] target-dir`, which want it identically.
+def Mote.joined_table_string (dir : String) (table : Option Toml.Value) (key : String) : Option String :=
+    match Mote.table_string table key {
         Option.none => Option.none,
         Option.some p => Option.some (raw_path_join dir p)
     }
@@ -876,6 +946,9 @@ def Mote.manifest_of_attr (dir : String) (attr : Attribute) : Option MoteManifes
                 // file IS the binary, and `compile` already takes a file.
                 bin_path := Option.none,
                 bin_name := Option.none,
+                // An inline mote has no `[build]` table either, so it takes
+                // the default target dir like any other.
+                build_target_dir := Option.none,
             } in
             Option.some m
     }

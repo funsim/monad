@@ -7,6 +7,14 @@
 # because the self-hosted reader (lang/src/toml.mo) supports headers and
 # not inline tables. Both spellings mean the same thing to the Rust host.
 
+# Build output goes to `target/monad`, not `target/`, because **cargo owns
+# `target/debug` and `target/release` in this same repository**: sharing the
+# directory would mean `cargo clean` deletes monad's build store and
+# `monad clean` deletes cargo's artifacts. A user whose project has no
+# Cargo.toml needs none of this and gets the plain `target/` default.
+[build]
+target-dir = "target/monad"
+
 [workspace]
 members = [
   "init",
