@@ -28,7 +28,6 @@ use lang::types {
   Con, Cubical, FieldPattern, Literal, MatchCase, Native, StructLitField, Term,
   concrete, cub_ineg, id, level_const, sentinel, unnamed,
 }
-}
 
 use lib::typecheck::traverse {term_map_children_at_depth}
 

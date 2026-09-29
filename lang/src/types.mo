@@ -2115,6 +2115,52 @@ pub def cubical_prim_name (prim : CubicalPrim) : String := match prim {
     CubicalPrim.ijoin => "ijoin",
 }
 
+/// Every primitive, in `cubical_prim_tag` order. Exists as one list so the
+/// decoder below can be derived from `cubical_marker_key` by scanning,
+/// not keyed by a second copy of the same strings.
+pub def cubical_prims_all : List CubicalPrim :=
+    List.cons CubicalPrim.interval (List.cons CubicalPrim.i0 (List.cons CubicalPrim.i1
+        (List.cons CubicalPrim.ineg (List.cons CubicalPrim.imeet (List.cons CubicalPrim.ijoin
+            List.empty)))))
+
+/// The string a `#[cubical "..."]` MARKER names a primitive by -- the
+/// marker key, which is NOT the surface name `cubical_prim_name` returns:
+/// the interval's surface name is `I` (what a user writes, what the
+/// printer shows) but its marker is `interval`, because the marker names
+/// the PRIMITIVE, and the def the marker sits on already carries its own
+/// name on the same line. Distinct tables by exactly that one entry;
+/// total over `CubicalPrim` so a primitive added later cannot be left
+/// without a marker key silently.
+pub def cubical_marker_key (prim : CubicalPrim) : String := match prim {
+    CubicalPrim.interval => "interval",
+    CubicalPrim.i0 => "i0",
+    CubicalPrim.i1 => "i1",
+    CubicalPrim.ineg => "ineg",
+    CubicalPrim.imeet => "imeet",
+    CubicalPrim.ijoin => "ijoin",
+}
+
+/// Decode a `#[cubical "..."]` marker's string back to the primitive it
+/// names -- the inverse of `cubical_marker_key`, derived from that same
+/// table by scanning `cubical_prims_all`, so a primitive added with a
+/// marker key cannot leave the decoder behind (an if-chain keyed by its
+/// own copy of the strings could). `Option`, not a panic: the marker is
+/// authored in user source, so an unknown string must answer "binds
+/// nothing" and the def then stays an ordinary def -- the same answer as
+/// no marker at all.
+#[partial]
+pub def cubical_prim_of_name (s : String) : Option CubicalPrim :=
+    cubical_prim_of_name_scan cubical_prims_all s
+
+#[partial]
+def cubical_prim_of_name_scan (ps : List CubicalPrim) (s : String) : Option CubicalPrim :=
+    match ps {
+        List.empty => Option.none,
+        List.cons p rest =>
+            if String.beq (cubical_marker_key p) s then Option.some p
+            else cubical_prim_of_name_scan rest s,
+    }
+
 /// Read a cubical term's primitive, past any location wrapper.
 pub def cubical_prim_of (t : Term) : Option CubicalPrim := match term_peel t {
     Term.cubical c => Option.some c.prim,
@@ -2480,6 +2526,16 @@ pub struct ScopeData {
     // parameters, which is exactly what beta reduction then consumes
     // one argument at a time.
     def_bodies : HashMap String Term := HashMap.map HashMap.empty_buckets,
+    // A def marked `#[cubical "..."]` (`proofs/src/cubical.mo`) bound to
+    // the `CubicalPrim` the marker names -- the name-binding half of the
+    // cubical design (the checker rewrite is in `lang/typecheck/infer.mo`:
+    // `type_check_free_var` for bare primitives, `type_check_app`'s
+    // cubical probe for applications). The MARKER, not the bare spelling,
+    // binds, so a user's own `def I : Type` stays an ordinary def.
+    // Keyed by the resolved `ScopeDef.name` exactly like `def_bodies`
+    // above, and for the same reason: the lookup happens after
+    // `scope_resolve_name`, under the qualified name it returns.
+    cubical_prims : HashMap String CubicalPrim := HashMap.map HashMap.empty_buckets,
 }
 
 // A scope node in the linked list.

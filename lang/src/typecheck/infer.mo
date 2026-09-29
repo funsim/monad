@@ -23,7 +23,7 @@ use lang::scope {
   scope_find_class_def_by_name, scope_find_def_params, scope_find_def_return_type,
   scope_find_def_sig, scope_find_inductive, scope_find_inductive_by_constructor,
   scope_find_local, scope_globals, scope_instance_candidates, scope_push_local,
-  scope_resolve_name, type_mentions_any,
+  scope_find_cubical_prim, scope_resolve_name, type_mentions_any,
 }
 use lib::typecheck::name_subst {name_subst_term}
 use lib::typecheck::levels {is_level_binder_kind}
@@ -2242,6 +2242,43 @@ def ref_names_class_method (id : Identifier) (scope : Scope) : Bool :=
 /// fallback can rebuild the reference as a field-access chain and re-enter
 /// `type_check` on it (`try_global_field_access` below), and `type_check`
 /// needs the full local context to do that. Nothing else here reads it.
+/// The declared-signature fallback of `type_check_free_var`'s resolved
+/// arm: the def's REAL registered signature (`ScopeData.def_sigs` --
+/// `ScopeDef.sig` itself is unconditionally `Term.hole` by its own
+/// load-bearing design, `build_scope_def`, `lang/scope.mo`), or the
+/// constructor-recovery path for a name that resolved but has none
+/// registered. Returned via `type_check_app`'s signature-driven path,
+/// checking arguments against real parameter types and solving the
+/// signature's type variables (V in `def get_first {V : Type} (xs : List
+/// V) : Option V`) from the arguments' actual types -- without it, EVERY
+/// call result types as `Term.hole` and match arms on it bind the
+/// constructor's raw skolemized parameter ("type mismatch: expected A,
+/// found I64"), nested matches on those can't disambiguate a bare
+/// `mk`/`empty` constructor ("ambiguous constructor"), `{ .. }` struct
+/// patterns can't resolve ("the matched value's type isn't known"), and
+/// struct literals passed as call arguments get no expected type
+/// ("cannot infer struct type"). One root cause, ~70 sites in the
+/// compiler's own closure.
+///
+/// The `Option.none` half: no registered signature. For an ordinary def
+/// that means the `sig`-hole fallback; but a CONSTRUCTOR reference
+/// resolves in `type_check_free_var` too (constructors ARE registered
+/// names), and for one written qualified -- `Slim.mk` -- the qualifier
+/// names its owning inductive exactly. Recovering that is what gives a
+/// `let`-bound constructor value a real type; see `con_ref_result_type`
+/// for why the hole was load-bearing in the worst way (an untyped
+/// scrutinee sent `find_inductive_for_cases` into its ambiguous
+/// bare-name scan, which under codegen's best-effort elaboration left `+`
+/// generic and its dictionary recursing until the stack died).
+/// `type_check_free_var_con` does the same job for a name that DOESN'T
+/// resolve -- this is the same fix on the path a real qualified
+/// constructor reference actually takes.
+def free_var_declared_typ (resolved_name : NamePath) (sig : Term) (dbg : DebugName) (scope : Scope) : Term :=
+    match scope_find_def_sig resolved_name scope {
+        Option.some real_sig => real_sig,
+        Option.none => qualified_con_ref_typ dbg sig scope,
+    }
+
 def type_check_free_var (dbg : DebugName) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match dbg {
         DebugName.named id =>
@@ -2249,53 +2286,34 @@ def type_check_free_var (dbg : DebugName) (expected_type : Term) (scope : Scope)
             let result : Result ScopeError ScopeDef := scope_resolve_name nref scope locals in
             match result {
                 ok sd => match sd {
-                    // `ScopeDef.sig` is unconditionally `Term.hole` by
-                    // its own load-bearing design (`build_scope_def`,
-                    // `lang/scope.mo`) -- the def's REAL declared
-                    // signature lives in the `def_sigs` side-table.
-                    // Returning it here (falling back to the old
-                    // `sig`-hole behavior for anything not registered
-                    // there -- builtins, promoted class methods, ...)
-                    // is what lets `type_check_app`'s signature-driven
-                    // path below check arguments against real parameter
-                    // types and solve the signature's type variables
-                    // (V in `def get_first {V : Type} (xs : List V) :
-                    // Option V`) from the arguments' actual types --
-                    // without it, EVERY call result types as `Term.hole`
-                    // and match arms on it bind the constructor's raw
-                    // skolemized parameter ("type mismatch: expected A,
-                    // found I64"), nested matches on those can't
-                    // disambiguate a bare `mk`/`empty` constructor
-                    // ("ambiguous constructor"), `{ .. }` struct
-                    // patterns can't resolve ("the matched value's type
-                    // isn't known"), and struct literals passed as call
-                    // arguments get no expected type ("cannot infer
-                    // struct type"). One root cause, ~70 sites in the
-                    // compiler's own closure.
                     mk resolved_name _ sig _ _ =>
-                        match scope_find_def_sig resolved_name scope {
-                            Option.some real_sig => ok (mk_typed (Term.var sentinel dbg) real_sig),
-                            // No registered signature. For an ordinary def
-                            // that means the `sig`-hole fallback below; but
-                            // a CONSTRUCTOR reference resolves here too
-                            // (constructors ARE registered names), and for
-                            // one written qualified -- `Slim.mk` -- the
-                            // qualifier names its owning inductive exactly.
-                            // Recovering that is what gives a `let`-bound
-                            // constructor value a real type; see
-                            // `con_ref_result_type` for why the hole was
-                            // load-bearing in the worst way (an untyped
-                            // scrutinee sent `find_inductive_for_cases`
-                            // into its ambiguous bare-name scan, which
-                            // under codegen's best-effort elaboration left
-                            // `+` generic and its dictionary recursing
-                            // until the stack died). `type_check_free_var_
-                            // con` below does the same job for a name that
-                            // DOESN'T resolve here -- this is the same fix
-                            // on the path a real qualified constructor
-                            // reference actually takes.
+                        match scope_find_cubical_prim resolved_name scope {
+                            // A cubical primitive bound by `#[cubical "..."]`
+                            // (`proofs/src/cubical.mo`) referenced BARE. For
+                            // an arity-0 primitive (`I`, `i0`, `i1`) the
+                            // reference IS the term: rewrite it to the
+                            // `Term.cubical` it stands for, typed by the
+                            // primitive's own rule (`cubical_result_type`).
+                            // A parameterized primitive referenced bare
+                            // (`ineg` as a value, `imeet` partially applied)
+                            // takes the declared-signature path -- its
+                            // body-less declaration still registered a real
+                            // `def_sigs` entry, and that signature is the
+                            // right type for the under-applied case. A
+                            // SATURATED application never reaches here:
+                            // `type_check_app`'s cubical probe runs first,
+                            // ahead of its def-call probe, precisely so the
+                            // declared signature cannot type the call and
+                            // leave the rewrite never happening.
+                            Option.some prim =>
+                                if I64.beq (cubical_arity prim) 0 then
+                                    ok (mk_typed (cub prim List.empty) (cubical_result_type prim))
+                                else
+                                    ok (mk_typed (Term.var sentinel dbg)
+                                        (free_var_declared_typ resolved_name sig dbg scope)),
                             Option.none =>
-                                ok (mk_typed (Term.var sentinel dbg) (qualified_con_ref_typ dbg sig scope)),
+                                ok (mk_typed (Term.var sentinel dbg)
+                                    (free_var_declared_typ resolved_name sig dbg scope)),
                         },
                 },
                 err _ =>
@@ -2987,6 +3005,68 @@ def subst_has_id (subst : List (Pair Identifier Term)) (target : Identifier) : B
             },
     }
 
+/// Rewrite a saturated application of a bound cubical primitive into the
+/// `Term.cubical` it is: `ineg i0` checks, and is stored, as
+/// `{ prim := ineg, args := [i0] }`. FIRST probe in `type_check_app`,
+/// ahead of `try_type_check_def_call`, and the order is forced, not
+/// stylistic: `def_sigs` holds the primitive's own declared signature
+/// (`I -> I` for `ineg`, `proofs/src/cubical.mo`), so the def-call probe
+/// would type the call fine against it and the rewrite would silently
+/// never happen -- the term would stay `Term.app (var ineg) i0`,
+/// invisible to every cubical rule downstream.
+///
+/// `Option.none` whenever the spine is not a cubical call this checker
+/// can own outright: head not a sentinel free var, a LOCAL shadowing the
+/// name (same guard and same reason as `try_type_check_def_call`), no
+/// registered primitive under the resolved name, or the spine
+/// UNDER-applied against `cubical_arity` -- a partially applied `imeet i`
+/// falls through to the def-call probe, whose declared signature is the
+/// right type for exactly that case. OVER-application falls through too
+/// (a saturated primitive can be applied to more later -- at Stage 2, a
+/// path applied to an endpoint), so the arity test is equality, not
+/// `<=`. Everything else is handed to `type_check_cubical`, which checks
+/// each argument against `I` and unifies the primitive's result type
+/// against the expected one. `#[terminating]` (like `type_check_app`,
+/// its caller): the probe itself makes one call and never recurses, but
+/// it sits inside the checker cycle, and this is the attribute the
+/// cycle's members carry.
+#[terminating]
+def try_type_check_cubical_call (app_term : Term) (expected_type : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Option (Result TypeError TypedTerm) :=
+    match flatten_call_spine app_term {
+        CallSpine.mk head args =>
+            match head {
+                Term.var idx dbg =>
+                    match dbg {
+                        DebugName.named id =>
+                            if not (I64.beq idx sentinel) then Option.none
+                            else if is_some_local (scope_find_local id locals) then Option.none
+                            else
+                                match scope_resolve_name (NameRef.nid id) scope locals {
+                                    err _ => Option.none,
+                                    ok sd =>
+                                        match sd {
+                                            mk resolved_name _ _ _ _ =>
+                                                match scope_find_cubical_prim resolved_name scope {
+                                                    Option.none => Option.none,
+                                                    Option.some prim =>
+                                                        let saturated : Bool :=
+                                                            I64.beq (List.length args) (cubical_arity prim) in
+                                                        if Bool.not saturated then Option.none
+                                                        else
+                                                            let c : Cubical := { prim := prim, args := args } in
+                                                            Option.some
+                                                                (type_check_cubical c expected_type scope
+                                                                    local_types locals),
+                                                },
+                                        },
+                                },
+                        DebugName.unnamed => Option.none,
+                    },
+                _ => Option.none,
+            },
+    }
+
 // `#[terminating]`: `type_check_app_ordinary` is this function's own
 // factored-out tail (see its doc comment), not a recursive descent --
 // it consumes the ALREADY-CHECKED `a_tt` and never re-enters
@@ -2994,6 +3074,9 @@ def subst_has_id (subst : List (Pair Identifier Term)) (target : Identifier) : B
 // exactly as the single fused function did before the split.
 #[terminating]
 def type_check_app (f : Term) (a : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match try_type_check_cubical_call (Term.app f a) expected_type scope local_types locals {
+        Option.some r => r,
+        Option.none =>
     match try_type_check_def_call (Term.app f a) expected_type scope local_types locals {
         Option.some r => r,
         Option.none =>
@@ -3035,6 +3118,7 @@ def type_check_app (f : Term) (a : Term) (expected_type : Term) (scope : Scope) 
                         },
                     }
             },
+    }
     }
     }
     }

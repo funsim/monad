@@ -1,15 +1,16 @@
 use lang::types {
-  Attribute, Class, ClassDef, Con, DebugName, Decl, DeclGroup, Def, FieldPattern,
-  FieldPatternEntry, Identifier, InductConstructor, Inductive, Infix, Instance,
-  InstanceKey, Literal, LocalScope, LocalVar, MatchCase, Module, ModulePath,
-  ModuleRegistry, NamePath, NameRef, Native, NumSuffix, OpenFilter, Operator,
-  Param, QualifiedName, Scope, ScopeClassDef, ScopeData, ScopeDef, ScopeError,
-  ScopeInstance, Similar, SortLevel, Struct, StructField, StructLitField, Term,
-  TypeConstraint, UseFilter, UseItem, Visibility, f32, f64, i16, i32, i64, i8,
-  id_member, many, mk, name_path_similar, open_all, open_only, package_private,
-  param_many, priv_, pub_, show_identifier, show_module_path, show_name_path,
-  show_operator, term_peel, u16, u32, u64, u8, union_ids, use_bare, use_glob,
-  use_items, use_name, use_rename, use_sub, use_sub_rename,
+  Attribute, Class, ClassDef, Con, CubicalPrim, DebugName, Decl, DeclGroup, Def,
+  FieldPattern, FieldPatternEntry, Identifier, InductConstructor, Inductive,
+  Infix, Instance, InstanceKey, Literal, LocalScope, LocalVar, MatchCase, Module,
+  ModulePath, ModuleRegistry, NamePath, NameRef, Native, NumSuffix, OpenFilter,
+  Operator, Param, QualifiedName, Scope, ScopeClassDef, ScopeData, ScopeDef,
+  ScopeError, ScopeInstance, Similar, SortLevel, Struct, StructField,
+  StructLitField, Term, TypeConstraint, UseFilter, UseItem, Visibility,
+  attr_args, cubical_prim_of_name, f32, f64, i16, i32, i64, i8, id_member,
+  many, mk, name_path_similar, open_all, open_only, package_private, param_many,
+  priv_, pub_, show_identifier, show_module_path, show_name_path, show_operator,
+  term_peel, u16, u32, u64, u8, union_ids, use_bare, use_glob, use_items,
+  use_name, use_rename, use_sub, use_sub_rename,
 }
 use lib::typecheck::traverse {con_map_children, native_map_children, term_map_children}
 // `collect_forall_names` has to tell a LEVEL binder from a type-variable
@@ -474,7 +475,7 @@ def build_scope_one_decl (d : Decl) (path : ModulePath) (acc : ScopeData) : Scop
 
 def build_scope_def (df : Def) (path : ModulePath) (acc : ScopeData) : ScopeData :=
     match df {
-        Def.mk {name := defname, typ, term := term_, vis, params := decl_params, ..} =>
+        Def.mk {name := defname, typ, term := term_, vis, params := decl_params, attrs := def_attrs, ..} =>
             let sd : ScopeDef := {
                 name := defname,
                 module := path,
@@ -513,6 +514,21 @@ def build_scope_def (df : Def) (path : ModulePath) (acc : ScopeData) : ScopeData
             // return type, to check arguments against their real
             // declared types and solve the signature's type variables.
             let with_sig : ScopeData := scope_data_add_def_sig with_ret defname typ in
+            // ... and the CUBICAL MARKER, if there is one: a def carrying
+            // `#[cubical "..."]` (`proofs/src/cubical.mo`) gets its name
+            // entered into `ScopeData.cubical_prims`, which is what the
+            // checker consults to rewrite a resolved reference to that
+            // name into the `Term.cubical` it is (`lang/typecheck/
+            // infer.mo` -- `type_check_free_var` for a bare primitive,
+            // `type_check_app`'s cubical probe for an applied one). No
+            // marker, or a marker naming no known primitive, leaves the
+            // def ordinary: binding is keyed off the MARKER, never the
+            // bare spelling, so a user's own `def I : Type` is not
+            // stolen.
+            let with_prim : ScopeData := match cubical_marker_prim def_attrs {
+                Option.some prim => scope_data_add_cubical_prim with_sig defname prim,
+                Option.none => with_sig,
+            } in
             // ... and the BODY, for delta reduction during conversion
             // checking (`ScopeData.def_bodies`, consumed by
             // `lang/typecheck/whnf.mo`) -- but NOT when the decl has no
@@ -530,8 +546,8 @@ def build_scope_def (df : Def) (path : ModulePath) (acc : ScopeData) : ScopeData
             // only programs newly rejected are the ones that were being
             // accepted by unfolding to top.
             match def_body_is_real term_ {
-                Bool.true => scope_data_add_def_body with_sig defname term_,
-                Bool.false => with_sig,
+                Bool.true => scope_data_add_def_body with_prim defname term_,
+                Bool.false => with_prim,
             }
     }
 
@@ -546,6 +562,33 @@ def def_body_is_real (t : Term) : Bool :=
         Term.lam _dbg _typ body => def_body_is_real body,
         Term.hole => false,
         _ => true,
+    }
+
+/// The `CubicalPrim` this def's `#[cubical "..."]` marker binds, if any.
+/// The marker takes exactly one string argument (`#[cubical "ineg"]`); a
+/// marker with no args, more than one, or a non-string one binds nothing
+/// rather than guessing, and so does a string naming no known primitive
+/// (`cubical_prim_of_name` answers `Option.none`). Every one of those
+/// falls back to "ordinary def", the same answer as no marker at all:
+/// the cost of a malformed marker is losing the binding (the name stops
+/// being a primitive), never misbinding.
+def cubical_marker_prim (attrs : List Attribute) : Option CubicalPrim :=
+    match attr_args (Identifier.id "cubical") attrs {
+        Option.some args => cubical_marker_prim_args args,
+        Option.none => Option.none,
+    }
+
+/// `cubical_marker_prim`'s args half -- spelled as its own def because
+/// the self-hosted parser has no NESTED patterns
+/// (`List.cons (AttrArg.str m) List.empty` does not parse).
+def cubical_marker_prim_args (args : List AttrArg) : Option CubicalPrim :=
+    match args {
+        List.empty => Option.none,
+        List.cons hd rest =>
+            match hd {
+                AttrArg.str marker => if List.is_empty rest then cubical_prim_of_name marker else Option.none,
+                _ => Option.none,
+            },
     }
 
 /// FALLBACK only, now that `Def.params` carries the real declared list:
@@ -611,6 +654,13 @@ def scope_data_add_def_sig (sd : ScopeData) (name : NamePath) (sig : Term) : Sco
 
 def scope_data_add_def_body (sd : ScopeData) (name : NamePath) (body : Term) : ScopeData :=
     { sd with def_bodies := npath_map_insert name body sd.def_bodies }
+
+/// Register `name -> prim` into `sd.cubical_prims` -- the write half of
+/// the cubical name-binding (`build_scope_def` calls it for a def whose
+/// `#[cubical "..."]` marker names a primitive). Same side-table shape
+/// as `scope_data_add_def_body` just above.
+def scope_data_add_cubical_prim (sd : ScopeData) (name : NamePath) (prim : CubicalPrim) : ScopeData :=
+    { sd with cubical_prims := npath_map_insert name prim sd.cubical_prims }
 
 /// Registers `ind` two ways: into `.inductives` (constructor/arity
 /// lookups — `scope_find_inductive` and friends) *and*, like
@@ -1261,6 +1311,20 @@ pub def scope_find_def_body (name : NamePath) (s : Scope) : Option Term :=
 pub def scope_find_def_sig (name : NamePath) (s : Scope) : Option Term :=
     let g : ScopeData := scope_globals s in
     scope_data_find_def_sig g name
+
+// --- ScopeData: a def's CUBICAL MARKER binding ---
+
+def scope_data_find_cubical_prim (sd : ScopeData) (name : NamePath) : Option CubicalPrim :=
+    npath_map_lookup name sd.cubical_prims
+
+/// Top-level `Scope`-based wrapper, same shape as `scope_find_def_sig`/
+/// `scope_find_def_body`: globals only, because the binding is written by
+/// `build_scope_def` at DECLARATION time and a local that shadows the name
+/// must not inherit the primitive (the checker's rewrite sites each have
+/// their own shadow guard, `lang/typecheck/infer.mo`).
+pub def scope_find_cubical_prim (name : NamePath) (s : Scope) : Option CubicalPrim :=
+    let g : ScopeData := scope_globals s in
+    scope_data_find_cubical_prim g name
 
 // --- ScopeData: find an Inductive by ModulePath ---
 
