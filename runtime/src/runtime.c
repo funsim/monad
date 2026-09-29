@@ -1840,6 +1840,165 @@ int64_t monad_tcp_local_port(int64_t listener) {
     return (int64_t)ntohs(addr.sin_port);
 }
 
+/* ─── Raw stdio (`std/io.mo`'s raw-stdio group) ──────────────────────
+   The byte-level half of stdio, added for the language server (`lsp`):
+   it writes LSP frames to stdout with no extra newline, logs to stderr
+   without corrupting its own protocol stream on fd 1, and reads a stdin
+   byte stream whose frames the OS is free to split across reads.
+   `monad_print_str` (above) and `monad_read_file` can express none of
+   that -- the first always appends '\n' and cannot be aimed anywhere
+   but fd 1 (or 2, at all), the second takes a path.
+
+   Read the same group's comment in `std/io.mo` for the contract, and
+   `core/src/core_native.rs`'s `read_stdin_exact` family for the Rust
+   evaluator's half. That half needs a UTF-8-carry subtlety this one
+   does not: bytes are stored raw here, which is exactly what a byte
+   stream wants, so no chunk boundary can surprise this side.
+
+   A returned `String` is a bare NUL-terminated `char*`, the same
+   representation every other String native here returns and the one
+   `compile_lit_ir`'s string literals have (see `monad_print_str`'s own
+   notes on the boxed `StringObj`). The `IO Unit` natives return the
+   Unit constructor pointer via `tcp_unit` just above --
+   `io_passthrough` (`lang/src/codegen/natives.mo`) IO-wraps a native's
+   raw result, so an `IO Unit` native returns the Unit ctor rather than
+   nothing at all.
+
+   Every read here goes through `read(0, ...)` rather than stdio
+   (`getchar`/`fgets`), and that is load-bearing rather than a
+   preference: stdio reads a whole block ahead into its own buffer, so
+   a `getchar`-based `monad_read_line` would silently swallow the bytes
+   the caller's next `monad_read_stdin_exact` is looking for -- the
+   protocol stream would desynchronize with no error anywhere. Nothing
+   else in this runtime touches fd 0, so one reader is all there is. */
+
+/* One line from stdin, WITHOUT its trailing newline. `Option.none`
+   (tag 3) when nothing at all was read, `Option.some line` (tag 4)
+   otherwise -- the same fixed tags `monad_get_env` above builds, and
+   the same ones `monad_array_get` / runtime.mo's `rt_tag_some` use.
+   A final line with no trailing newline is still `some`, and `\r` is
+   deliberately NOT stripped (the caller wants the bytes the peer
+   actually sent).
+
+   Byte-at-a-time deliberately: anything that reads a block ahead would
+   consume bytes belonging to the caller's NEXT read. A line is short,
+   so the syscall per byte costs nothing worth optimizing against a
+   desynchronized protocol stream. */
+char* monad_read_line(void) {
+    size_t cap = 64;
+    size_t len = 0;
+    /* Did the stream yield anything at all? A bare "\n" reads no
+       characters but is still a line (`some ""`), whereas reading
+       nothing at all is EOF (`none`) -- so the two cases cannot be told
+       apart from `len` alone. */
+    int saw_byte = 0;
+    char* buf = (char*)monad_alloc_atomic(cap);
+    if (!buf) return (char*)alloc_constructor(3, 0);
+    for (;;) {
+        char c;
+        ssize_t got = read(0, &c, 1);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            break;                    /* a read error is EOF to the caller */
+        }
+        if (got == 0) break;          /* EOF */
+        saw_byte = 1;
+        if (c == '\n') break;         /* the terminator is not part of the line */
+        if (len + 1 >= cap) {
+            size_t grown_cap = cap * 2;
+            char* grown = (char*)GC_realloc(buf, grown_cap);
+            if (!grown) break;        /* OOM: hand back what we have */
+            buf = grown;
+            cap = grown_cap;
+        }
+        buf[len++] = c;
+    }
+    if (!saw_byte) return (char*)alloc_constructor(3, 0);   /* Option.none */
+    buf[len] = '\0';
+    Constructor* some = (Constructor*)alloc_constructor(4, 1);
+    if (some) some->fields[0] = buf;
+    return (char*)some;
+}
+
+/* `IO.read_stdin_exact (n : I64) : IO String` -- blocking read of UP TO
+   `n` bytes from stdin, returning exactly the bytes read. The result
+   being SHORTER than `n` (including "") means EOF to the caller, which
+   is what makes that a reliable end-of-stream test rather than "the OS
+   returned a short read this time": the loop below only stops early
+   when a `read` actually reports 0, so a partial return is always EOF.
+   `n <= 0` returns "".
+
+   The result is NUL-terminated but its LENGTH is the caller's count of
+   bytes, not `strlen` -- a frame body may legitimately contain NULs.
+   Note that a String with an embedded NUL is a representation this
+   runtime's other String consumers (`monad_print_str`, `strlen`-based
+   comparisons) cannot round-trip; the caller slices it with
+   `String.slice`, which is length-based (`monad_string_slice`), so the
+   byte stream survives as far as the framing reader needs it. */
+char* monad_read_stdin_exact(int64_t n) {
+    if (n <= 0) {
+        char* empty = (char*)monad_alloc_atomic(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+    size_t want = (size_t)n;
+    char* buf = (char*)monad_alloc_atomic(want + 1);
+    if (!buf) {
+        /* Never hand back NULL: a NULL String crashes the first
+           `strlen`-based consumer, whereas "" is exactly the
+           end-of-stream signal this native already has a meaning for
+           (a result shorter than `n`). An absurd `n` (e.g. a
+           `Content-Length` read out of a corrupt frame) lands here
+           rather than taking the process down. */
+        char* empty = (char*)monad_alloc_atomic(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+    size_t got = 0;
+    while (got < want) {
+        ssize_t r = read(0, buf + got, want - got);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (r == 0) break;            /* EOF */
+        got += (size_t)r;
+    }
+    buf[got] = '\0';
+    return buf;
+}
+
+/* `IO.write_stdout (s : String) : IO Unit` -- `s` to stdout VERBATIM:
+   no trailing newline (the whole difference from `monad_print_str`) and
+   no flush (a frame's pieces go out first, then `monad_flush_stdout`
+   once). Null-tolerant like its neighbours. */
+void* monad_write_stdout(char* s) {
+    if (s) fputs(s, stdout);
+    return tcp_unit();
+}
+
+/* `IO.flush_stdout : IO Unit` -- needed because stdout is block-buffered
+   when it is a pipe (which is how a language server's peer reads it), so
+   a written frame stays invisible until this runs. */
+void* monad_flush_stdout(void) {
+    fflush(stdout);
+    return tcp_unit();
+}
+
+/* `IO.write_stderr (s : String) : IO Unit` -- `s` to stderr verbatim,
+   no trailing newline, and FLUSHED at once: a log line that sits in a
+   buffer until process exit is no log line at all for a server that
+   never exits. A native of its own rather than an fd argument to the
+   one above so that a log line can never interleave into the protocol
+   stream the peer is parsing. */
+void* monad_write_stderr(char* s) {
+    if (s) {
+        fputs(s, stderr);
+        fflush(stderr);
+    }
+    return tcp_unit();
+}
+
 void* monad_build_args(int argc, char** argv) {
     void* list = alloc_constructor(5, 0);   /* List.empty */
     for (int i = argc - 1; i >= 0; i--) {

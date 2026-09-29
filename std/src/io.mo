@@ -40,6 +40,66 @@ def IO.list_dir_native (path : String) : IO (List String)
 #[native "get_env"]
 pub def IO.get_env (s : String) : IO (Option String)
 
+// ── Raw stdio ───────────────────────────────────────────────────────────
+// The five below are the byte-level half of stdio: `IO.println` writes
+// a line to stdout and `IO.read_file` reads a whole named file, and
+// neither is usable when the process's own stdin/stdout IS the channel.
+// That is the language server's situation, and it is why each of these
+// exists:
+//
+//   - an LSP peer speaks a framed protocol over stdout (`Content-Length:
+//     N\r\n\r\n<JSON>`), so a frame must go out VERBATIM -- one extra
+//     newline from `println` corrupts the stream and desynchronizes the
+//     peer's parser permanently;
+//   - diagnostics/progress logging has to go to stderr instead, and
+//     must be flushed at once (a log line is worthless if it sits in a
+//     buffer until the process exits, which for a server is never);
+//   - a frame's header can be split across two reads by the OS, so the
+//     reader must be able to ask for "up to N bytes, as many as are
+//     ready, right now" and accumulate a byte stream itself.
+//
+// Being a byte stream is the whole reason these are separate from the
+// line- and String-oriented natives: the caller slices the accumulated
+// bytes at BYTE offsets taken from `Content-Length`, so every byte has
+// to arrive unaltered.
+
+// One line from stdin, WITHOUT its trailing newline. `Option.none` at
+// EOF, meaning nothing at all was read -- a final line with no trailing
+// newline is still `Option.some line`, so a caller reading a sequence of
+// lines terminates on `none` rather than on an empty string. `\r` is
+// NOT stripped (the caller wants the bytes the peer actually sent).
+#[native "read_line"]
+pub def IO.read_line : IO (Option String)
+
+// Blocking read of UP TO `n` bytes from stdin, returning exactly the
+// bytes read. A result SHORTER than `n` -- including "" -- means EOF;
+// `n <= 0` returns "". Bytes, not characters: see this group's own
+// comment, the caller accumulates the result and slices it at byte
+// offsets, so a chunk may end in the middle of a multi-byte UTF-8
+// character and must still be handed over unaltered.
+#[native "read_stdin_exact"]
+pub def IO.read_stdin_exact (n : I64) : IO String
+
+// Write `s` to stdout VERBATIM -- no trailing newline, which is the
+// whole difference from `IO.println`. No flush either: a protocol
+// writer batches a frame's pieces and calls `IO.flush_stdout` once the
+// frame is complete.
+#[native "write_stdout"]
+pub def IO.write_stdout (s : String) : IO Unit
+
+// Flush stdout. Needed because stdout is block-buffered when it is a
+// pipe (which is how a language server's peer reads it), so a written
+// frame stays invisible to the peer until this runs.
+#[native "flush_stdout"]
+pub def IO.flush_stdout : IO Unit
+
+// Write `s` to stderr verbatim, no trailing newline, and flush it. A
+// separate native from `IO.write_stdout` for more than the stream it
+// names: a log line must not sit in a buffer, and it must never
+// interleave into the protocol stream on fd 1.
+#[native "write_stderr"]
+pub def IO.write_stderr (s : String) : IO Unit
+
 // Milliseconds since the Unix epoch, from the system WALL clock
 // (`SystemTime::now`, core/src/core_native.rs). Use it for differences
 // between two readings; because it is the wall clock and not a

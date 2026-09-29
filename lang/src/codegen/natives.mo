@@ -282,6 +282,34 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             else if String.beq target "file_exists" then Option.some (NativeWrapKind.io_truthy_ptr_bool_result "monad_file_exists")
             else if String.beq target "is_dir" then Option.some (NativeWrapKind.io_truthy_ptr_bool_result "monad_is_dir")
             else if String.beq target "write_file" then Option.some (NativeWrapKind.io_write_file "monad_write_file")
+            // `std/io.mo`'s raw-stdio group (`read_line`,
+            // `read_stdin_exact`, `write_stdout`, `flush_stdout`,
+            // `write_stderr`) -- the byte-level half of stdio, added for
+            // the language server. All five are `IO`-returning C
+            // functions in `runtime.c`, so all five are `io_passthrough`:
+            // call the runtime, then wrap the raw result in `IO.io`.
+            // That works for the three `IO Unit` ones because their C
+            // functions return a Unit-ctor pointer rather than `void`
+            // (`monad_tcp_close`'s own shape) -- and `io_passthrough`
+            // types the call's result as i64 either way, which is why
+            // their `runtime_declarations` entries below are i64 and not
+            // the `void` a reader would expect from the C signature.
+            //
+            // Deliberately NO `native_op_table` entries for these, and
+            // that is not an oversight: a BARE key in that table hijacks
+            // every call whose callee's *textual* name matches, including
+            // a same-named non-native wrapper (`IO.is_dir`'s own bug --
+            // see the long comment above the table). None of these five
+            // has a wrapper today, so a key would work today; leaving
+            // them out is both sufficient (`io_passthrough` dispatches
+            // through a separate, properly-scoped attribute-based
+            // mechanism, exactly as `IO.list_dir` always has) and the
+            // safer default for whoever adds one later.
+            else if String.beq target "read_line" then Option.some (NativeWrapKind.io_passthrough "monad_read_line")
+            else if String.beq target "read_stdin_exact" then Option.some (NativeWrapKind.io_passthrough "monad_read_stdin_exact")
+            else if String.beq target "write_stdout" then Option.some (NativeWrapKind.io_passthrough "monad_write_stdout")
+            else if String.beq target "flush_stdout" then Option.some (NativeWrapKind.io_passthrough "monad_flush_stdout")
+            else if String.beq target "write_stderr" then Option.some (NativeWrapKind.io_passthrough "monad_write_stderr")
             // ─── The compiler's own remaining closure ───────────────
             // Exactly the set `validate_no_unwired_natives` reported for
             // a self-compile of `cli/src/main.mo` -- wired together so the
@@ -757,12 +785,31 @@ def runtime_declarations : List LLVMDeclaration :=
     let d70 := mk_decl "monad_tcp_close" (List.cons "i64" List.empty) "i64" in
     let d71 := mk_decl "monad_tcp_close_listener" (List.cons "i64" List.empty) "i64" in
     let d72 := mk_decl "monad_tcp_local_port" (List.cons "i64" List.empty) "i64" in
+    // `std/io.mo`'s raw-stdio group (`runtime.c`). Same "no implicit
+    // declare" requirement as every native above -- without these the
+    // call-target gate (`gate_result`, `lang/codegen/emit.mo`) rejects
+    // the module with "call to undefined symbol(s): monad_write_stdout".
+    // Every parameter and return is i64 under the CONVENTION at the head
+    // of this list; `monad_read_line`/`monad_flush_stdout` genuinely take
+    // no arguments, so their parameter lists are empty and the emitted
+    // `call` has no operands to type. The three `IO Unit` natives return
+    // i64 like `monad_tcp_close` (d70) even though their C functions
+    // return the Unit constructor pointer: `io_passthrough`
+    // (`compile_native_def_wrapper_ir`) types EVERY native call's result
+    // as `LLVMType.i64_` and IO-wraps that value, so a `declare void`
+    // here would contradict the caller and emit malformed IR.
+    let d73 := mk_decl "monad_read_line" List.empty "i64" in
+    let d74 := mk_decl "monad_read_stdin_exact" (List.cons "i64" List.empty) "i64" in
+    let d75 := mk_decl "monad_write_stdout" (List.cons "i64" List.empty) "i64" in
+    let d76 := mk_decl "monad_flush_stdout" List.empty "i64" in
+    let d77 := mk_decl "monad_write_stderr" (List.cons "i64" List.empty) "i64" in
     [d1, d2, d3, d4, d5, d6, d7, d7b, d7c, d7d, d7e, d8, d9, d10, d11, d12, d13,
      d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d23a, d23b, d24, d24b, d25, d26, d27, d28, d29, d30, d31,
      d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47,
      d48, d49, d50, d51, d52, d53, d54, d55, d56,
      d57, d58, d59, d60, d61, d62, d63, d64,
-     d65, d66, d67, d68, d69, d70, d71, d72]
+     d65, d66, d67, d68, d69, d70, d71, d72,
+     d73, d74, d75, d76, d77]
 
 /// `apply_closureN`'s own declared param list: the closure value itself
 /// plus `n` ordinary args, all i64 (matches every def's own uniform

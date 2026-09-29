@@ -304,6 +304,15 @@ pub fn exec_native(
     "is_dir" => is_dir(args, natives),
     "list_dir" => list_dir(args, natives),
     "get_env" => get_env(args, natives),
+    // The raw-stdio family (`std/io.mo`). Like `current_time` above
+    // (and unlike the file natives just above it), `read_line` and
+    // `flush_stdout` are nullary natives -- there is no argument to
+    // check, so no `NativeArgError` for one.
+    "read_line" => read_line(natives),
+    "read_stdin_exact" => read_stdin_exact(args, natives),
+    "write_stdout" => write_stdout(args, natives),
+    "flush_stdout" => flush_stdout(natives),
+    "write_stderr" => write_stderr(args, natives),
     "exec_cmd" => exec_cmd(args, natives),
     "fork_io" => fork_io(args, natives),
     // `await_fiber` is NOT dispatched here — it needs `globals`/`cache`
@@ -1189,6 +1198,243 @@ fn get_env(args: &[Value], natives: &NativeTable) -> Result<Value, CoreEvalError
     }
   };
   io_wrap(natives, opt)
+}
+
+// --- `std/io.mo`'s raw stdio family --------------------------------
+//
+// The byte-level half of stdio, added for the language server (`lsp`):
+// a framed protocol written to stdout, logging on stderr, and a stdin
+// byte stream whose frames can be split across reads. See that group's
+// own comment in `std/io.mo` for the contract each of these implements;
+// `runtime/src/runtime.c` holds the compiled backend's matching half.
+
+/// Bytes a previous `read_stdin_exact` call read but could not hand
+/// over, because they are the start of a multi-byte UTF-8 character
+/// whose remaining bytes had not arrived yet.
+///
+/// This exists because Monad's `String` here is an `Arc<str>` and MUST
+/// be valid UTF-8, while `read_stdin_exact`'s caller treats the result
+/// as an UNINTERPRETED BYTE STREAM and slices it at byte offsets it
+/// takes from an LSP `Content-Length` header. Converting a chunk that
+/// ends mid-character lossily (`from_utf8_lossy`) would replace that
+/// character with U+FFFD, which is a DIFFERENT LENGTH in bytes -- and
+/// every offset the caller computes afterwards would be shifted by the
+/// difference. So the incomplete tail is held here and prepended to the
+/// next read instead; the caller never sees it until it is a whole
+/// character.
+///
+/// A process-wide `Mutex`, not a thread-local: stdin is process-wide
+/// state, and two threads each holding a *half* of a character would
+/// both hand over a corrupt stream.
+static STDIN_CARRY: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+/// One `read` from stdin; `0` means EOF. Split out so both of
+/// `read_stdin_exact`'s read sites (the fill loop and the
+/// complete-the-character loop) share one error shape.
+fn read_stdin_chunk(buf: &mut [u8]) -> Result<usize, CoreEvalError> {
+  use std::io::Read;
+  let stdin = std::io::stdin();
+  let mut lock = stdin.lock();
+  lock
+    .read(buf)
+    .map_err(|e| CoreEvalError::NativeArgError(format!("read_stdin_exact failed: {e}")))
+}
+
+/// `IO.read_line : IO (Option String)` — one line from stdin WITHOUT
+/// its trailing newline, or `Option.none` at EOF (nothing read at all).
+///
+/// Uses `read_until(b'\n')` rather than `BufRead::read_line`: the
+/// latter REJECTS invalid UTF-8, and this is a protocol reader whose
+/// only job is to hand back what the peer sent. A final line with no
+/// trailing newline is `Option.some line`, and `\r` is deliberately NOT
+/// stripped.
+///
+/// No `STDIN_CARRY` handling is needed here, unlike `read_stdin_exact`
+/// just below: `\n` is ASCII, so it is always a character boundary, and
+/// `read_until` returns either up to and including that boundary or
+/// everything up to EOF -- never a lone prefix of a multi-byte
+/// character with more of it still to come.
+fn read_line(natives: &NativeTable) -> Result<Value, CoreEvalError> {
+  use std::io::BufRead;
+  let stdin = std::io::stdin();
+  let mut buf: Vec<u8> = Vec::new();
+  let n = stdin
+    .lock()
+    .read_until(b'\n', &mut buf)
+    .map_err(|e| CoreEvalError::NativeArgError(format!("read_line failed: {e}")))?;
+  let opt = if n == 0 {
+    let none = require_ctor(natives.well_known.option_none, "Option.none")?;
+    Value::Con {
+      tag: none.tag,
+      args: std::sync::Arc::new(Vec::new().into()),
+    }
+  } else {
+    if buf.last() == Some(&b'\n') {
+      buf.pop();
+    }
+    let line = String::from_utf8_lossy(&buf).into_owned();
+    let some = require_ctor(natives.well_known.option_some, "Option.some")?;
+    Value::Con {
+      tag: some.tag,
+      args: std::sync::Arc::new(vec![Value::Lit(IrLit::Str(line.into()))].into()),
+    }
+  };
+  io_wrap(natives, opt)
+}
+
+/// `IO.read_stdin_exact (n : I64) : IO String` — blocking read of UP TO
+/// `n` bytes from stdin; the result being SHORTER than `n` (including
+/// `""`) means EOF, and `n <= 0` returns `""`.
+///
+/// Two rules here are load-bearing and a future reader will otherwise
+/// "simplify" this into a lossy conversion -- see `STDIN_CARRY`'s own
+/// doc comment for why they exist:
+///
+///   1. Never return `""` while not at EOF. An empty result means
+///      end-of-stream to the caller's framing reader, which would then
+///      abandon the rest of the message. This matters most for `n = 1`
+///      (a byte-at-a-time reader), where the first byte of a multi-byte
+///      character would otherwise be all we have to show.
+///   2. Return the largest VALID UTF-8 PREFIX of what we hold, carrying
+///      any incomplete trailing bytes over to the next call rather than
+///      converting them. Only at EOF may a trailing incomplete sequence
+///      be flushed with `from_utf8_lossy` (there is no next call to
+///      complete it, and the caller's byte offsets are already past it).
+///
+/// Filling to `n` bytes before looking at UTF-8 is what makes "shorter
+/// than `n`" a reliable EOF signal rather than "the OS happened to
+/// return less than a pipe buffer this time".
+fn read_stdin_exact(args: &[Value], natives: &NativeTable) -> Result<Value, CoreEvalError> {
+  if args.is_empty() {
+    return Err(CoreEvalError::NativeArgError(
+      "read_stdin_exact needs 1 arg".into(),
+    ));
+  }
+  let n = extract_int(&args[0])?;
+  if n <= 0 {
+    return io_wrap(natives, Value::Lit(IrLit::Str(String::new().into())));
+  }
+  let n = n as usize;
+  let mut carry = match STDIN_CARRY.lock() {
+    Ok(guard) => guard,
+    // A panic in an unrelated native would otherwise turn every later
+    // read into a hard error; the carried bytes are still the right
+    // ones, so take them.
+    Err(poisoned) => poisoned.into_inner(),
+  };
+  let mut buf: Vec<u8> = std::mem::take(&mut *carry);
+  let mut chunk = vec![0u8; n];
+  let mut eof = false;
+  // Fill to `n` (or EOF) first.
+  while buf.len() < n && !eof {
+    let got = read_stdin_chunk(&mut chunk[..n - buf.len()])?;
+    if got == 0 {
+      eof = true;
+    } else {
+      buf.extend_from_slice(&chunk[..got]);
+    }
+  }
+  let result = loop {
+    match std::str::from_utf8(&buf) {
+      Ok(s) => {
+        let out = s.to_string();
+        buf.clear();
+        break out;
+      }
+      Err(e) => {
+        let valid = e.valid_up_to();
+        if valid > 0 {
+          // A valid prefix plus a trailing (possibly incomplete)
+          // character: hand over the prefix, carry the rest.
+          let out = std::str::from_utf8(&buf[..valid])
+            .expect("valid_up_to is a UTF-8 boundary")
+            .to_string();
+          buf.drain(..valid);
+          break out;
+        }
+        if e.error_len().is_some() || eof {
+          // Either the bytes are genuinely invalid (reading more can
+          // never make them valid) or we are at EOF with a half
+          // character. Nothing is left to wait for, so flush lossily --
+          // still non-empty, so rule 1 above holds.
+          let out = String::from_utf8_lossy(&buf).into_owned();
+          buf.clear();
+          break out;
+        }
+        // Entirely an incomplete character, and not at EOF: read on
+        // rather than returning "" (rule 1).
+        let got = read_stdin_chunk(&mut chunk)?;
+        if got == 0 {
+          eof = true;
+        } else {
+          buf.extend_from_slice(&chunk[..got]);
+        }
+      }
+    }
+  };
+  *carry = buf;
+  drop(carry);
+  io_wrap(natives, Value::Lit(IrLit::Str(result.into())))
+}
+
+/// `IO.write_stdout (s : String) : IO Unit` — write `s` to stdout
+/// VERBATIM: no trailing newline (the whole difference from
+/// `IO.println`) and no flush (a frame's pieces are written first, then
+/// `flush_stdout` once). See `write_file`'s own doc comment on why the
+/// `IO.io` wrapping is required; `Unit`'s own runtime shape still
+/// doesn't matter (never pattern-matched), so the empty string is the
+/// inner value.
+fn write_stdout(args: &[Value], natives: &NativeTable) -> Result<Value, CoreEvalError> {
+  if args.is_empty() {
+    return Err(CoreEvalError::NativeArgError(
+      "write_stdout needs 1 arg".into(),
+    ));
+  }
+  let s = extract_string(&args[0])?;
+  use std::io::Write;
+  let stdout = std::io::stdout();
+  let mut lock = stdout.lock();
+  lock
+    .write_all(s.as_bytes())
+    .map_err(|e| CoreEvalError::NativeArgError(format!("write_stdout failed: {e}")))?;
+  io_wrap(natives, Value::Lit(IrLit::Str(String::new().into())))
+}
+
+/// `IO.flush_stdout : IO Unit` — flush stdout. Nullary (like
+/// `current_time`), so no argument check.
+fn flush_stdout(natives: &NativeTable) -> Result<Value, CoreEvalError> {
+  use std::io::Write;
+  let stdout = std::io::stdout();
+  let mut lock = stdout.lock();
+  lock
+    .flush()
+    .map_err(|e| CoreEvalError::NativeArgError(format!("flush_stdout failed: {e}")))?;
+  io_wrap(natives, Value::Lit(IrLit::Str(String::new().into())))
+}
+
+/// `IO.write_stderr (s : String) : IO Unit` — write `s` to stderr
+/// verbatim, no trailing newline, and FLUSH it: a log line that sits in
+/// a buffer until process exit is no log line at all for a server that
+/// never exits. A native of its own rather than `IO.write_stdout` plus
+/// a stream argument, so a log line can never interleave into the
+/// protocol stream on fd 1.
+fn write_stderr(args: &[Value], natives: &NativeTable) -> Result<Value, CoreEvalError> {
+  if args.is_empty() {
+    return Err(CoreEvalError::NativeArgError(
+      "write_stderr needs 1 arg".into(),
+    ));
+  }
+  let s = extract_string(&args[0])?;
+  use std::io::Write;
+  let stderr = std::io::stderr();
+  let mut lock = stderr.lock();
+  lock
+    .write_all(s.as_bytes())
+    .map_err(|e| CoreEvalError::NativeArgError(format!("write_stderr failed: {e}")))?;
+  lock
+    .flush()
+    .map_err(|e| CoreEvalError::NativeArgError(format!("write_stderr failed: {e}")))?;
+  io_wrap(natives, Value::Lit(IrLit::Str(String::new().into())))
 }
 
 fn string_to_list(args: &[Value], natives: &NativeTable) -> Result<Value, CoreEvalError> {
