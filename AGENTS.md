@@ -1034,7 +1034,7 @@ cargo run -- test std/   # runs all std/ tests including new ones
 Optimize for a reader who has to change this code later, not just for it
 to typecheck once. Concretely, in order of how often each comes up.
 
-Cite these as **style rule 1**..**7**; a lint rule that enforces one names it
+Cite these as **style rule 1**..**8**; a lint rule that enforces one names it
 in its own doc comment, and
 `plans/implementations/code-style-and-lint-enforcement.md` maps each rule to
 the tier that checks it (fail-fast validator / `check` warning / linter mote)
@@ -1232,6 +1232,29 @@ that reaches codegen un-desugared — that third shape used to cost a
 whole bootstrap-ladder rung before anyone saw it (the self-compiled
 compiler printed `FAIL   (0 error(s))` and then blew the stack in
 `print_diagnostics`, recursing on a garbage list tail).
+
+8. **Prefer the literal syntax over a constructor function wherever the
+   language has one — and for the three that matter it does.** `[a, b]`
+   is a `List`, `(a, b)` is a `Pair` (a 3-tuple `(a, b, c)` is
+   `Pair a (Pair b c)`), and `{ f1 := v1, f2 := v2 }` builds a `struct`.
+   `List.cons a (List.cons b List.empty)` and `Pair.pair a b` spell the
+   same value in more words, and they spell the DATA STRUCTURE, which is
+   exactly what a reader should not have to reconstruct to learn that a
+   value is a two-element list. `#![mote { name := "hello", deps :=
+   [init] }]` at the top of `examples/hello.mo` is the shape to imitate;
+   `let t : Pair I64 Bool := (1, true)` (`init/src/tests.mo:411`) and
+   `let xs : List I64 := [1, 2]` (`std/src/list_tests3a.mo:8`) are the
+   two smallest ordinary uses.
+   **The one exception is a BARE struct literal in constructor-argument
+   or `return` position**, which the self-hosted backend compiles with
+   its fields read at the wrong offsets — silently, and only in a
+   compiled binary (see the struct-literal notes above): bind it to an
+   annotated local first (`let info : ModuleInfo := { ... } in
+   Option.some info`), or move it into its own return-typed def. An
+   ANNOTATED literal is desugared before elaboration and is safe
+   anywhere, and list and tuple literals have no such caveat at all.
+   _(Not in `plans/implementations/code-style-and-lint-enforcement.md`'s
+   tier map yet: no lint checks this and no corpus counter counts it.)_
 
 ### Rust Code Style
 
