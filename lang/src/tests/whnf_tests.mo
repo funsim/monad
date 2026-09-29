@@ -126,6 +126,38 @@ def test_whnf_local_binding_shadows_global : Bool :=
     let t : Term := free_var "idt" in
     Similar.similar (whnf idt_scope locals t) t
 
+// --- body-less declarations stay rigid ---
+
+#[test]
+def test_whnf_bodyless_decl_does_not_unfold_to_hole : Bool :=
+    // A declaration with no body (`def ax : P`, no `:=`) must NOT
+    // unfold: `build_scope_def` leaves it out of `def_bodies`, so
+    // `whnf_delta` finds nothing and the name stays a rigid free
+    // variable. Before that fix this reduced to `Term.hole`, which
+    // `unify_go` treats as matching ANY type. Body-less is how the
+    // cubical primitives (`proofs/src/cubical.mo`) are declared, so
+    // rigidity is load-bearing, not cosmetic.
+    let scope : Scope := scope_of "type P { p0 }\ndef ax : P" in
+    match whnf scope empty_locals (free_var "ax") {
+        Term.var _ _ => true,
+        Term.hole => false,
+        _ => false,
+    }
+
+#[test]
+def test_whnf_bodyless_decl_with_params_stays_rigid_under_application : Bool :=
+    // The parameterized shape: a body-less def parses to a `Term.lam`
+    // chain ending in `Term.hole`, and a saturated application used to
+    // delta-then-beta-reduce straight to `Term.hole`. Now delta never
+    // fires, so the application is stuck on the rigid name.
+    let scope : Scope := scope_of "type P { p0 }\ndef rel (x : P) : P" in
+    let applied : Term := Term.app (free_var "rel") (free_var "p0") in
+    match whnf scope empty_locals applied {
+        Term.app _ _ => true,
+        Term.hole => false,
+        _ => false,
+    }
+
 // --- rigid heads are already in WHNF ---
 
 #[test]
@@ -377,3 +409,4 @@ def test_whnf_iota_iota_chain_terminates_on_fuel : Bool :=
         Term.hole => false,
         _ => true,
     }
+

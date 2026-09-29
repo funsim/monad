@@ -515,10 +515,37 @@ def build_scope_def (df : Def) (path : ModulePath) (acc : ScopeData) : ScopeData
             let with_sig : ScopeData := scope_data_add_def_sig with_ret defname typ in
             // ... and the BODY, for delta reduction during conversion
             // checking (`ScopeData.def_bodies`, consumed by
-            // `lang/typecheck/whnf.mo`). `term_` is the same value
-            // `def_params_of_term` walked just above -- still fully in
-            // hand here even though `sd.body` discards it.
-            scope_data_add_def_body with_sig defname term_
+            // `lang/typecheck/whnf.mo`) -- but NOT when the decl has no
+            // body. A body-less def (`def f : T`, no `:=`) parses to a
+            // `Term.lam` chain ending in `Term.hole` (the attribute-
+            // agnostic `fail` arm of `def_body_block_or_none`,
+            // lang/parser.mo), and registering that hole here would let
+            // `whnf_delta` unfold the def's name to `Term.hole`, which
+            // `unify_go` treats as matching anything -- so a body-less
+            // declaration would convert against every type instead of
+            // staying rigid. Rigidity is load-bearing for the cubical
+            // primitives (body-less by design, `proofs/src/cubical.mo`)
+            // and was a latent hole for `#[native "eq_rec"]` before
+            // them. Skipping registration is strictly stricter: the
+            // only programs newly rejected are the ones that were being
+            // accepted by unfolding to top.
+            match def_body_is_real term_ {
+                Bool.true => scope_data_add_def_body with_sig defname term_,
+                Bool.false => with_sig,
+            }
+    }
+
+/// Does a def body carry a real body, or is it a body-less declaration?
+/// A def without `:=` parses to a parameter `Term.lam` chain ending in
+/// `Term.hole`; this walks that chain and reports what it ends in.
+/// `term_peel` at each step so a `Term.ctx` wrapper on a located build
+/// cannot hide the shape -- the same discipline `unify` applies.
+#[terminating]
+def def_body_is_real (t : Term) : Bool :=
+    match term_peel t {
+        Term.lam _dbg _typ body => def_body_is_real body,
+        Term.hole => false,
+        _ => true,
     }
 
 /// FALLBACK only, now that `Def.params` carries the real declared list:
