@@ -1,0 +1,56 @@
+# The Monad language server: the LSP protocol over `motes/toolkit`'s framing,
+# JSON-RPC and position conversion, and `lang`'s checker as the engine.
+#
+# This is the replacement for `rust-cli/src/lsp.rs`, which links `monad-core`
+# in-process. The Rust server is DEPRECATED and there is no parity requirement and
+# no backwards-compatibility requirement: what it gets wrong -- a URI whose
+# percent-escapes are never decoded, a position encoded as utf-16 with no
+# negotiation, a definition that resolves a shadowed local to the top-level def
+# of the same name -- is fixed here rather than reproduced. What it gets right is
+# kept only where it is also what the specification says.
+
+[mote]
+name = "lsp"
+version = "0.1.0"
+edition = "2026"
+
+# Sub-table, not an inline table (`std = { path = "../../std" }`): the
+# self-hosted TOML reader supports headers and not inline tables, and a manifest
+# it cannot parse makes `Mote.discover` return none -- which silently turns the
+# declared-deps check off for this mote rather than failing. See the note in the
+# repo root's mote.toml.
+#
+# The paths climb two levels because this mote lives under `motes/`.
+# `motes/toolkit/mote.toml` is the sibling precedent with the same shape.
+[dependencies.init]
+path = "../../init"
+
+[dependencies.std]
+path = "../../std"
+
+# `toolkit` is the whole substrate: `framing` reads a message off the stream,
+# `jsonrpc` turns it into a request or a notification, `position` converts between
+# the wire's utf-16 and the checker's bytes, `docstore` holds the open buffers,
+# `diagnostic` renders a checker diagnostic for an editor, and `text` finds the
+# identifier under the cursor.
+[dependencies.toolkit]
+path = "../toolkit"
+
+# `lang` is the engine, not a helper: the checker, the located parse, the
+# declaration span table and `Json` all come from here. Nothing in this mote parses
+# or checks source itself.
+[dependencies.lang]
+path = "../../lang"
+
+# `llvm` and `runtime` are declared because `lang::module` -- where `Diagnostic`,
+# `ModuleInfoCache` and the load path live -- is not self-contained the way
+# `lang::json` is: the compiler's own modules reach into codegen, codegen reaches
+# into `llvm`, and the IR type names come from `llvm::strmap`. Without these the
+# module graph fails to resolve with `module not found: llvm.strmap`, which names
+# the symptom and not the cause. `motes/toolkit/mote.toml` and
+# `motes/ffi_example/mote.toml` declare the same pair for the same reason.
+[dependencies.llvm]
+path = "../../llvm"
+
+[dependencies.runtime]
+path = "../../runtime"
