@@ -26,7 +26,7 @@
 use io {IO}
 use lsp::server {
   ServerState, ServerStep, lsp_at_eof, lsp_dispatch, lsp_frame, lsp_next_read, lsp_server_new,
-  server_initialized, server_step_exit, server_step_frames, server_step_state,
+  server_initialized, server_step_exit, server_step_bodies, server_step_state,
 }
 use toolkit::jsonrpc {rpc_parse}
 
@@ -74,7 +74,11 @@ def st_garbage : String := "{\"jsonrpc\":\"2.0\","
 // self-hosted compiler. Every read below goes through one of these single-level
 // accessors instead, which is the documented remedy.
 
-/// The first frame a step produced, or the empty string when it produced none.
+/// The first message BODY a step queued, or the empty string when it queued none.
+///
+/// A body and not a frame: the `Content-Length` header is added in one place,
+/// `lsp_write_frames`, and a test that read a frame here would be reading bytes no
+/// handler ever produces.
 #[partial]
 def st_first (fs : List String) : String :=
   match fs {
@@ -82,15 +86,15 @@ def st_first (fs : List String) : String :=
     List.cons f _rest => f,
   }
 
-/// Dispatch one wire message, answering the step and its first frame together.
+/// Dispatch one wire message, answering the step and its first body together.
 #[partial]
 def st_ask (st : ServerState) (text : String) : IO (Pair ServerStep String) := do {
     let step <- lsp_dispatch st (rpc_parse text);
-    return (Pair.pair step (st_first (server_step_frames step)))
+    return (Pair.pair step (st_first (server_step_bodies step)))
 }
 
 #[partial]
-def st_frame_of (answer : Pair ServerStep String) : String :=
+def st_body_of (answer : Pair ServerStep String) : String :=
   match answer {
     Pair.pair _step f => f,
   }
@@ -127,13 +131,13 @@ def st_handshake (text : String) : IO ServerState := do {
 #[test]
 def test_initialize_echoes_the_encoding_the_client_offered_first : IO Bool := do {
     let a <- st_ask lsp_server_new st_initialize_utf8;
-    return (String.contains (st_frame_of a) "\"positionEncoding\":\"utf-8\"")
+    return (String.contains (st_body_of a) "\"positionEncoding\":\"utf-8\"")
 }
 
 #[test]
 def test_initialize_follows_the_client_rather_than_a_constant : IO Bool := do {
     let a <- st_ask lsp_server_new st_initialize_utf16;
-    return (String.contains (st_frame_of a) "\"positionEncoding\":\"utf-16\"")
+    return (String.contains (st_body_of a) "\"positionEncoding\":\"utf-16\"")
 }
 
 /// A client that offered nothing gets utf-16, which is the specification's floor: every
@@ -141,7 +145,7 @@ def test_initialize_follows_the_client_rather_than_a_constant : IO Bool := do {
 #[test]
 def test_initialize_defaults_to_utf16_for_a_pre_317_client : IO Bool := do {
     let a <- st_ask lsp_server_new st_initialize_plain;
-    return (String.contains (st_frame_of a) "\"positionEncoding\":\"utf-16\"")
+    return (String.contains (st_body_of a) "\"positionEncoding\":\"utf-16\"")
 }
 
 /// The capabilities are a promise: a client that sees a provider it did not see here
@@ -150,7 +154,7 @@ def test_initialize_defaults_to_utf16_for_a_pre_317_client : IO Bool := do {
 #[test]
 def test_initialize_advertises_no_unimplemented_provider : IO Bool := do {
     let a <- st_ask lsp_server_new st_initialize_utf8;
-    let f : String := st_frame_of a;
+    let f : String := st_body_of a;
     return (Bool.not (String.contains f "completionProvider")
               && String.contains f "\"hoverProvider\":true"
               && String.contains f "\"definitionProvider\":true"
@@ -178,14 +182,14 @@ def test_the_initialized_notification_completes_the_handshake : IO Bool := do {
 #[test]
 def test_a_request_before_initialize_is_refused_with_not_initialized : IO Bool := do {
     let a <- st_ask lsp_server_new st_hover;
-    return (String.contains (st_frame_of a) "-32002")
+    return (String.contains (st_body_of a) "-32002")
 }
 
 #[test]
 def test_a_hover_is_answered_once_the_handshake_is_done : IO Bool := do {
     let st : ServerState <- st_handshake st_initialize_utf8;
     let a <- st_ask st st_hover;
-    let f : String := st_frame_of a;
+    let f : String := st_body_of a;
     return (Bool.not (String.contains f "-32002") && String.contains f "\"result\":null")
 }
 
@@ -195,7 +199,7 @@ def test_a_hover_is_answered_once_the_handshake_is_done : IO Bool := do {
 def test_an_unimplemented_request_is_answered_method_not_found : IO Bool := do {
     let st : ServerState <- st_handshake st_initialize_utf8;
     let a <- st_ask st st_completion;
-    return (String.contains (st_frame_of a) "-32601")
+    return (String.contains (st_body_of a) "-32601")
 }
 
 /// The reply echoes the id the client sent, which is the only way it can tell which of
@@ -204,7 +208,7 @@ def test_an_unimplemented_request_is_answered_method_not_found : IO Bool := do {
 def test_a_reply_echoes_the_request_id : IO Bool := do {
     let st : ServerState <- st_handshake st_initialize_utf8;
     let a <- st_ask st st_completion;
-    return (String.contains (st_frame_of a) "\"id\":4")
+    return (String.contains (st_body_of a) "\"id\":4")
 }
 
 // --- Notifications ---
@@ -215,13 +219,13 @@ def test_a_reply_echoes_the_request_id : IO Bool := do {
 #[test]
 def test_a_didchange_without_params_is_dropped_not_answered : IO Bool := do {
     let a <- st_ask lsp_server_new st_did_change_bare;
-    return (String.beq (st_frame_of a) "")
+    return (String.beq (st_body_of a) "")
 }
 
 #[test]
 def test_an_unknown_notification_produces_no_frame : IO Bool := do {
     let a <- st_ask lsp_server_new "{\"jsonrpc\":\"2.0\",\"method\":\"$/progress\"}";
-    return (String.beq (st_frame_of a) "")
+    return (String.beq (st_body_of a) "")
 }
 
 /// `$/cancelRequest` arrives for every request a user aborts, so it is acted on by doing
@@ -229,7 +233,7 @@ def test_an_unknown_notification_produces_no_frame : IO Bool := do {
 #[test]
 def test_a_cancel_request_produces_no_frame : IO Bool := do {
     let a <- st_ask lsp_server_new "{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":1}}";
-    return (String.beq (st_frame_of a) "")
+    return (String.beq (st_body_of a) "")
 }
 
 /// Input that is not JSON at all gets the parse error with a null id: the request that
@@ -238,7 +242,7 @@ def test_a_cancel_request_produces_no_frame : IO Bool := do {
 #[test]
 def test_an_unreadable_message_gets_a_parse_error_with_a_null_id : IO Bool := do {
     let a <- st_ask lsp_server_new st_garbage;
-    let f : String := st_frame_of a;
+    let f : String := st_body_of a;
     return (String.contains f "-32700" && String.contains f "\"id\":null")
 }
 
@@ -267,7 +271,7 @@ def test_exit_after_shutdown_exits_zero : IO Bool := do {
 def test_shutdown_replies_and_leaves_the_session_running : IO Bool := do {
     let st : ServerState <- st_handshake st_initialize_utf8;
     let a <- st_ask st st_shutdown;
-    return (String.contains (st_frame_of a) "\"result\":null"
+    return (String.contains (st_body_of a) "\"result\":null"
               && Bool.not (st_code_is (st_step_of a) 0))
 }
 
@@ -293,6 +297,24 @@ def test_a_frame_counts_a_non_ascii_body_in_bytes_not_characters : Bool :=
 #[test]
 def test_a_frame_of_an_empty_body_is_still_a_frame : Bool :=
   String.beq (lsp_frame "") "Content-Length: 0\r\n\r\n"
+
+/// The header is added in exactly ONE place, and these are the two halves that say so:
+/// what a handler queues is a body that starts with `{` and carries no header, and what
+/// reaches the wire is that body with the header in front of it. A call site that framed
+/// its own reply would pass the second half and fail the first -- and it would put a
+/// second header on the wire, which is a client-side parse failure produced by a server
+/// that looks entirely healthy from the inside. This is the pin for a real defect: every
+/// reply the server sent was a bare body, and nothing asserted the header because the
+/// only frame tests in this file framed a literal by hand.
+#[test]
+def test_a_dispatched_reply_is_a_body_that_the_writer_frames : IO Bool := do {
+    let a <- st_ask lsp_server_new st_initialize_utf8;
+    let body : String := st_body_of a;
+    let wire : String := lsp_frame body;
+    return (String.beq (String.slice body 0 1) "{"
+              && Bool.not (String.contains body "Content-Length")
+              && String.beq (String.slice wire 0 16) "Content-Length: ")
+}
 
 // --- The read loop's two decisions ---
 

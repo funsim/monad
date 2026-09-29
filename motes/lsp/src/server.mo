@@ -141,50 +141,58 @@ def lsp_server_marked_shutdown (st : ServerState) : ServerState :=
 
 // --- One step of the loop ---
 
-/// What handling one message produced: the state to carry on with, the frames to
-/// write to stdout, and the exit code if this message ended the session.
+/// What handling one message produced: the state to carry on with, the message bodies
+/// to write to stdout, and the exit code if this message ended the session.
 ///
-/// THE FRAMES ARE RETURNED RATHER THAN WRITTEN so that the decision and the delivery
+/// THE BODIES ARE RETURNED RATHER THAN WRITTEN so that the decision and the delivery
 /// are separable -- the tests in `src/tests/server_tests.mo` assert on the exact bytes
 /// a message is answered with, which a handler that wrote them itself could not offer.
 /// `exit_code` being `Option I64` rather than a sentinel is the same idea: a step that
 /// does not end the session says so, and no exit code is a legal exit code.
+///
+/// THEY ARE BODIES AND NOT FRAMES, which is a distinction this field's old name blurred
+/// to the point of a real defect: each one is JSON that still needs its `Content-Length`
+/// header, and for a while none of them got one, so the server answered every message
+/// with bytes no client can parse. The header is added in exactly one place,
+/// `lsp_write_frames`, which is also the only place any byte reaches stdout. Framing at
+/// the call sites instead would be twenty-odd chances to forget it, and a server that
+/// forgot on one of them would look to a client exactly like a server that had hung.
 pub struct ServerStep {
   state : ServerState,
-  frames : List String,
+  bodies : List String,
   exit_code : Option I64,
 }
 
 pub def server_step_state (s : ServerStep) : ServerState := s.state
 
-pub def server_step_frames (s : ServerStep) : List String := s.frames
+pub def server_step_bodies (s : ServerStep) : List String := s.bodies
 
 pub def server_step_exit (s : ServerStep) : Option I64 := s.exit_code
 
 /// Continue with the same state and say nothing.
 def lsp_step_quiet (st : ServerState) : ServerStep :=
-  ServerStep.mk st lsp_no_frames lsp_no_exit
+  ServerStep.mk st lsp_no_bodies lsp_no_exit
 
 /// Continue with the state a document edit left behind.
 def lsp_step_edited (st : ServerState) (docs : DocStore) (checks : CheckStore) : ServerStep :=
-  ServerStep.mk (lsp_server_edited st docs checks) lsp_no_frames lsp_no_exit
+  ServerStep.mk (lsp_server_edited st docs checks) lsp_no_bodies lsp_no_exit
 
 /// Continue with edited state, having said one thing.
-def lsp_step_says (st : ServerState) (docs : DocStore) (checks : CheckStore) (frame : String)
+def lsp_step_says (st : ServerState) (docs : DocStore) (checks : CheckStore) (body : String)
     : ServerStep :=
-  ServerStep.mk (lsp_server_edited st docs checks) (List.cons frame lsp_no_frames) lsp_no_exit
+  ServerStep.mk (lsp_server_edited st docs checks) (List.cons body lsp_no_bodies) lsp_no_exit
 
 /// Continue with the same state, having said one thing.
-def lsp_step_reply (st : ServerState) (frame : String) : ServerStep :=
-  ServerStep.mk st (List.cons frame lsp_no_frames) lsp_no_exit
+def lsp_step_reply (st : ServerState) (body : String) : ServerStep :=
+  ServerStep.mk st (List.cons body lsp_no_bodies) lsp_no_exit
 
 /// End the session. The state is carried out with the code so a caller can still see
 /// what it was serving, which is what a test asserting on the exit path wants.
 def lsp_step_exit (st : ServerState) (code : I64) : ServerStep :=
-  ServerStep.mk st lsp_no_frames (Option.some code)
+  ServerStep.mk st lsp_no_bodies (Option.some code)
 
-/// The empty frame list, named for the `Map.empty` reason.
-def lsp_no_frames : List String := List.empty
+/// The empty body list, named for the `Map.empty` reason.
+def lsp_no_bodies : List String := List.empty
 
 /// No exit code, for the same reason.
 def lsp_no_exit : Option I64 := Option.none
@@ -632,18 +640,24 @@ def lsp_at_eof (chunk : String) : Bool :=
 pub def lsp_frame (body : String) : String :=
   "Content-Length: " ++ I64.to_string (String.length body) ++ "\r\n\r\n" ++ body
 
-/// Write every frame, in order, and no flush.
+/// Write every message BODY, framed, in order, and no flush.
+///
+/// THIS IS WHERE THE `Content-Length` HEADER IS ADDED, and it is the only place any byte
+/// is written to stdout at all -- one `IO.write_stdout` call site, for one reason: a
+/// frame whose header each caller had to remember is a frame with twenty ways to be
+/// wrong and nothing to catch it from the inside. Here the composition is the only path
+/// a body can take to the wire.
 ///
 /// The flush is the caller's, and it is separate because it must happen ONCE per
-/// message rather than once per frame: a message that produces two notifications (a
+/// message rather than once per body: a message that produces two notifications (a
 /// clear and a publish, say) should reach the client as one write's worth of bytes,
 /// and a flush between them would show the client half a reply.
 #[partial]
-def lsp_write_frames (fs : List String) : IO Unit :=
-  match fs {
+def lsp_write_frames (bs : List String) : IO Unit :=
+  match bs {
     List.empty => IO.pure Unit.unit,
-    List.cons f rest => do {
-      IO.write_stdout f;
+    List.cons b rest => do {
+      IO.write_stdout (lsp_frame b);
       lsp_write_frames rest
     }
   }
@@ -668,14 +682,14 @@ pub def lsp_loop (st : ServerState) (buf : String) : IO I64 := do {
         },
         FrameRead.bad_header reason => do {
             IO.write_stderr ("monad-lsp: bad frame: " ++ reason ++ "\n");
-            let frame : String := lsp_frame (rpc_encode_error_no_id rpc_code_parse_error reason);
-            lsp_write_frames (List.cons frame lsp_no_frames);
+            let body : String := rpc_encode_error_no_id rpc_code_parse_error reason;
+            lsp_write_frames (List.cons body lsp_no_bodies);
             IO.flush_stdout;
             lsp_loop st ""
         },
         FrameRead.frame body rest => do {
             let step <- lsp_dispatch st (rpc_parse body);
-            lsp_write_frames (server_step_frames step);
+            lsp_write_frames (server_step_bodies step);
             IO.flush_stdout;
             lsp_after_step rest step
         },
