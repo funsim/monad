@@ -19,6 +19,10 @@
 
 use lang::src::types {concrete, forall, hole, id, named, pi, sort, succ}
 use lib::checker::harness {accepted, rejected, infers_sort_at}
+use lang::module {try_parse_decls}
+use lang::scope {build_scope_from_decls}
+use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
+use lang::types {ModulePath, Scope, ScopeData, cub, cub_interval, level_const, sentinel}
 
 // --- The soundness pin ---
 
@@ -187,3 +191,112 @@ def pi_universe_defaults_an_unknown_component_to_1 : Bool :=
 #[test]
 def pi_universe_of_prop_components_stays_at_1 : Bool :=
     infers_sort_at (Term.pi (Term.sort (SortLevel.concrete 0)) (Term.sort (SortLevel.concrete 0))) 1
+
+// --- The interval is a primitive kind, not a universe resident ---
+//
+// Stage 1 step 4: `Π(i : I) A` with `A : Prop` must stay in `Prop`. The
+// interval's checker-reported type is `Sort 1` (`I : Type`, matching the
+// declared signature in `proofs/src/cubical.mo`), and `level_of_type`
+// defaults a non-sort to `concrete 1`, so without `pi_domain_level`'s
+// bare-interval arm every `I -> A` lands one universe too high -- a
+// `Prop`-valued path family bumped out of `Prop`, and Stage 2's
+// `PathP : (A : I -> Sort l) -> A i0 -> A i1 -> Sort l` unstateable at
+// `l = 0`. A dimension binder contributes nothing to the universe level,
+// which is the formation rule CCHM gives `PathP`.
+//
+// The DISCRIMINATING codomain is not a written sort. A codomain `Prop`
+// has type `Sort 1` and contributes 1, so `I -> Prop` infers `Sort 1`
+// under both the fixed and the unfixed rule and cannot tell them apart
+// (the two pins further down hold that line instead). A def `A : Prop`
+// contributes 0 -- its type IS `Sort 0` -- which is what makes
+// `Π(i : I) A` the pin that can fail. That needs a def in the scope, so
+// these pins cannot run against the builtins-only `proof_scope` the
+// harness's `infers_sort_at` uses, and build the same two-declaration
+// scope `lang/src/tests`'s cubical pins are built from instead.
+
+def interval_kind_path : ModulePath :=
+    ModulePath.mp (List.cons (Identifier.id "proofs_sort_interval") List.empty)
+
+def interval_kind_source : String :=
+    String.concat "#[cubical \"interval\"] def I : Type\n"
+    "def A : Prop\n"
+
+/// A parse failure yields an empty scope, which makes every pin below
+/// fail rather than silently pass against a scope with nothing bound.
+def interval_kind_scope : Scope :=
+    let sd : ScopeData :=
+        match try_parse_decls interval_kind_source {
+            Option.some decl_list => build_scope_from_decls interval_kind_path decl_list,
+            Option.none => build_scope_from_decls interval_kind_path List.empty,
+        } in
+    {
+        module_id := interval_kind_path,
+        scope := sd,
+        parent := Option.none,
+    }
+
+/// A free (global) reference by name -- the same helper idiom
+/// `lang/src/tests`'s whnf tests use.
+def kind_var (nm : String) : Term := Term.var sentinel (DebugName.named (Identifier.id nm))
+
+/// `inferred_sort_level` above, against `interval_kind_scope` instead of
+/// `proof_scope` -- the universe rule under test needs a def in the
+/// scope, which `proof_scope` cannot hold. Nothing else differs, and
+/// the folding through `level_const` is copied for the same reason its
+/// own doc comment gives: the Pi arm answers a `max`, not a `concrete`.
+def inferred_sort_level_in_kind_scope (term : Term) : Option I64 :=
+    match type_check term Term.hole interval_kind_scope empty_local_types empty_locals {
+        ok tt =>
+            match tt.typ {
+                Term.sort level => level_const level,
+                _ => Option.none,
+            },
+        err _ => Option.none,
+    }
+
+/// Does the checker infer `term`'s type in `interval_kind_scope` to be
+/// the sort at concrete level `n`?
+def infers_sort_at_in_kind_scope (term : Term) (n : I64) : Bool :=
+    match inferred_sort_level_in_kind_scope term {
+        Option.some m => I64.beq m n,
+        Option.none => false,
+    }
+
+/// THE pin: a Prop-valued family over the interval stays in `Prop`. This
+/// is the one that fails when the bare-interval arm is removed -- it
+/// infers `Sort 1` and with it every `Prop`-valued path family.
+#[test]
+def pi_over_the_interval_and_a_prop_variable_stays_in_prop : Bool :=
+    infers_sort_at_in_kind_scope (Term.pi cub_interval (kind_var "A")) 0
+
+/// The same domain by bare NAME reference -- the shape a SOURCE
+/// `(i : I) -> A` lowers to, where the domain only becomes the cubical
+/// term inside `type_check` itself (the Stage 1 step 3 rewrite). Pinned
+/// separately because probing the raw domain instead of the checked one
+/// would pass every hand-built pin above and silently miss the route
+/// actual source takes.
+#[test]
+def pi_over_the_interval_by_reference_stays_in_prop : Bool :=
+    infers_sort_at_in_kind_scope (Term.pi (kind_var "I") (kind_var "A")) 0
+
+/// The codomain's written `Prop` contributes 1 (`Prop : Type`), so even
+/// with the domain contributing 0 the Pi stays at 1 -- the pin that says
+/// the interval arm did not quietly zero every Pi it touches.
+#[test]
+def pi_over_the_interval_and_a_written_prop_stays_at_1 : Bool :=
+    infers_sort_at_in_kind_scope (Term.pi cub_interval (Term.sort (SortLevel.concrete 0))) 1
+
+/// The control on the OTHER side: a written `Prop` domain contributes 1
+/// even against a 0-contributing codomain, so the 0 above is the
+/// interval's alone and not something any small codomain drags in.
+#[test]
+def pi_over_prop_and_a_prop_variable_stays_at_1 : Bool :=
+    infers_sort_at_in_kind_scope (Term.pi (Term.sort (SortLevel.concrete 0)) (kind_var "A")) 1
+
+/// Interval-VALUED is not the interval: a dimension in domain position
+/// keeps the ordinary `level_of_type` answer (its type is `I`, not a
+/// sort, so the default 1), which is the arm testing bare-interval-ness
+/// rather than interval-typedness.
+#[test]
+def pi_over_a_dimension_stays_at_1 : Bool :=
+    infers_sort_at_in_kind_scope (Term.pi (cub CubicalPrim.i0 List.empty) (kind_var "A")) 1

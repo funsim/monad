@@ -8,8 +8,8 @@ use lang::types {
 }
 use lib::scope {build_scope_from_decls, scope_find_inductive}
 use lib::typecheck::infer {
-  CalleeDomain, TypedTerm, empty_local_types, empty_locals, lam_binder_hint,
-  type_check, type_check_match_case
+  CalleeDomain, TypedTerm, empty_local_types, empty_locals,
+  is_uninformative_carrier, lam_binder_hint, type_check, type_check_match_case
 }
 
 open Term {app, forall, hole, lam, lit, pi, var}
@@ -1236,3 +1236,37 @@ def test_cubical_rejects_wrong_arity : Bool :=
             err _ => true,
         },
     }
+
+// --- The interval is a primitive kind (Stage 1 step 4) ---
+//
+// `is_uninformative_carrier` decides whether a Pi domain can be an
+// instance-resolution carrier. The interval must count as uninformative
+// like a hole or a sort: an `I -> A` binder is a DIMENSION binder and
+// says nothing about `A`'s value, so without this arm
+// `carrier_from_pi_chain` reports `I` as the carrier of every `I -> A`
+// and instance resolution silently picks wrong.
+
+/// The bare interval is a universe placeholder in the same sense a sort
+/// is -- pinned directly, because the arm is a leaf rule and the
+/// observable route through instance resolution needs a class and an
+/// instance to even reach it.
+#[test]
+def test_interval_is_an_uninformative_carrier : Bool :=
+    is_uninformative_carrier cub_interval
+
+/// Interval-VALUED is not interval: `i0` and `ineg i0` are dimensions,
+/// not the kind itself, so they stay carrier candidates -- the arm tests
+/// bare-interval-ness, not interval-typedness.
+#[test]
+def test_a_dimension_is_not_an_uninformative_carrier : Bool :=
+    not (is_uninformative_carrier cub_i0)
+        && not (is_uninformative_carrier (cub_ineg cub_i0))
+
+/// An ordinary term variable is informative, and the pre-existing arms
+/// still hold: the negative control that says adding the interval arm
+/// did not quietly widen the predicate.
+#[test]
+def test_a_term_variable_is_not_an_uninformative_carrier : Bool :=
+    not (is_uninformative_carrier (var 0 (named (id "x"))))
+        && is_uninformative_carrier Term.hole
+        && is_uninformative_carrier (sort_n 1)

@@ -5,10 +5,11 @@ use lang::types {
   LocalScope, LocalVar, Location, MatchCase, ModulePath, NamePath, NameRef,
   Native, NumSuffix, Param, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, Similar, SortLevel, StructLitField, Term, TypeConstraint,
-  TypeError, concrete, cub_interval, cubical_arity, cubical_prim_name,
-  cubical_result_type, field_access_chain, id_eq, id_member, level_lt,
-  level_of_type, list_rev_loop, list_reverse, many, max, package_private,
-  sentinel, show_identifier, show_name_path, sort_level_of, succ, term_peel,
+  TypeError, concrete, cub_interval, cubical_arity, cubical_prim_eq,
+  cubical_prim_name, cubical_result_type, field_access_chain, id_eq, id_member,
+  level_lt, level_of_type, list_rev_loop, list_reverse, many, max,
+  package_private, sentinel, show_identifier, show_name_path, sort_level_of,
+  succ, term_peel,
 }
 use lang::scope {
   ClassMethodRef, DictBinding, build_dict_field_projection_checked,
@@ -213,6 +214,18 @@ def is_uninformative_carrier (t : Term) : Bool :=
         Term.hole => true,
         // A sort is a universe placeholder too.
         Term.sort _ => true,
+        // So is the interval: an `I -> A` binder is a dimension binder
+        // (Stage 1 step 4), and a dimension says nothing about `A`'s
+        // value -- leaving this arm out makes `carrier_from_pi_chain`
+        // report `I` as the instance carrier of every `I -> A`, and
+        // instance resolution silently picks wrong. Arity 0 is part of
+        // the test: a cubical term with arguments is a dimension
+        // EXPRESSION, not the interval itself, and stays a candidate.
+        Term.cubical c =>
+            match c {
+                { prim := p, args := as } =>
+                    cubical_prim_eq p CubicalPrim.interval && List.is_empty as,
+            },
         _ => false,
     }
 
@@ -3660,7 +3673,10 @@ def type_check_forall (dbg : DebugName) (kind : Term) (body : Term) (scope : Sco
         err e => err e,
     }
 
-/// Type check a Pi type. Universe rule as in `type_check_forall` above.
+/// Type check a Pi type. Universe rule as in `type_check_forall` above,
+/// except that the DOMAIN goes through `pi_domain_level`: a domain that
+/// peels to the bare interval contributes `concrete 0`, not the level of
+/// its checker-reported type.
 def type_check_pi (arg : Term) (ret : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match type_check arg Term.hole scope local_types locals {
         ok arg_tt =>
@@ -3668,11 +3684,50 @@ def type_check_pi (arg : Term) (ret : Term) (scope : Scope) (local_types : List 
             match type_check ret Term.hole scope extended_types locals {
                 ok ret_tt =>
                     let pi_term : Term := Term.pi arg ret in
-                    let universe : Term := Term.sort (SortLevel.max (level_of_type arg_tt.typ) (level_of_type ret_tt.typ)) in
+                    let universe : Term :=
+                        Term.sort (SortLevel.max (pi_domain_level arg_tt.term arg_tt.typ)
+                            (level_of_type ret_tt.typ)) in
                     ok (mk_typed pi_term universe),
                 err e => err e,
             },
         err e => err e,
+    }
+
+/// The universe contribution of a Pi domain (Stage 1 step 4). A domain
+/// that peels to the bare interval contributes `concrete 0`, because the
+/// interval is a primitive KIND, not a resident of the universe
+/// hierarchy: its checker-reported type is `Sort 1` (so `I : Type` holds,
+/// matching the declared signature in `proofs/src/cubical.mo`), and
+/// `level_of_type` defaults a non-sort to `concrete 1` -- so without
+/// this arm every `I -> A` lands one universe too high, bumping a
+/// `Prop`-valued path family out of `Prop` and making Stage 2's
+/// `PathP : (A : I -> Sort l) -> A i0 -> A i1 -> Sort l` unstateable at
+/// `l = 0`. A dimension binder contributes nothing to the universe
+/// level, which is the formation rule CCHM gives `PathP`.
+///
+/// The probe is on the CHECKED domain (`arg_tt.term`), not the raw one,
+/// peeled through `Term.ctx` -- a Pi domain is type position, one of the
+/// placement rules `kind_wants_loc` applies in `--debug` builds, so the
+/// wrapper can sit right here and a direct match would see a non-debug
+/// build accept what a debug build rejects: the exact split the
+/// debug-transparency oracle exists to police. Checking first is also
+/// what makes the SOURCE spelling work: a source `(i : I) -> A` lowers
+/// the domain to a bare name reference, which only becomes the cubical
+/// term inside `type_check` (the Stage 1 step 3 rewrite); the raw term a
+/// `type_check_pi` caller hands in can be a `var` for exactly the same
+/// domain. Anything that is not the bare interval keeps the ordinary
+/// `level_of_type` answer, dimension expressions included: a non-bare
+/// cubical term is still interval-valued, but it is not the kind itself.
+def pi_domain_level (checked_arg : Term) (arg_typ : Term) : SortLevel :=
+    match term_peel checked_arg {
+        Term.cubical c =>
+            match c {
+                { prim := p, args := as } =>
+                    if cubical_prim_eq p CubicalPrim.interval && List.is_empty as
+                    then SortLevel.concrete 0
+                    else level_of_type arg_typ,
+            },
+        _ => level_of_type arg_typ,
     }
 
 /// Type check a sort universe level.
