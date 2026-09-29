@@ -1154,8 +1154,21 @@ pub type Term {
     /// `!dbg` from a `--debug` build and it must be byte-identical to the
     /// non-debug build.
     ///
-    /// Constructed ONLY by the located parser entry point, so `check`,
-    /// `test` and a non-debug `compile` never see one.
+    /// Constructed on EVERY path, not only under `compile --debug`. The
+    /// located entry point is the one production parse site:
+    /// `parse_all_decls` (`lang/src/module.mo`) is written against
+    /// `decls_parser_located`, so `check`, `test`, `compile` and `pretty`
+    /// all see wrappers, and the corpus exercises transparency
+    /// continuously rather than only in a debug build. (Corrected
+    /// 2026-09-29: this said the opposite -- "constructed ONLY by the
+    /// located parser entry point, so `check`, `test` and a non-debug
+    /// `compile` never see one" -- and believing it is exactly what makes
+    /// a reader conclude a new tool must switch the check path to the
+    /// located parser. It must not; it is already there.) Not every node
+    /// carries one: `kind_wants_loc` (`lang/src/parser/lower_parse.mo`)
+    /// excludes the kinds whose position is not worth recording, and a
+    /// located def's BODY carries one by construction
+    /// (`lang/src/codegen/ctx.mo`).
     ctx (loc: Location) (term: Term),
     /// A sort, at a level that may be a plain numeral or a level expression
     /// (`var`/`max`/`succ`). The ONLY sort spelling at the canonical term

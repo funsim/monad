@@ -4,14 +4,24 @@
 /// vs. type diagnostics across `core/src/parser/error.rs` and
 /// `core/src/eval/type.rs::type_error_as_diagnostics`.
 ///
-/// Unlike `ParseError`, `TypeError` (and `Term` generally) carries no
-/// source location at all — there is no span/offset anywhere in the AST
-/// once parsing is done. So a rendered `TypeError` can say *which
-/// declaration* failed and *why*, but not *line:column* the way a parse
-/// error can — `render_type_error` takes a `context_name` (typically a
-/// declaration's name) to stand in for that missing location. Threading
-/// real spans through `Term` construction across the whole grammar
-/// would be a much larger project and isn't attempted here.
+/// Unlike `ParseError`, `TypeError` carries no source location — but that
+/// is a fact about the ERROR, not about the AST. Terms DO carry locations
+/// (`Term.ctx` wrappers, built by the located parse that every path runs:
+/// see `Term.ctx`'s own doc in `lang/src/types.mo`); none of them reaches a
+/// payload. `type_check_located` discards the location when the check
+/// FAILS (`lang/src/typecheck/infer.mo`'s `err e => err e`), `unify` peels
+/// wrappers at entry (`lang/src/typecheck/unify.mo`), and the
+/// name-resolution variants — `unknown_var`, the most common diagnostic
+/// there is — have no term field to carry one at all. So a rendered
+/// `TypeError` can say *which declaration* failed and *why*, but not
+/// *line:column* the way a parse error can — `render_type_error` takes a
+/// `context_name` (typically a declaration's name) to stand in for that
+/// missing location. This is measured, not assumed: the five probes in
+/// `lang/src/tests/unify_tests.mo` pin it, including the nested-operand
+/// case, where a payload can have a bare root and a LOCATED child.
+/// Attaching the location at the innermost enclosing located node is the
+/// follow-up that would make ranges expression-granular; it is not
+/// attempted here.
 
 use lang::types {
   Identifier, NameRef, TypeError, concrete, id, show_identifier, show_name_path,
