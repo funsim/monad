@@ -34,6 +34,7 @@ from pathlib import Path
 # Directories whose `.mo` files make up the corpus, in the order the sweep uses.
 CORPUS_DIRS = [
     "init/src", "std/src", "lang/src", "cli/src", "llvm/src", "runtime/src",
+    "build/src",
     "motes", "examples", "slow_tests/src", "bench/src", "proofs/src",
 ]
 

@@ -15,6 +15,7 @@ members = [
   "cli",
   "llvm",
   "runtime",
+  "build",
   "slow_tests",
   "bench",
   "proofs",

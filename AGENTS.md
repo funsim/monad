@@ -66,15 +66,21 @@ a different branch and cause confusion.
 │       ├── emit.mo       # the term compiler and the multi-module pipeline
 │       ├── runtime.c     # the C runtime linked into every compiled binary
 │       └── runtime.mo    # LLVM IR for the natives that are generated, not written in C
+├── build/            # Build orchestrator: input hashing, the content-addressed
+│                     # store, and the cache that lets check/test/link skip work
+│                     # already done. Top-level rather than motes/monad-build/
+│                     # because `cli` dispatches into it -- a toolchain
+│                     # component like llvm/ and runtime/, not a sample
 ├── examples/         # Example programs
 ├── bench/            # Standalone .mo micro-benchmarks (Bench.now/Bench.report,
 │                     # #[test]-driven) -- deliberately NOT swept by the
-│                     # pre-commit hook's `test init std lang examples`, since
+│                     # pre-commit hook (which type-CHECKS `init std examples
+│                     # lang cli llvm runtime build motes`, devenv.nix), since
 │                     # benchmarks are for occasional manual measurement, not
 │                     # every-commit correctness checking
 ├── slow_tests/       # Real #[test]s, deliberately NOT swept by the pre-commit
 │                     # hook (same exclusion mechanism as bench/ -- outside its
-│                     # fixed `init std lang examples` directory list). Five
+│                     # fixed directory list, devenv.nix's monad-check). Five
 │                     # files, moved here purely for cost (measured directly,
 │                     # `cargo run --release -- test init std lang examples
 │                     # slow_tests --json`, to be 684s of the corpus's 747.5s
@@ -3277,7 +3283,7 @@ for this repo.
 
 ### Pre-commit Hooks
 
-Always commit with pre-commit hooks enabled. **Never** use `git commit --no-verify` — the pre-commit hooks ensure clippy, rustfmt, `cargo test`, and `cargo run --release -- test init std lang examples` all pass before each commit. If a hook fails:
+Always commit with pre-commit hooks enabled. **Never** use `git commit --no-verify` — the pre-commit hooks ensure clippy, rustfmt, `cargo test --release`, the docs-check, and `cargo run --release -- check init std examples lang cli llvm runtime build motes` all pass before each commit. (`devenv.nix`'s `git-hooks.hooks` is the source of truth for that list; this prose has been wrong before, so check there rather than here if they disagree.) If a hook fails:
 1. Read the error message to identify the issue
 2. Fix the underlying problem (code warnings, test failures, formatting)
 3. Stage the fix and retry the commit

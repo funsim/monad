@@ -238,7 +238,7 @@
     monad-check = {
       enable = true;
       entry = ''
-        cargo run --release -- check init std examples lang cli llvm runtime motes
+        cargo run --release -- check init std examples lang cli llvm runtime build motes
       '';
       pass_filenames = false;
       files = "\\.(rs|mo)$";

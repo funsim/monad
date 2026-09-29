@@ -1,0 +1,22 @@
+# The build orchestrator: input hashing, the content-addressed store, and
+# the cache that lets `check`, `test` and a link skip work already done.
+#
+# A top-level mote rather than `motes/monad-build/` (which
+# plans/library-ideas/monad-build.md specifies) because `cli` dispatches
+# into it: that makes it a toolchain component like `llvm` and `runtime`,
+# not a sample under `motes/*`. Recorded in
+# plans/packaging/mote-build-deps-artifacts-targets.md as decision D2.
+
+[mote]
+name = "build"
+version = "0.1.0"
+edition = "2026"
+
+[lib]
+path = "src/lib.mo"
+
+[dependencies.init]
+path = "../init"
+
+[dependencies.std]
+path = "../std"

@@ -272,5 +272,5 @@ def Sha256.hex_of_bytes (bytes : List U8) : List U8 :=
 
 // Digest bytes aren't valid UTF-8 in general, so hex-encode to ASCII
 // (always valid UTF-8) before the only String.from_list call.
-def Sha256.hash (s : String) : String :=
+pub def Sha256.hash (s : String) : String :=
   String.from_list (Sha256.hex_of_bytes (Sha256.hash_bytes (String.to_list s)))

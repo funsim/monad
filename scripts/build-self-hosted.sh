@@ -72,7 +72,7 @@ mkdir -p "$out"
 if [ ! -x "$out/monad" ]; then
   needs_build=1
 else
-  newer="$(find init std lang cli llvm runtime \
+  newer="$(find init std lang cli llvm runtime build \
     \( -name '*.mo' -o -name '*.c' -o -name '*.h' -o -name mote.toml \) \
     -newer "$out/monad" -print -quit)" || {
     echo "build-self-hosted.sh: cannot scan the ladder's inputs from $PWD" >&2

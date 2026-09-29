@@ -166,6 +166,7 @@
             "cli"
             "llvm"
             "runtime"
+            "build"
           ]
         );
       };
