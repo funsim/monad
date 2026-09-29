@@ -31,7 +31,7 @@ use build::manage {
 }
 use std::map {}
 use lang::pretty {show_decls}
-use lang::codegen::test_driver {TestIrResult, compile_loaded_modules_to_test_ir, is_no_tests_error, parse_driver_result}
+use lang::codegen::test_driver {compile_loaded_modules_to_test_ir, is_no_tests_error, parse_driver_result}
 use lib::args {*}
 // `--verbose` stage/module trace and the colored finish/failure lines
 // (`std/src/log.mo` -- its own header documents the gating rules).
@@ -41,6 +41,12 @@ use lang::core_ir {CoreIr}
 use lang::core_eval {eval, basic_native_table}
 use lang::core_value {GlobalTable, env_nil, global_cache_new, global_table_len}
 use lang::typecheck::meta_eval {show_value_debug, show_core_eval_error_debug}
+// The language server. It is a dependency of the BINARY and not of the
+// library: `lsp_serve` is a whole program that talks on stdin/stdout, so
+// nothing outside `main`'s `lsp` arm may reach it -- an editor's protocol
+// stream and a compiler's diagnostic stream are the same two file
+// descriptors, and `lsp_serve` returning means the session is over.
+use lsp::server {lsp_serve}
 
 #[native "build_commit"]
 def build_commit : String
@@ -1577,6 +1583,7 @@ type Command {
     gc (files: List String) (workspace: Bool) (apply: Bool) (target_dir: String),
     /// `monad store ls|verify [--target-dir <dir>]`.
     store (sub: String) (target_dir: String),
+    lsp,
     version,
     help
 }
@@ -1783,6 +1790,8 @@ def Command.from_args (args : List String) : Command :=
                                 },
                         },
                 }
+            else if cmd == "lsp" then
+                Command.lsp
             else if cmd == "version" then
                 Command.version
             else
@@ -1849,6 +1858,7 @@ def main (args : List String) : IO I64 {
         store sub target_dir => do {
             run_store sub target_dir
         },
+        lsp => lsp_serve,
         version => do {
             println build_commit;
             return 0
@@ -1903,6 +1913,8 @@ def print_help : IO I64 {
     println "         verify is structural: an entry records neither the file nor the sources behind";
     println "           it, so it checks that an entry is complete and readable, not that its key";
     println "           is the right key. It exits non-zero on any incomplete entry";
+    println "       monad lsp  Speak the Language Server Protocol on stdin and stdout, until stdin ends";
+    println "         Started by an editor, which is told nothing else: no arguments, no flags";
     println "       monad version  Print the git commit this binary was built from";
     return 0
 }

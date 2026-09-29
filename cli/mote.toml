@@ -32,3 +32,14 @@ path = "../llvm"
 
 [dependencies.runtime]
 path = "../runtime"
+
+# The language server, which the binary's `lsp` subcommand starts. It is a
+# dependency of THIS mote and not of `lang`, because it is the other end of
+# the same stream: what a language server needs from a compiler is the
+# checker's answers about a buffer that is not a file yet, and that is the
+# whole of the interface. Sub-table rather than an inline table, like every
+# other dependency here -- the self-hosted TOML reader has no inline tables,
+# and a manifest it cannot parse disables the declared-deps check silently
+# instead of failing.
+[dependencies.lsp]
+path = "../motes/lsp"
