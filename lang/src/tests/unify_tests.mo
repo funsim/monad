@@ -444,3 +444,70 @@ def probe_child_loc (t : Term) : Option Location := match t {
     Term.app f _a => term_loc f,
     _ => Option.none,
 }
+
+// --- App spine congruence (P2) ---
+//
+// `unify_go` grew an `app`/`app` arm (plans/type-system/
+// core-term-simplification.md). Before it, every application spine hit
+// the catch-all: `Similar.similar`, then `unify_stuck` reducing the
+// WHOLE spine weak-head -- which stops at a stuck head and never looks
+// inside an argument. So `A (idt P)` vs `A P` failed on spelling while
+// `idt P` vs `P` alone succeeds, and an argument hole failed the same
+// way. These are the cases the arm exists for, and the head `A` below
+// is a free variable on purpose: a def head would let the whole-spine
+// path delta-reduce the head and hide the difference.
+//
+// Stage 2 makes this load-bearing rather than tidy: every boundary
+// comparison in `PathP` has the shape `A i` with `A` a stuck line and
+// `i` a dimension.
+
+#[test]
+def test_unify_app_argument_converts_under_a_stuck_head : Bool :=
+    // THE pin. `A (idt P)` vs `A P`: the heads are identical, the
+    // arguments convert by delta+beta -- and the whole spine is stuck
+    // under `A`, so only component-wise comparison can see it.
+    let left : Term := Term.app (conv_free "A") (Term.app (conv_free "idt") (conv_free "P")) in
+    let right : Term := Term.app (conv_free "A") (conv_free "P") in
+    run_unify_conv left right
+
+#[test]
+def test_unify_app_hole_argument_matches : Bool :=
+    // `A hole` vs `A P`. A hole in ARGUMENT position matches anything,
+    // the same rule the top-level `Term.hole` arm has always applied;
+    // `Similar.similar` answers false against a hole, so before the arm
+    // this failed despite hole propagation being pervasive.
+    let left : Term := Term.app (conv_free "A") Term.hole in
+    let right : Term := Term.app (conv_free "A") (conv_free "P") in
+    run_unify_conv left right
+
+#[test]
+def test_unify_app_spine_congruence_is_recursive : Bool :=
+    // A two-argument spine is a nested app: `A P (idt P)` vs `A P P`.
+    // The OUTER arm compares the heads `A P` vs `A P` (itself an
+    // app/app pair, answered by the fast path) and then the arguments,
+    // where the inner conversion happens -- so congruence has to
+    // recurse through the spine, not just peel one level.
+    run_unify_conv
+        (Term.app (Term.app (conv_free "A") (conv_free "P"))
+            (Term.app (conv_free "idt") (conv_free "P")))
+        (Term.app (Term.app (conv_free "A") (conv_free "P")) (conv_free "P"))
+
+#[test]
+def test_unify_app_still_rejects_when_arguments_disagree : Bool :=
+    // `A P` vs `A Prop`: distinct rigid arguments under the same head.
+    // The congruence must not become "same head, anything goes".
+    let left : Term := Term.app (conv_free "A") (conv_free "P") in
+    let right : Term := Term.app (conv_free "A") (sort_n 0) in
+    let ok : Bool := run_unify_conv left right in
+    Bool.not ok
+
+#[test]
+def test_unify_app_dimensions_do_not_convert : Bool :=
+    // The Stage 2 shape: `A i0` vs `A i1` with the same line. The two
+    // dimensions are distinct cubical primitives, conversion between
+    // them is exactly what `whnf_cubical` does NOT do, and a boundary
+    // rule that quietly accepted this would make every path degenerate.
+    let left : Term := Term.app (conv_free "A") (cub CubicalPrim.i0 List.empty) in
+    let right : Term := Term.app (conv_free "A") (cub CubicalPrim.i1 List.empty) in
+    let ok : Bool := run_unify_conv left right in
+    Bool.not ok

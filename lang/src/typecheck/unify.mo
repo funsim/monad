@@ -6,6 +6,7 @@ use lib::typecheck::whnf {whnf}
 
 /// Structural type unification. Returns the unified type.
 /// Holes match anything. Pi matches Pi structurally.
+/// App spines are congruent: heads and arguments compare separately.
 /// Sorts respect cumulativity (level ≤ expected_level).
 /// Foralls are stripped before comparison.
 /// Peels both sides at entry rather than adding a `Term.ctx` arm to each
@@ -88,6 +89,42 @@ def unify_go (a : Term) (b : Term) (scope : Scope) (locals : LocalScope) (reduce
         },
         Term.sort l1 => unify_sort a l1 b scope locals reduce,
         Term.forall _dbg _kind body1 => unify body1 b scope locals,
+        // P2 (plans/type-system/core-term-simplification.md): spine
+        // congruence. `unify_stuck`'s whole-spine reduction is weak-head
+        // -- it stops at a stuck head and never looks inside an
+        // argument -- so `A (idt P)` vs `A P` used to fail on spelling
+        // while `idt P` vs `P` alone succeeds, and an argument hole
+        // (`A hole` vs `A P`) failed the same way. This is load-bearing
+        // for Stage 2, where every boundary comparison has the shape
+        // `A i` with `A` a stuck line and `i` a dimension.
+        //
+        // `Similar.similar` first, as the fast path it already was:
+        // syntactic identity of the whole spine answers without
+        // walking it arm by arm. Then heads, then arguments, each
+        // through `unify` so a component gets its own conversion
+        // budget -- the same per-level-budget arrangement the Pi arm
+        // above recurses under. A component failure falls back to
+        // `unify_stuck` on the WHOLE spine, so nothing the catch-all
+        // accepted stops being accepted: the arm only ever accepts
+        // more, by congruence -- two spines are convertible when their
+        // heads are and their arguments are.
+        Term.app f1 x1 => match b {
+            Term.hole => ok a,
+            Term.forall _dbg _kind body2 => unify a body2 scope locals,
+            Term.app f2 x2 =>
+                if Similar.similar a b then
+                    ok a
+                else
+                    match unify f1 f2 scope locals {
+                        ok _ =>
+                            match unify x1 x2 scope locals {
+                                ok _ => ok a,
+                                err _ => unify_stuck a b scope locals reduce,
+                            },
+                        err _ => unify_stuck a b scope locals reduce,
+                    },
+            _ => unify_stuck a b scope locals reduce,
+        },
         _ => match b {
             Term.hole => ok a,
             Term.forall _dbg _kind body2 => unify a body2 scope locals,
