@@ -41,6 +41,41 @@
 #
 # The numbers are printed either way, because a failing gate whose numbers are not
 # recorded is a gate nobody can act on.
+#
+# MEASURED 2026-09-29, compiled binary (`/tmp/monad-lsp-out2/monad lsp`, the tree at
+# 1c37a6f0), default file (lang/src/module.mo, 331154 bytes / 6433 lines):
+#
+#   startup (spawn -> initialize)        2.1 ms     PASS (< 200 ms)
+#   cold recheck (didOpen)            8262.8 ms     (0 diagnostics)
+#   warm recheck median               4365.2 ms     (min 3937.6 over 5 rounds)
+#   cold `check` process              6275.9 ms
+#   ratio                                 1.4x     FAIL (>= 10x)
+#
+# BOTH warm targets FAIL, and the cache is not the reason. `cold - warm =
+# 3897.6 ms` is exactly what a warm closure is worth here, and the whole cold
+# `check` is 6275.9 ms -- so subtracting puts `check`'s OWN parse and elaboration
+# of the same file at ~2378 ms, i.e. the closure is the smaller half of a cold
+# `check`. The server is already collecting the whole of the cache's value; the
+# ratio is pinned near its ceiling for this file (6275.9 / 4365.2 = 1.44, measured
+# 1.4). MIN_SPEEDUP's 10x assumes a cold `check` dominated by the closure load,
+# which is true of a file with a heavy closure and a SMALL text -- not of the
+# corpus's largest file.
+#
+# The irreducible term is the buffer's own parse+check, redone on every change,
+# and reading the path shows two costs in it:
+#
+#   * the buffer is parsed TWICE per recheck: once by
+#     `decls_parser_located_with_ranges` for the declaration ranges, then again
+#     inside `elaborate_loaded_modules_cached_go`, which is handed the same source
+#     string (the entry point's own doc says so: it "parses separately");
+#   * the incoming `didChange` JSON -- 331 KB escaped inside one frame -- goes
+#     through `Json.parse_string_content`, which is per character: ~10 failed
+#     tags, one `String.slice` and one cons per byte of the buffer.
+#
+# Neither is measured by this script; a probe timing each against a 331 KB source
+# is the next step. Neither alone reaches 200 ms on its own while the compiled
+# parse stays superlinear (n^1.19 measured on synthetic source), so the 200 ms
+# target needs a smaller parse, not a warmer cache.
 set -euo pipefail
 
 usage() {

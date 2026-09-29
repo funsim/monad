@@ -78,7 +78,35 @@ pub struct CheckStore {
   checks : BTreeMap String Check,
 }
 
-pub def checkstore_empty : CheckStore := CheckStore.mk module_info_cache_empty Map.empty
+/// The empty map, and the three operations on it, each with the map type in a
+/// declared signature.
+///
+/// The same trap `toolkit::docstore`'s struct doc records in full: dictionary
+/// passing is syntactic, a struct FIELD's declared type is not a carrier source
+/// it reads, and `Map`'s class default is `HashMap` -- so
+/// `CheckStore.mk ... Map.empty` built a HashMap inside a `BTreeMap String
+/// Check` field, and `checkstore_count`'s explicit `BTreeMap.to_list` read it
+/// as a BTreeMap. A typed parameter IS a source, so these pin it.
+///
+/// `checkstore_count` is the only reader that would have crashed, and no server
+/// path calls it -- which is why the compiled server worked and the compiled
+/// TESTS did not. Pinned anyway: the next `BTreeMap.*` call on the store would
+/// have been a SIGSEGV in `monad_get_tag` with nothing pointing here.
+#[partial]
+def checkstore_no_checks : BTreeMap String Check := Map.empty
+
+#[partial]
+def checkstore_put (uri : String) (c : Check) (m : BTreeMap String Check) : BTreeMap String Check :=
+  Map.insert uri c m
+
+#[partial]
+def checkstore_get (uri : String) (m : BTreeMap String Check) : Option Check := Map.lookup uri m
+
+#[partial]
+def checkstore_drop (uri : String) (m : BTreeMap String Check) : BTreeMap String Check :=
+  Map.delete uri m
+
+pub def checkstore_empty : CheckStore := CheckStore.mk module_info_cache_empty checkstore_no_checks
 
 /// The shared module cache, for a caller that wants to load or elaborate something
 /// else against the same warm state.
@@ -89,7 +117,7 @@ pub def checkstore_cache (s : CheckStore) : ModuleInfoCache := s.cache
 /// `Option.some` says a check EXISTS, not that it was clean: a check of a file with a
 /// syntax error is a check, and the diagnostics it carries are the answer. A caller
 /// that wants "clean" wants `ranged_file_diagnostics` of this.
-pub def checkstore_lookup (uri : String) (s : CheckStore) : Option Check := Map.lookup uri s.checks
+pub def checkstore_lookup (uri : String) (s : CheckStore) : Option Check := checkstore_get uri s.checks
 
 /// How many documents have a check. Nothing makes a decision from it; the shutdown
 /// path's log line and tests are the readers.
@@ -160,7 +188,7 @@ def checkstore_path (uri : String) (text : String) (s : CheckStore) : Option Str
 /// rather than left to be inferred from the field assignment.
 def checkstore_store (uri : String) (text : String) (r : RangedFileCheck) (s : CheckStore)
     : CheckStore :=
-  CheckStore.mk (ranged_file_cache r) (Map.insert uri (Check.mk text r) s.checks)
+  CheckStore.mk (ranged_file_cache r) (checkstore_put uri (Check.mk text r) s.checks)
 
 /// `didClose`: forget the document's check and keep the cache it warmed.
 ///
@@ -176,4 +204,4 @@ def checkstore_store (uri : String) (text : String) (r : RangedFileCheck) (s : C
 /// regardless of what was dropped: `checkstore_is_current` compares text, so the skip
 /// for unchanged text simply does not apply to a document whose check is gone.
 pub def checkstore_close (uri : String) (s : CheckStore) : CheckStore :=
-  CheckStore.mk (checkstore_cache s) (Map.delete uri s.checks)
+  CheckStore.mk (checkstore_cache s) (checkstore_drop uri s.checks)

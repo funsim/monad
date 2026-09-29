@@ -70,26 +70,74 @@ pub def doc_text (d : Doc) : String := d.text
 
 /// The open documents, keyed by the URI the client used.
 ///
-/// A `BTreeMap` rather than a `HashMap`: `Map`'s class declaration gives it a
-/// `HashMap` default carrier, so an unannotated empty store would resolve to the
-/// wrong map type, and a `BTreeMap` additionally keeps `docstore_uris` in a
-/// stable order, which makes a log line and a test expectation the same every
-/// run. `std/src/map.mo` has no `pub` decls, so the import above is the EMPTY
-/// filter `jsonrpc.mo` documents -- naming `BTreeMap` in a filter is itself what
-/// raises the package-private warning.
+/// A `BTreeMap` rather than a `HashMap`: `docstore_uris` walks it in ascending
+/// order, which makes a log line and a test expectation the same every run, and
+/// a document's place in the store stops depending on a hash of its URI.
+///
+/// THE CARRIER IS PINNED BY `docstore_no_docs` AND THE THREE WRAPPERS BELOW,
+/// and that is not decoration. Dictionary passing is SYNTACTIC
+/// (`lang/scope.mo`'s `resolve_class_call_term`): it reads a class method's
+/// carrier out of the term -- a qualified constructor, a literal's suffix, a
+/// typed lambda/let parameter -- and where the only source is a DECLARED type
+/// it falls through to `class_default_carrier`, which for `Map` is `HashMap`.
+/// A struct FIELD's declared type is not such a source, so the `Map.empty`
+/// this used to call built a `HashMap` inside a `BTreeMap String Doc` field,
+/// and `docstore_uris`'s own `BTreeMap.to_list` then read a HashMap as a
+/// BTreeMap: a tag mismatch, and a SIGSEGV in `monad_get_tag` under the
+/// compiled compiler. The emitted IR is unambiguous -- `docstore_empty` called
+/// `std.map::Map_HashMap_empty`, and no `Map_BTreeMap_*` function existed in
+/// the program at all.
+///
+/// Nothing catches it at compile time (compiled, every value is an `i64`) and
+/// nothing catches it under the Rust host, which resolves dictionaries during
+/// typed elaboration. It reds the SWEEP, not the server: the compiled server's
+/// own store stayed consistently HashMap, so only a `BTreeMap.*` call on it --
+/// `docstore_uris`/`docstore_count`, which no server path reaches -- could
+/// crash. `motes/lsp/src/checks.mo` carries the same trap on `CheckStore`.
+///
+/// `std/src/map.mo` has no `pub` decls, so the import above is the EMPTY filter
+/// `jsonrpc.mo` documents -- naming `BTreeMap` in a filter is itself what raises
+/// the package-private warning.
 pub struct DocStore {
   docs : BTreeMap String Doc,
 }
 
-pub def docstore_empty : DocStore := DocStore.mk Map.empty
+/// The empty map, named so that its carrier comes from a declared type.
+///
+/// A nullary `Map.empty` offers the dictionary pass no carrier at all, so it
+/// lands on the class default; a def's own declared return type is a source the
+/// pass does read. This is the one place the store's map type is chosen, and
+/// everything below is a `BTreeMap` because this is.
+#[partial]
+def docstore_no_docs : BTreeMap String Doc := Map.empty
+
+/// The three operations the store performs, each with the map type in its
+/// signature.
+///
+/// Wrappers rather than `Map.*` called at the point of use, for the reason the
+/// struct doc gives: a field's declared type pins nothing, a typed parameter's
+/// does -- which is the mechanism `std/src/map.mo`'s `instance Map BTreeMap`
+/// already relies on for its own self-recursive calls.
+#[partial]
+def docstore_put (uri : String) (d : Doc) (m : BTreeMap String Doc) : BTreeMap String Doc :=
+  Map.insert uri d m
+
+#[partial]
+def docstore_get (uri : String) (m : BTreeMap String Doc) : Option Doc := Map.lookup uri m
+
+#[partial]
+def docstore_drop (uri : String) (m : BTreeMap String Doc) : BTreeMap String Doc :=
+  Map.delete uri m
+
+pub def docstore_empty : DocStore := DocStore.mk docstore_no_docs
 
 /// The document for a URI, if the client has one open.
-pub def docstore_lookup (uri : String) (s : DocStore) : Option Doc := Map.lookup uri s.docs
+pub def docstore_lookup (uri : String) (s : DocStore) : Option Doc := docstore_get uri s.docs
 
 /// The text, if open. The caller that wants only the text should not have to
 /// reach into a `Doc` for it.
 pub def docstore_text (uri : String) (s : DocStore) : Option String :=
-  match Map.lookup uri s.docs {
+  match docstore_get uri s.docs {
     Option.none => Option.none,
     Option.some d => Option.some (doc_text d),
   }
@@ -97,7 +145,7 @@ pub def docstore_text (uri : String) (s : DocStore) : Option String :=
 /// The version, if open: what `publishDiagnostics` should report alongside the
 /// diagnostics computed from the text this call's sibling returns.
 pub def docstore_version (uri : String) (s : DocStore) : Option I64 :=
-  match Map.lookup uri s.docs {
+  match docstore_get uri s.docs {
     Option.none => Option.none,
     Option.some d => Option.some (doc_version d),
   }
@@ -107,7 +155,7 @@ pub def docstore_version (uri : String) (s : DocStore) : Option I64 :=
 /// leave the server checking the text from the first one for the rest of the
 /// session, which is a far worse outcome than tolerating it.
 pub def docstore_open (uri : String) (version : I64) (text : String) (s : DocStore) : DocStore :=
-  DocStore.mk (Map.insert uri (doc_mk version text) s.docs)
+  DocStore.mk (docstore_put uri (doc_mk version text) s.docs)
 
 /// `didChange`, full-text sync. See the module doc on why this is a separate
 /// entry point from `docstore_open` despite the identical body, and on why an
@@ -116,14 +164,14 @@ pub def docstore_open (uri : String) (version : I64) (text : String) (s : DocSto
 /// that file diagnosed from the disk for the rest of the session with no error
 /// anywhere to explain it.
 pub def docstore_change (uri : String) (version : I64) (text : String) (s : DocStore) : DocStore :=
-  DocStore.mk (Map.insert uri (doc_mk version text) s.docs)
+  DocStore.mk (docstore_put uri (doc_mk version text) s.docs)
 
 /// `didClose`. Deleting a URI that was never opened is a no-op rather than an
 /// error, for the same reason a repeated `didOpen` is tolerated: the client's
 /// view is the authority on what is open, and the server's job is to end up
 /// agreeing with it.
 pub def docstore_close (uri : String) (s : DocStore) : DocStore :=
-  DocStore.mk (Map.delete uri s.docs)
+  DocStore.mk (docstore_drop uri s.docs)
 
 /// How many documents are open. Used by the shutdown path's log line and by
 /// tests; nothing makes a decision from it.
