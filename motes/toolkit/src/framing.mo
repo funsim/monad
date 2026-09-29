@@ -39,12 +39,26 @@
 /// cased header does not silently mis-parse, it comes back as
 /// `FrameRead.bad_header`, which the server reports and logs.
 ///
-/// WHAT THIS MODULE DELIBERATELY DOES NOT DO YET: read. The loop that pulls
-/// bytes off a descriptor needs the stdio natives
-/// (`read_stdin_exact`/`write_stdout`), which do not exist in either backend
-/// yet, so it lands with them. Everything above is pure and testable today,
-/// which is the point of putting the framing logic here rather than inline in
-/// a server that cannot run.
+/// HOW MUCH MORE TO ASK FOR IS ALSO A VALUE, in `framing_needed`, and it is
+/// what keeps the caller's loop from costing a read per byte. The loop still
+/// reads "append what arrived, ask again", but the native underneath reads to
+/// a REQUESTED LENGTH rather than returning whatever is available, so a caller
+/// that always asks for one byte turns a large message into hundreds of
+/// syscalls while a caller that always asks for a large chunk blocks until the
+/// peer fills it -- which for a request/response protocol is a deadlock.
+/// `framing_needed` separates the two cases that the buffer state actually
+/// distinguishes: `Option.none` while the header is still incomplete, and the
+/// outstanding byte count once `Content-Length` is known, so the read is one
+/// byte per header byte and then exactly the body in a single call.
+///
+/// It NEVER answers zero, and that is a correctness rule rather than a
+/// rounding choice: an empty result IS the end-of-stream signal, so requesting
+/// zero bytes would be indistinguishable from the peer closing the connection
+/// and the caller would exit in the middle of a session. A frame that is
+/// already complete therefore reports a floor of one, which the caller
+/// re-examines before reading.
+///
+/// The reader loop itself lives with its consumer, `motes/lsp/src/server.mo`.
 
 use toolkit::bytes { byte_cr, byte_lf, byte_space }
 
@@ -74,7 +88,20 @@ def content_length_max : I64 := 100000000
 
 /// Which framing a stream uses. The two are not negotiated; a server knows
 /// which protocol it was started as.
-pub type Framing {
+///
+/// The name is `FramingMode` rather than the obvious `Framing` on purpose, and
+/// both halves of the reason are worth keeping. `motes/http/src/types.mo`
+/// already declares a `Framing` -- a different type, about a response's body
+/// length -- and it also names a constructor `content_length`, and it `open`s
+/// it, so within any file that imports HTTP the bare name `content_length`
+/// means HTTP's. Nothing compiles both motes today, which is why this is not
+/// an error anywhere and why it would go unnoticed until it is not:
+/// whole-program scope is shared, this repo has already lost an afternoon to
+/// two same-named inductives that broke codegen elaboration, and the failure
+/// flipped on module load order. The second half is that `mode` is what every
+/// caller already calls this value, so the qualified name says what the type
+/// is for rather than what module it happens to live in.
+pub type FramingMode {
   content_length,
   newline_delimited,
 }
@@ -294,10 +321,10 @@ def parse_len_go (bs : List U8) (started : Bool) (acc : I64) : Option (Pair I64 
 /// `rest` is the unconsumed remainder and MUST be fed back in, because a
 /// client may pipeline. Dropping it loses every message that arrived in the
 /// same read as this one -- a burst that a fast client produces routinely.
-pub def framing_read (mode : Framing) (buf : String) : FrameRead :=
+pub def framing_read (mode : FramingMode) (buf : String) : FrameRead :=
   match mode {
-    Framing.content_length => read_content_length buf,
-    Framing.newline_delimited => read_newline_delimited buf,
+    FramingMode.content_length => read_content_length buf,
+    FramingMode.newline_delimited => read_newline_delimited buf,
   }
 
 #[partial]
@@ -351,6 +378,62 @@ def read_newline_delimited (buf : String) : FrameRead :=
     Option.none => FrameRead.need_more,
     Option.some i =>
       FrameRead.frame (trim_cr (String.slice buf 0 i)) (String.drop (I64.add i 1) buf),
+  }
+
+// --- How much more is needed ---
+
+/// How many more bytes the buffer needs before it holds one whole frame, or
+/// `Option.none` when that number is not yet known.
+///
+/// `framing_read` answering `need_more` covers two cases that cost a reader
+/// very different numbers of reads, and telling them apart is the whole reason
+/// this exists. A buffer whose HEADER is incomplete can only be extended by
+/// reading more and asking again -- nothing in it says how long the header will
+/// be -- so the honest read there is one byte, and the honest answer is
+/// `Option.none`. A buffer whose header IS complete names exactly how many body
+/// bytes are still outstanding, and the peer is going to send exactly that many,
+/// so the reader can take them in ONE read. A stream loop that could not ask
+/// this question would read a whole message one byte at a time, which is one
+/// syscall per byte of every message the client sends.
+///
+/// NEVER ZERO, and the floor is not cosmetic: the caller's natural move is to
+/// read exactly this many bytes, and `read_stdin_exact 0` returns the empty
+/// string -- which is that native's end-of-stream signal. A zero here would make
+/// a caller that has not reached the end of anything exit the loop. The floor is
+/// 1 byte, which always either makes progress or reports the end truthfully.
+///
+/// `Option.none` for `newline_delimited`, deliberately: a line has no declared
+/// length, so there is nothing to compute and a caller reads until the newline
+/// arrives. It is also `Option.none` for a buffer that is already a frame or is
+/// malformed, both of which `framing_read` answers on its own -- this is a
+/// question a caller asks only after being told `need_more`.
+#[partial]
+pub def framing_needed (mode : FramingMode) (buf : String) : Option I64 :=
+  match mode {
+    FramingMode.content_length => needed_content_length buf,
+    FramingMode.newline_delimited => Option.none,
+  }
+
+/// The same header scan `read_content_length` runs, stopping at the point where
+/// the two cases diverge.
+#[partial]
+def needed_content_length (buf : String) : Option I64 :=
+  let len : I64 := String.length buf in
+  let window_len : I64 := if I64.lt len header_window_max then len else header_window_max in
+  let window : String := String.slice buf 0 window_len in
+  let after : I64 := find_terminator (String.to_list window) 0 Option.none Option.none Option.none in
+  if I64.lt after 0
+  then Option.none
+  else needed_after_header buf after
+
+#[partial]
+def needed_after_header (buf : String) (after : I64) : Option I64 :=
+  let region : String := String.slice buf 0 (after - 4) in
+  match find_content_length (framing_header_lines region) {
+    Option.none => Option.none,
+    Option.some n =>
+      let want : I64 := I64.sub (I64.add after n) (String.length buf) in
+      if I64.lt want 1 then Option.some 1 else Option.some want,
   }
 
 // --- Test-only helpers ---

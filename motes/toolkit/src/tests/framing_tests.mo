@@ -20,7 +20,7 @@
 /// collides next time a tool mote adds a test helper.
 use toolkit::framing {
   FrameRead, frame_body, frame_reason, frame_rest, framing_header_lines,
-  framing_read, is_need_more,
+  framing_needed, framing_read, is_need_more,
 }
 
 // --- Fixtures and flat helpers ---
@@ -96,7 +96,7 @@ def fr_feed_bytes (msg : String) (i : I64) (n : I64) (buf : String) (frames : I6
   if I64.lt i n
   then
     let buf2 : String := String.concat buf (String.slice msg i 1) in
-    match framing_read Framing.content_length buf2 {
+    match framing_read FramingMode.content_length buf2 {
       FrameRead.need_more => fr_feed_bytes msg (I64.add i 1) n buf2 frames bodies,
       FrameRead.bad_header _r => Pair.pair frames bodies,
       FrameRead.frame body rest =>
@@ -183,10 +183,10 @@ def test_every_proper_prefix_asks_for_more_and_the_whole_is_a_frame : Bool :=
 def fr_splits_ok (msg : String) (k : I64) : Bool :=
   if I64.lt k (String.length msg)
   then
-    if Bool.not (is_need_more (framing_read Framing.content_length (String.slice msg 0 k)))
+    if Bool.not (is_need_more (framing_read FramingMode.content_length (String.slice msg 0 k)))
     then false
     else
-      if fr_body_is (framing_read Framing.content_length msg) "hello"
+      if fr_body_is (framing_read FramingMode.content_length msg) "hello"
       then fr_splits_ok msg (I64.add k 1)
       else false
   else true
@@ -195,12 +195,12 @@ def fr_splits_ok (msg : String) (k : I64) : Bool :=
 
 #[test]
 def test_a_complete_frame_in_one_buffer : Bool :=
-  let r : FrameRead := framing_read Framing.content_length (fr_lsp "{\"a\":1}") in
+  let r : FrameRead := framing_read FramingMode.content_length (fr_lsp "{\"a\":1}") in
   fr_body_is r "{\"a\":1}" && fr_rest_is r ""
 
 #[test]
 def test_a_zero_length_body_is_a_frame_with_an_empty_body : Bool :=
-  let r : FrameRead := framing_read Framing.content_length "Content-Length: 0\r\n\r\n" in
+  let r : FrameRead := framing_read FramingMode.content_length "Content-Length: 0\r\n\r\n" in
   fr_body_is r "" && fr_rest_is r ""
 
 /// The body is taken by LENGTH, not by searching for a terminator. A reader
@@ -208,19 +208,19 @@ def test_a_zero_length_body_is_a_frame_with_an_empty_body : Bool :=
 /// hand the rest of it back as the next frame.
 #[test]
 def test_a_terminator_inside_the_body_does_not_end_the_frame : Bool :=
-  let r : FrameRead := framing_read Framing.content_length (fr_lsp fr_multiline_body) in
+  let r : FrameRead := framing_read FramingMode.content_length (fr_lsp fr_multiline_body) in
   fr_body_is r fr_multiline_body && fr_rest_is r ""
 
 /// Spaces on either side of the value are part of no protocol but appear in
 /// the wild, and the fold has to skip them rather than fail on them.
 #[test]
 def test_spaces_around_the_length_are_tolerated : Bool :=
-  let r : FrameRead := framing_read Framing.content_length "Content-Length:   5  \r\n\r\nhello" in
+  let r : FrameRead := framing_read FramingMode.content_length "Content-Length:   5  \r\n\r\nhello" in
   fr_body_is r "hello"
 
 #[test]
 def test_a_frame_without_content_length_is_a_bad_header : Bool :=
-  let r : FrameRead := framing_read Framing.content_length "Content-Type: application/json\r\n\r\n{}" in
+  let r : FrameRead := framing_read FramingMode.content_length "Content-Type: application/json\r\n\r\n{}" in
   fr_has_reason r && Bool.not (is_need_more r)
 
 /// `Content-Length: 0x10` must NOT read as 0. A lenient fold stops at the
@@ -229,12 +229,12 @@ def test_a_frame_without_content_length_is_a_bad_header : Bool :=
 /// prevent, reached through the front door.
 #[test]
 def test_a_non_digit_after_the_value_is_rejected_not_truncated : Bool :=
-  let r : FrameRead := framing_read Framing.content_length "Content-Length: 0x10\r\n\r\n0123456789abcdef" in
+  let r : FrameRead := framing_read FramingMode.content_length "Content-Length: 0x10\r\n\r\n0123456789abcdef" in
   fr_has_reason r && Bool.not (is_need_more r)
 
 #[test]
 def test_a_header_with_no_digits_is_a_bad_header : Bool :=
-  let r : FrameRead := framing_read Framing.content_length "Content-Length:\r\n\r\n" in
+  let r : FrameRead := framing_read FramingMode.content_length "Content-Length:\r\n\r\n" in
   fr_has_reason r && Bool.not (is_need_more r)
 
 /// Past the window there is no legal header to wait for, so waiting would
@@ -242,7 +242,7 @@ def test_a_header_with_no_digits_is_a_bad_header : Bool :=
 #[test]
 def test_a_header_past_the_window_is_rejected_rather_than_awaited : Bool :=
   let buf : String := fr_repeat "Content-Length: " 600 in
-  let r : FrameRead := framing_read Framing.content_length buf in
+  let r : FrameRead := framing_read FramingMode.content_length buf in
   fr_has_reason r && Bool.not (is_need_more r) && I64.gt (String.length buf) 8192
 
 // --- Header line splitting ---
@@ -263,13 +263,57 @@ def test_a_single_header_region_is_one_line : Bool :=
 
 #[test]
 def test_newline_delimited_splits_at_the_first_newline : Bool :=
-  let r : FrameRead := framing_read Framing.newline_delimited "{\"a\":1}\n{\"b\":2}\n" in
+  let r : FrameRead := framing_read FramingMode.newline_delimited "{\"a\":1}\n{\"b\":2}\n" in
   fr_body_is r "{\"a\":1}" && fr_rest_is r "{\"b\":2}\n"
 
 #[test]
 def test_newline_delimited_without_a_newline_asks_for_more : Bool :=
-  is_need_more (framing_read Framing.newline_delimited "{\"a\":1}")
+  is_need_more (framing_read FramingMode.newline_delimited "{\"a\":1}")
 
 #[test]
 def test_newline_delimited_drops_a_trailing_carriage_return : Bool :=
-  fr_body_is (framing_read Framing.newline_delimited "{\"a\":1}\r\n") "{\"a\":1}"
+  fr_body_is (framing_read FramingMode.newline_delimited "{\"a\":1}\r\n") "{\"a\":1}"
+
+
+// --- How much more is needed ---
+//
+// This is what makes the read loop one read per message instead of one per byte of
+// it: `framing_needed` answers the outstanding byte count as soon as
+// `Content-Length` has been read, and `Option.none` while the header itself is still
+// arriving, which is the caller's signal to read a byte rather than a guess. Getting
+// the first half wrong is invisible (the loop still works, just slowly), so it is
+// pinned here rather than noticed later; getting the second half wrong would make a
+// loop read a count that was invented.
+
+/// The outstanding byte count, or -1 for "not known yet".
+def fr_needed (mode : FramingMode) (buf : String) : I64 :=
+  match framing_needed mode buf {
+    Option.none => 0 - 1,
+    Option.some n => n,
+  }
+
+#[test]
+def test_needed_is_unknown_while_the_header_is_incomplete : Bool :=
+  I64.beq (fr_needed FramingMode.content_length "Content-Len") (0 - 1)
+
+/// "hello" with two of its five body bytes present.
+#[test]
+def test_needed_counts_the_body_bytes_still_outstanding : Bool :=
+  I64.beq (fr_needed FramingMode.content_length "Content-Length: 5\r\n\r\nhe") 3
+
+#[test]
+def test_needed_is_the_whole_body_when_only_the_header_has_arrived : Bool :=
+  I64.beq (fr_needed FramingMode.content_length "Content-Length: 5\r\n\r\n") 5
+
+/// NEVER ZERO, and the floor is not cosmetic: `read_stdin_exact 0` answers the empty
+/// string, which the server's loop reads as end of stream. A zero from here would end
+/// a session in the middle of a message.
+#[test]
+def test_needed_is_never_zero_for_a_frame_that_is_already_complete : Bool :=
+  I64.beq (fr_needed FramingMode.content_length (fr_lsp "{\"a\":1}")) 1
+
+/// A newline-delimited frame has no declared length, so there is nothing to compute
+/// and the caller reads until the newline arrives.
+#[test]
+def test_needed_is_unknown_for_newline_delimited : Bool :=
+  I64.beq (fr_needed FramingMode.newline_delimited "{\"a\":1}") (0 - 1)
