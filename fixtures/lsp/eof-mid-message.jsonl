@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file://@ROOT@","capabilities":{"general":{"positionEncodings":["@ENCODINGS@"]}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+!raw Content-Length: 128\r\n\r\n{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file://@ROOT@/fixtures/lsp/shapes.mo"
