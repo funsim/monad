@@ -20,3 +20,9 @@ path = "../init"
 
 [dependencies.std]
 path = "../std"
+
+# The manifest reader, for walking a dependency closure
+# (`build/src/closure.mo`). `lang` does not depend on `build`, so this is
+# not a cycle -- and `cli` depending on `build` later keeps it acyclic.
+[dependencies.lang]
+path = "../lang"

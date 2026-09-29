@@ -168,7 +168,12 @@ pub def List.filter_map {A : Type} {B : Type} (f : A -> Option B) (xs : List A) 
 
 /// Membership using an explicit equality function.
 /// Replaces `id_member`/`ident_in_list`/`list_contains`/`str_list_contains`/...
-def List.contains_by {A : Type} (eq : A -> A -> Bool) (target : A) (xs : List A) : Bool :=
+///
+/// `pub` because that "Replaces ..." list is the whole point of it and it
+/// could not act on anything outside `std` while package-private:
+/// `build/src/closure.mo` wants exactly this for its visited set, and
+/// hand-rolling a fourth copy is the duplication this def exists to end.
+pub def List.contains_by {A : Type} (eq : A -> A -> Bool) (target : A) (xs : List A) : Bool :=
     List.any (fn x => eq target x) xs
 
 /// Join string pieces with a separator between them.

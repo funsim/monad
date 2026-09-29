@@ -153,7 +153,14 @@ def parent_of (dir : String) : String :=
     else parent
 
 #[partial]
-def Mote.discover (dir : String) : IO (Option MoteManifest) :=
+/// `pub`: this is the reader's entry point and it already crosses a mote
+/// boundary -- `cli/src/main.mo` calls it twice (`:156` for `monad build
+/// <dir>`, `:668` for the bare-command mote lookup), and `build/src/
+/// closure.mo` needs it to walk a dependency closure. The cross-mote
+/// warning did not catch those because it only inspects names listed in a
+/// `use` filter and `Mote.discover` is called qualified; that is a hole in
+/// the warning, not permission.
+pub def Mote.discover (dir : String) : IO (Option MoteManifest) :=
     Mote.discover_go dir 32
 
 #[partial]
