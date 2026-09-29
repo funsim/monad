@@ -275,7 +275,7 @@ def toml_parse_string_close (r : ParseResult String) (s : String) : ParseResult 
 #[partial]
 def toml_parse_string_content_result (r : ParseResult (List String)) : ParseResult Toml.Value :=
   match r {
-    success rem chars => toml_parse_string_close (tag "\"" rem) (String.concat_all chars),
+    success rem chars => toml_parse_string_close (tag "\"" rem) (String.concat_list chars),
     fail e => fail e
   }
 

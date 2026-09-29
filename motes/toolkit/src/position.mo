@@ -247,6 +247,20 @@ pub def wire_range_of_offsets (enc : PositionEncoding) (ix : LineIndex) (source 
 /// `framing.mo` reverses locally: four lines of list reversal is not worth
 /// widening a module's stated dependency surface for, and this module is
 /// otherwise runnable against `init` alone.
+///
+/// THE SHAPE OF `line_index_go` IS LOAD-BEARING, and the reason is the compiled
+/// server rather than taste. That walk advances one byte per step, so its
+/// recursion depth IS the size of the file -- and a per-byte machine call
+/// exhausts the compiled binary's stack between 100 KB and 209 KB of source,
+/// which is smaller than `lang/src/module.mo` (331 KB) and `lang/src/scope.mo`
+/// (435 KB): the two files an editor opens. The compiler's self-tail-call rewrite
+/// (`lang/src/codegen/tco.mo`) is what turns such a scan into a loop, and it fires
+/// only when a merge point is fed by at most ONE self-call -- so a single `if/else`
+/// whose BOTH branches recursed fed one merge two of them, pruning would have
+/// emptied its phi, and the pass abandoned the transform for the whole function
+/// and left the call in place. Hence: one self-call, as the entire `List.cons` arm
+/// body, with every per-byte decision lifted into a helper that returns a value.
+/// `toolkit/position_tests`' 320 KB scan is the pin on that shape.
 #[partial]
 pub def line_index_of_source (source : String) : LineIndex :=
   line_index_go (String.to_list source) 0 0 true false List.empty
@@ -259,14 +273,36 @@ def line_index_go (bs : List U8) (i : I64) (start : I64) (ascii : Bool) (prev_cr
     // did, `start` already equals `i` and this is the empty last line the doc
     // above promises.
     List.empty => LineIndex.mk (line_index_rev (List.cons (LineInfo.mk start i ascii) acc) List.empty),
+    // ONE self-call, and no branching around it -- see this def's own doc above.
+    // Each helper below reads only the PRE-step values, so the order they are
+    // evaluated in does not matter.
     List.cons b rest =>
-      if U8.beq b byte_lf
-      then
-        line_index_go rest (I64.add i 1) (I64.add i 1) true false
-          (List.cons (LineInfo.mk start (line_stop i prev_cr) ascii) acc)
-      else
-        line_index_go rest (I64.add i 1) start (ascii && is_ascii_byte b) (U8.beq b byte_cr) acc,
+      line_index_go rest (I64.add i 1) (line_index_next_start i start b)
+        (line_index_next_ascii ascii b) (U8.beq b byte_cr)
+        (line_index_next_acc i start ascii prev_cr b acc),
   }
+
+/// Where the line after `b` starts: one past a newline, and unchanged otherwise.
+def line_index_next_start (i : I64) (start : I64) (b : U8) : I64 :=
+  if U8.beq b byte_lf then I64.add i 1 else start
+
+/// Whether the line `b` is part of is still pure ASCII. A newline starts a new
+/// line, which is ASCII until a byte proves otherwise; any other byte can only
+/// take the flag away, never give it back.
+def line_index_next_ascii (ascii : Bool) (b : U8) : Bool :=
+  if U8.beq b byte_lf then true else ascii && is_ascii_byte b
+
+/// The accumulator after `b`: a newline closes the line it terminates and adds
+/// it to the reversed list, any other byte contributes nothing.
+///
+/// The `LineInfo` is built from the pre-step values of all four carried
+/// variables, which is why this takes them as parameters rather than reading a
+/// post-step state.
+def line_index_next_acc (i : I64) (start : I64) (ascii : Bool) (prev_cr : Bool) (b : U8)
+    (acc : List LineInfo) : List LineInfo :=
+  if U8.beq b byte_lf
+  then List.cons (LineInfo.mk start (line_stop i prev_cr) ascii) acc
+  else acc
 
 /// Where a line ends, given the index of its `\n` and whether a `\r` precedes
 /// it.

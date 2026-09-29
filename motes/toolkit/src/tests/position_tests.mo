@@ -639,3 +639,105 @@ def test_a_span_in_an_index_with_no_lines_has_no_range : Bool :=
     Option.none => true,
     Option.some _r => false,
   }
+
+// --- A source far larger than one native stack ---
+//
+// `line_index_of_source` walks its input one byte at a time, so its recursion
+// DEPTH is the file size. Written naively that is a real machine call per byte,
+// and it exhausts the compiled binary's stack somewhere between 100 KB and 209 KB
+// of source -- measured, and the failure is a SIGSEGV inside the garbage
+// collector's own stack-clearing loop rather than a clean error, which is why it
+// reads as a mysterious crash rather than as a stack overflow. `lang/src/scope.mo`
+// (435 KB) and `lang/src/module.mo` (331 KB) are both far past that, i.e. exactly
+// the files an editor opens, so this is not a hypothetical input.
+//
+// The remedy is not a smaller input. It is the shape of the scan: the compiler
+// rewrites a self-recursive tail call into a loop (`lang/src/codegen/tco.mo`), and
+// that rewrite fires only when a merge point is fed by at most ONE self-call. The
+// original `if/else` whose BOTH branches recursed fed a single merge two of them,
+// so pruning the site would have emptied its phi and the pass abandoned the whole
+// transform -- leaving the per-byte call. This test is the pin that keeps the
+// scan in a shape the rewrite accepts, and its size is the point rather than an
+// accident: at 320 KB it is past every measured threshold with room to spare, and
+// small enough that a broken scan still fails as a crash rather than as a timeout.
+
+/// One 40-byte line: 39 filler bytes and a newline. Its length is asserted in the
+/// test below rather than trusted to a hand count of the literal.
+def pt_big_line : String :=
+  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+
+/// Four of them, so the doubling below starts from a block rather than a single
+/// line and needs fewer steps for the same size.
+def pt_big_block : String :=
+  String.concat (String.concat pt_big_line pt_big_line)
+    (String.concat pt_big_line pt_big_line)
+
+/// `s` doubled on itself `n` times.
+///
+/// Doubling rather than concatenating line by line on purpose: `String.concat`
+/// copies both sides, so a fold over 8192 pieces recopies the accumulated prefix
+/// at every step and is quadratic in the total length. Eleven doublings of a
+/// 160-byte block reach 320 KB in eleven copies of at most 320 KB instead.
+///
+/// The recursion here is 11 deep and one branch recurses, which is the shape
+/// `tco.mo` accepts -- a fixture that overflowed the stack on its own way to
+/// testing an overflow would be a poor probe.
+#[partial]
+def pt_big_grow (n : I64) (s : String) : String :=
+  if I64.lt n 1
+  then s
+  else pt_big_grow (I64.sub n 1) (String.concat s s)
+
+/// 160 * 2^`n` bytes of a regular, pure-ASCII text file.
+def pt_big_source (n : I64) : String :=
+  pt_big_grow n pt_big_block
+
+/// `line_of_offset` on an index the caller already holds, -1 for the absent
+/// answer -- the big-source twin of `pt_line_of`, which rebuilds the index.
+#[partial]
+def pt_big_line_of (ix : LineIndex) (off : I64) : I64 :=
+  match line_of_offset ix off {
+    Option.none => -1,
+    Option.some n => n,
+  }
+
+/// The scan over a source past every measured stack threshold. `pt_big_source 11`
+/// is 327,680 bytes: 8192 lines of 40, and the empty final line a trailing newline
+/// always leaves, so 8193 lines.
+///
+/// The offsets asserted are the three that a per-byte scan can plausibly get
+/// wrong at this scale -- the first line's extent, the LAST line's start (which is
+/// the source's length, one past the final newline), and an offset past the end
+/// (which `line_of_offset` answers as the last line rather than as an absence).
+/// A scan that silently stopped early would still pass a `line_count` assertion
+/// alone only if it also miscounted, so both are checked.
+#[test]
+def test_line_index_scans_a_source_far_larger_than_one_stack : Bool :=
+  let src : String := pt_big_source 11 in
+  let ix : LineIndex := line_index_of_source src in
+  I64.beq (String.length pt_big_line) 40
+    && I64.beq (String.length src) 327680
+    && I64.beq (line_count ix) 8193
+    && I64.beq (pt_start ix 1) 0
+    && I64.beq (pt_stop ix 1) 39
+    && pt_is_ascii ix 1
+    && I64.beq (pt_start ix 8192) 327640
+    && I64.beq (pt_stop ix 8192) 327679
+    && I64.beq (pt_start ix 8193) 327680
+    && I64.beq (pt_big_line_of ix 0) 1
+    && I64.beq (pt_big_line_of ix 39) 1
+    && I64.beq (pt_big_line_of ix 40) 2
+    && I64.beq (pt_big_line_of ix 327679) 8192
+    && I64.beq (pt_big_line_of ix 327680) 8193
+
+/// The same source read the other way: a wire position back to its byte offset,
+/// which resolves through the index twice (line, then the character's bytes
+/// within it). The three positions are the file's first byte, the final newline
+/// (wire line 8191 -- source line 8192, since the wire is 0-based) and the empty
+/// final line's own start, which is the source length. A scan that lost its tail
+/// is caught by the far end rather than only by the near one.
+#[test]
+def test_the_big_source_converts_in_both_directions : Bool :=
+  I64.beq (pt_off PositionEncoding.utf8 (pt_big_source 11) 0 0) 0
+    && I64.beq (pt_off PositionEncoding.utf8 (pt_big_source 11) 8191 39) 327679
+    && I64.beq (pt_off PositionEncoding.utf8 (pt_big_source 11) 8192 0) 327680

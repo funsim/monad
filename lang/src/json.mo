@@ -17,6 +17,7 @@ use lib::parser::combinators {
   take_while, terminated_by, utf8_char_width,
 }
 use lib::parser::number {number}
+use lib::types {list_reverse}
 
 open ParseResult {fail, success}
 open Json {
@@ -359,6 +360,21 @@ def parse_named_escape (input : String) : ParseResult String :=
 def Json.parse_escape (input : String) : ParseResult String :=
   alt Json.parse_escape_u parse_named_escape input
 
+/// The character loop of every JSON string, and therefore the single hottest
+/// path in this file: an LSP `didOpen` notification carries the whole buffer
+/// as ONE JSON string, so this runs once per character of the file being
+/// opened (331 KB for `lang/src/module.mo`). Both of its steps are
+/// deliberately the accumulator/one-allocation variants and both are
+/// load-bearing:
+///
+///   * `many0` accumulates in reverse and reverses once, so its self-call is
+///     tail-recursive and gets rewritten to a loop by `codegen/tco.mo`. The
+///     non-tail spelling cost one native frame per character -- 378,250
+///     frames, `rc=-11` inside `GC_clear_stack_inner`, on the file the editor
+///     gate opens.
+///   * `String.concat_list` (not `concat_all`) joins the pieces in one
+///     allocation; `concat_all` is a `String.concat` fold, so it recopies the
+///     accumulated prefix at every step and is quadratic in the string.
 def Json.parse_string_content (input : String) : ParseResult (List String) :=
   many0 (alt Json.parse_escape Json.parse_string_char) input
 
@@ -371,7 +387,7 @@ def parse_string_close (r : ParseResult String) (s : String) : ParseResult Json 
 #[partial]
 def parse_string_content_result (r : ParseResult (List String)) : ParseResult Json :=
   match r {
-    success rem chars => parse_string_close (tag "\"" rem) (String.concat_all chars),
+    success rem chars => parse_string_close (tag "\"" rem) (String.concat_list chars),
     fail e => fail e
   }
 
@@ -527,14 +543,27 @@ def Json.escape_char (c : String) : String :=
 /// remainder that read as end-of-input, so the escaped output stopped at the first non-ASCII
 /// character. The parser's half of this bug was loud; this half is silent, because a serializer
 /// has no error channel -- a truncated document and a correct one are the same shape.
+///
+/// THE SHAPE IS AN ACCUMULATOR, for the same reason `many0`'s is: the obvious spelling
+/// `String.concat (Json.escape_char ch) (Json.escape_string rest)` puts the recursive call
+/// under a `String.concat`, so it is not tail recursive and costs one native frame per
+/// character -- and this string is a whole source file whenever a `didOpen` is echoed back.
+/// Accumulating pieces in reverse and joining them once with `String.concat_list` makes the
+/// self-call the whole body of an arm (rewritten to a loop by `codegen/tco.mo`) and keeps the
+/// join to one allocation, which is what makes a 331 KB payload survive instead of aborting in
+/// `GC_clear_stack_inner`. The pieces are in order; only the accumulator is reversed.
 #[partial]
 def Json.escape_string (input : String) : String :=
+  String.concat_list (escape_string_pieces input List.empty)
+
+#[partial]
+def escape_string_pieces (input : String) (acc : List String) : List String :=
   if is_empty input
-  then ""
+  then list_reverse acc
   else
     let width : I64 := utf8_char_width input in
     let ch : String := String.slice input 0 width in
-    String.concat (Json.escape_char ch) (Json.escape_string (String.drop width input))
+    escape_string_pieces (String.drop width input) (List.cons (Json.escape_char ch) acc)
 
 // ─── Serializer: numbers ───
 

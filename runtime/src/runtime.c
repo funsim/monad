@@ -987,18 +987,52 @@ int64_t monad_string_gt(char* a, char* b) {
    `SharedStr::subslice`) so compiled and interpreted execution agree:
    `start` clamps into `[0, strlen(s)]`, `len` clamps to `>= 0` and to
    whatever remains after `start`, and a NULL `s` yields `""` -- never a
-   panic/OOB read for a bad boundary or an over-long `len`. */
+   panic/OOB read for a bad boundary or an over-long `len`.
+
+   BOTH CLAMPS ARE WALKS BOUNDED BY THE ARGUMENTS, NOT A `strlen`. The
+   previous body opened with `strlen(s)`, which made every slice cost
+   O(remaining string) no matter how small the slice was -- and that is
+   not a micro-optimization here, it is the difference between linear and
+   quadratic for every per-character scanner in the compiler. The
+   documented cost model is O(slice): `lang/parser/combinators.mo`'s
+   `take_while` comment justifies its shape with "once `slice` is O(1),
+   the correct shape is ... one O(1) slice", and `take_while_loop`
+   deliberately does one `String.slice input 0 width` PER CHARACTER.
+   That holds in the interpreted backend, where `SharedStr::subslice`
+   shares the backing allocation (see `shared_str.rs`), and did not hold
+   here: `String.drop` is zero-copy, so it hands back a pointer into the
+   middle of a large buffer and every subsequent one-character slice
+   walked the whole rest of that buffer. Measured on the LSP's own input:
+   parsing a 320 KB JSON string payload cost 19 s compiled against 0.03 s
+   for the same work interpreted, because the payload is sliced once per
+   character. This is the same pathology, and the same remedy, as
+   `monad_string_drop`'s own comment describes ("a full `strlen` would
+   reintroduce the same O(n^2) in CPU"): walk at most `start` bytes to
+   find `start`'s clamp point, and use `memchr` -- the bounded form of
+   the `strlen` this replaces -- to find `len`'s. Stopping at NUL is what
+   replaces the bounds check `strlen` provided, and the walk cannot read
+   past the NUL because it stops there. Cost is O(start + len); the
+   bytes produced are unchanged. */
 char* monad_string_slice(char* s, int64_t start_in, int64_t len_in) {
-    size_t slen = s ? strlen(s) : 0;
-    size_t start = start_in < 0 ? 0 : (size_t)start_in;
-    if (start > slen) start = slen;
+    if (!s) s = "";
+    size_t start = 0;
+    if (start_in > 0) {
+        size_t want = (size_t)start_in;
+        while (start < want && s[start] != '\0') start++;
+    }
     size_t len = len_in < 0 ? 0 : (size_t)len_in;
-    size_t max_len = slen - start;
-    if (len > max_len) len = max_len;
-    char* out = (char*)monad_alloc_atomic(len + 1);
+    if (len == 0) {
+        char* out = (char*)monad_alloc_atomic(1);
+        if (!out) return NULL;
+        out[0] = '\0';
+        return out;
+    }
+    const void* nul = memchr(s + start, '\0', len);
+    size_t avail = nul ? (size_t)((const char*)nul - (s + start)) : len;
+    char* out = (char*)monad_alloc_atomic(avail + 1);
     if (!out) return NULL;
-    if (len) memcpy(out, s + start, len);
-    out[len] = '\0';
+    if (avail) memcpy(out, s + start, avail);
+    out[avail] = '\0';
     return out;
 }
 

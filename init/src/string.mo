@@ -290,6 +290,13 @@ def String.find_last (haystack : String) (needle : String) : I64 :=
 /// Concatenate every string in a list, no separator.
 /// (For a separator, use `List.intercalate` in `std/list.mo`.)
 ///
+/// QUADRATIC in the total length -- see `String.concat_list` below, which is
+/// the same function in one allocation and is what you want for anything
+/// whose piece count grows with the input (`lang/json.mo`'s and
+/// `lang/toml.mo`'s string bodies were switched to it for exactly that
+/// reason: one piece per source character). Keep this one for the fixed,
+/// small piece counts it was written for.
+///
 /// Moved here from `lang/json.mo`, which declared this `String` method
 /// inside a compiler module; `cli/src/args.mo`'s `cli_concat_all` and
 /// `lang/toml.mo`'s `toml_concat_list_body` were further copies.
@@ -314,4 +321,4 @@ pub def String.concat_all (ss : List String) : String :=
 /// (`lang/core_eval.mo`); a codegen performance fix should not widen
 /// that sandbox.
 #[native string_concat_list]
-def String.concat_list (ss : List String) : String
+pub def String.concat_list (ss : List String) : String

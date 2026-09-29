@@ -62,9 +62,55 @@ def keyword_boundary_ok (rem : String) : Bool :=
 /// shorter `remaining` means more of the input was consumed before
 /// this error fired, so it wins; ties keep `e1` (matches Rust's `or`,
 /// which only replaces on strictly deeper progress).
+///
+/// The equal-remainder arm is an OPTIMIZATION, not a semantic change: two
+/// remainders with the same contents have the same length, so the length
+/// comparison below would return `e1` anyway. It is here because the
+/// dominant call shape is a chain of alternatives that all fail at the SAME
+/// input position — every keyword `tag_keyword` in an `alt_fold` that is not
+/// the one that matched returns `ParseError.tag s input`, carrying the very
+/// same `input` pointer — and in that shape the two `String.length` calls
+/// are two `strlen`s of the whole REMAINING FILE, paid per alternative.
+///
+/// That is quadratic in file size, and it is invisible in the interpreted
+/// backend, where a string knows its length. Measured with a compiled binary
+/// over 245,760 bytes of synthetic Monad source, `parse_all_decls` in every
+/// configuration:
+///
+/// | scan                    | `furthest_error`      | time   |
+/// |---|---|---|
+/// | byte-indexed (`String.get`) | plain two-`length` | 5.91 s |
+/// | byte-indexed                | length comparison neutered | 2.85 s |
+/// | pointer walk (`take_while_byte_go`) | plain two-`length` | 3.20 s |
+/// | pointer walk                | this identity arm  | 1.75 s |
+///
+/// So the two quadratics were of comparable size (~3.06 s and ~2.85 s), the
+/// pointer walk removed its half, and this arm removed ~1.45 s of the other:
+/// the calls whose remainders ARE the same pointer are now free. The ~1.4 s
+/// that is left is the calls whose two remainders are at genuinely different
+/// positions (a nested `alt` whose first alternative consumed input before
+/// failing), which still pay two `strlen`s of the remaining file apiece —
+/// roughly ten per declaration. Those cannot be made O(1) in this shape at
+/// all: the parser threads `String` suffixes and nothing numeric, so there is
+/// no offset to compare, and `String.beq`'s pointer check is the only O(1)
+/// question that can be asked about two suffixes. Getting rid of them means
+/// thread a position through the parser, or stop paying per failed
+/// alternative (see the JSON reader's per-character `alt_fold`, which this
+/// arm takes from 796 ms to 266 ms at 82 KB but does not make linear).
+///
+/// `String.beq` is `monad_string_eq` (`runtime/src/runtime.c`), whose first
+/// line is `if (a == b) return 1;` — so for the pointer-identical case this
+/// arm is O(1) and the quadratic disappears. Do not "simplify" it back to
+/// the plain two-`length` compare: that is the same spelling, minus the one
+/// thing that makes it affordable. `parse_error_remaining` is checked with
+/// `String.beq` rather than an equality on the two `ParseError`s because the
+/// errors themselves differ (different `expected` tags) — it is their
+/// POSITION that is being compared.
 #[partial]
 def furthest_error (e1 : ParseError) (e2 : ParseError) : ParseError :=
-	if I64.lt (String.length (parse_error_remaining e2)) (String.length (parse_error_remaining e1))
+	if String.beq (parse_error_remaining e1) (parse_error_remaining e2)
+	then e1
+	else if I64.lt (String.length (parse_error_remaining e2)) (String.length (parse_error_remaining e1))
 	then e2
 	else e1
 
@@ -92,25 +138,40 @@ def alt_second (r : ParseResult A) (e1 : ParseError) (input : String) : ParseRes
 
 // --- many0 / many1 ---
 
+/// Zero or more `p`, accumulating in REVERSE and reversing once at the end.
+///
+/// The shape is load-bearing, and it is the same lesson as
+/// `toolkit/position.mo`'s `line_index_go`: the obvious spelling --
+/// `success rem out => List.cons out <rest of many0>` -- is NOT tail
+/// recursive and CANNOT be made so, because the recursive call sits under
+/// a `List.cons`. It therefore costs native stack per ITERATION, and this
+/// combinator's iteration count is the number of characters in the input.
+///
+/// That is fine for the Monad parser, whose `many0` uses are per-token on
+/// small windows, but it is fatal for the JSON reader: an LSP `didOpen`
+/// request carries the entire file text as ONE JSON string, so
+/// `Json.parse_string_content` calls `many0` once per character of the
+/// buffer. Measured at 378,250 frames -- and `rc=-11` inside
+/// `GC_clear_stack_inner` -- for the 331 KB `lang/src/module.mo`, well
+/// past the 8 MB default stack. The accumulator makes the self-call the
+/// whole body of one arm, which `lang/src/codegen/tco.mo` rewrites to a
+/// loop with constant stack.
+///
+/// Equivalence with the previous spelling: same elements, same order
+/// (`list_reverse` undoes the reverse accumulation), and on failure the
+/// same `success input` -- note the returned remainder is the input as of
+/// the call whose `p` failed, not the original, which is why the failing
+/// arm here returns its own `input` rather than an outer one.
 #[partial]
 def many0 (p : String -> ParseResult A) (input : String) : ParseResult (List A) :=
-	many0_body (p input) p input
+	many0_go p input List.empty
 
 
 #[partial]
-def many0_body (r : ParseResult A) (p : String -> ParseResult A) (input : String) : ParseResult (List A) :=
-	match r {
-		success rem out =>
-			many0_next (many0 p rem) out rem,
-		fail _ => success input List.empty
-	}
-
-
-#[partial]
-def many0_next (r : ParseResult (List A)) (out : A) (rem : String) : ParseResult (List A) :=
-	match r {
-		success rem2 rest => success rem2 (List.cons out rest),
-		fail _ => success rem (List.cons out List.empty)
+def many0_go (p : String -> ParseResult A) (input : String) (acc : List A) : ParseResult (List A) :=
+	match p input {
+		success rem out => many0_go p rem (List.cons out acc),
+		fail _ => success input (list_reverse acc)
 	}
 
 
@@ -463,21 +524,32 @@ def take_while_done (original : String) (remaining : String) : ParseResult Strin
 // binary. `byte_at` (`char_preds.mo`) absorbs the `Option`.
 #[partial]
 pub def take_while_byte (pred : U8 -> Bool) (input : String) : ParseResult String :=
-	take_while_byte_at pred input 0 (String.length input)
+	take_while_byte_go pred input input 0
 
 
+/// `cur` is the byte at offset `n` of `original`, so the loop advances a
+/// POINTER (`String.drop 1`, a pointer add in the runtime) and counts, rather
+/// than indexing `original` at `n`.
+///
+/// The two spellings stop at the same byte and return the same pair, and only
+/// this one is O(1) per byte in a COMPILED binary -- which was the entire
+/// point of having a byte-indexed scan at all. `String.get s i` for `i != 0`
+/// calls `monad_string_length` (a full `strlen`) for its bounds check; only
+/// `i == 0` has a fast path (`runtime/src/natives.mo`'s `emit_string_get` says
+/// so explicitly). An indexed scan therefore paid a whole-remaining-input
+/// `strlen` per byte, which is quadratic in the token length and made the
+/// indexed version *slower* than the per-character one it replaced. That cost
+/// is invisible in the interpreted backend, where a string knows its length.
+/// `byte_at cur 0` keeps the index at 0, and `is_empty` here is
+/// `parser/core.mo`'s own O(1) one for the same reason. One slice and one drop
+/// per token, at the boundary.
 #[partial]
-def take_while_byte_at (pred : U8 -> Bool) (input : String) (i : I64) (n : I64) : ParseResult String :=
-	if I64.beq i n
-	then take_while_byte_done input i
-	else if pred (byte_at input i)
-	then take_while_byte_at pred input (i + 1) n
-	else take_while_byte_done input i
-
-
-#[partial]
-def take_while_byte_done (input : String) (i : I64) : ParseResult String :=
-	success (String.drop i input) (String.slice input 0 i)
+def take_while_byte_go (pred : U8 -> Bool) (original : String) (cur : String) (n : I64) : ParseResult String :=
+	if is_empty cur
+	then success cur (String.slice original 0 n)
+	else if pred (byte_at cur 0)
+	then take_while_byte_go pred original (String.drop 1 cur) (n + 1)
+	else success cur (String.slice original 0 n)
 
 
 // --- Optional parser ---

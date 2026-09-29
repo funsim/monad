@@ -252,3 +252,68 @@ def test_a_method_name_is_carried_through_unescaped : Bool :=
 def test_a_message_without_a_method_reports_an_empty_method : Bool :=
   String.beq (rpc_method (rpc_parse "not json")) ""
     && String.beq (rpc_method (rpc_parse "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":1}")) ""
+
+// --- A payload the size of a real buffer ---
+//
+// The tests above are all a few dozen bytes, and every one of them passed while
+// the server crashed on the first real `didOpen` -- because the payload of a
+// `didOpen` is the file, and this layer parses it, so the message layer's cost is
+// linear in the size of the buffer the editor opens. `lang/src/module.mo` is
+// 331 KB, and the layer has to survive it in constant stack: it did not, and the
+// shape that failed is pinned by the size below rather than by a comment.
+//
+// The size is the mechanism, so it is asserted, not just used: 327,680 bytes is
+// well past the ~90 KB at which a per-character non-tail recursion exhausts the
+// default 8 MB stack, which is why the pin still bites if the accumulator in
+// `many0` or the one-allocation join in `Json.parse_string_content` is ever
+// rewritten back into the obvious shape.
+
+/// One line of the big payload: 39 ASCII bytes and a newline, so the buffer has a
+/// line structure to preserve and an escape for the parser to decode.
+def jr_big_line : String :=
+  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+
+def jr_big_block : String :=
+  String.concat (String.concat jr_big_line jr_big_line)
+    (String.concat jr_big_line jr_big_line)
+
+#[partial]
+def jr_big_grow (n : I64) (s : String) : String :=
+  if I64.lt n 1
+  then s
+  else jr_big_grow (I64.sub n 1) (String.concat s s)
+
+def jr_big_text (n : I64) : String :=
+  jr_big_grow n jr_big_block
+
+/// The `params` of a `didOpen` for a buffer holding `text` -- the shape
+/// `motes/lsp` sends, at the size the editor actually opens.
+def jr_did_open_params (text : String) : Json :=
+  rpc_object [
+    Pair.pair "textDocument" (rpc_object [
+      Pair.pair "uri" (Json.make_str "file:///tmp/jr_big.mo"),
+      Pair.pair "languageId" (Json.make_str "monad"),
+      Pair.pair "version" (Json.make_num_int 1),
+      Pair.pair "text" (Json.make_str text),
+    ]),
+  ]
+
+/// Encode, frame-parse, and read back a `didOpen` for a 320 KB buffer. The
+/// comparison is against the same params rendered before encoding, so it pins the
+/// whole round trip -- nothing truncated, nothing dropped at an escape, nothing
+/// reordered -- and not merely that parsing returned *something*.
+///
+/// The size is 160 bytes x 2^11, the same 327,680 bytes the position tests scan,
+/// chosen because it is a size that is *known* to abort: the per-character
+/// spellings this pins were measured dying there with `rc=-11` inside
+/// `GC_clear_stack_inner`, well past the ~90 KB at which a frame-per-character
+/// recursion exhausts the default 8 MB stack.
+#[test]
+def test_a_didopen_payload_the_size_of_a_real_buffer_round_trips : Bool :=
+  let big : String := jr_big_text 11 in
+  let params : Json := jr_did_open_params big in
+  let frame : String := rpc_encode_notification "textDocument/didOpen" params in
+  let m : RpcMessage := rpc_parse frame in
+  I64.beq (String.length big) 327680
+    && String.beq (rpc_method m) "textDocument/didOpen"
+    && String.beq (jr_params_text m) (Json.to_string params)
