@@ -2657,11 +2657,33 @@ pub def check_file_cached_from_source (cache : ModuleInfoCache) (file_path : Str
 // --- The ranged file check (what `monad lsp` calls) ---
 
 /// `FileCheckAndCache` for the ranged path: the same three pieces, with
-/// `Diagnostic` in place of the rendered string.
+/// `Diagnostic` in place of the rendered string -- plus the two things
+/// navigation needs and nothing else in the compiler produces.
+///
+/// WHY THE SCOPE IS HERE. A language server answers hover and
+/// go-to-definition by resolving an identifier against the scope of the
+/// file it was typed in, and that scope exists for exactly as long as the
+/// check that built it: `check_buffer_ranged` has it in `em.scope` and used
+/// to drop it on the floor, so the only way for a server to resolve two
+/// identifiers in the same file would have been to re-elaborate the whole
+/// closure per keystroke. Carrying it out of the check is what makes a
+/// warm recheck worth having -- and it is the reason this struct grew
+/// rather than navigation growing its own entry point. `Option.none` on
+/// every path that did not elaborate: a file that did not parse has no
+/// scope, and neither has one whose elaboration failed.
+///
+/// WHY THE RANGES ARE HERE. `decl_ranges_of_located` was already computed
+/// on the elaborated path (the ranged diagnostics key on it), and on the
+/// two failure paths the located parse is in the caller's hand, so the
+/// outline costs nothing extra -- and it is most wanted exactly when the
+/// file does not compile. `List.empty` only when there was no located
+/// parse at all.
 pub struct RangedFileCheck {
     path : String,
     diagnostics : List Diagnostic,
     cache : ModuleInfoCache,
+    ranges : List DeclRange,
+    scope : Option Scope,
 }
 
 pub def ranged_file_path (f : RangedFileCheck) : String := f.path
@@ -2670,21 +2692,45 @@ pub def ranged_file_diagnostics (f : RangedFileCheck) : List Diagnostic := f.dia
 
 pub def ranged_file_cache (f : RangedFileCheck) : ModuleInfoCache := f.cache
 
+pub def ranged_file_ranges (f : RangedFileCheck) : List DeclRange := f.ranges
+
+pub def ranged_file_scope (f : RangedFileCheck) : Option Scope := f.scope
+
 /// The one-diagnostic result for a buffer that did not parse, at the
 /// position the parse gave up.
 ///
 /// A `Location` is a point, so the range's two ends are the same value:
 /// a zero-width range marks the spot rather than inventing an extent the
 /// parser never measured.
+///
+/// `ranges` is whatever the caller's own parse produced, and is
+/// `no_decl_ranges` from the strict-`fail` arm, which never got as far as a
+/// declaration list. The truncation path below passes what the lenient walk
+/// did manage to read, so the outline survives a syntax error -- which is
+/// when a user most wants it.
 #[partial]
 def ranged_parse_failure (cache : ModuleInfoCache) (file_path : String) (source : String)
-    (e : ParseError) : RangedFileCheck :=
+    (ranges : List DeclRange) (e : ParseError) : RangedFileCheck :=
     let msg : String := render_parse_error source (Option.some file_path) e in
     let loc : Location := parse_error_location source e in
     let span : SourceRange := SourceRange.mk loc loc (Option.some file_path) in
     let one_diag : Diagnostic := Diagnostic.mk msg (Option.some span) in
-    let one : RangedFileCheck := { path := file_path, diagnostics := [one_diag], cache := cache } in
+    let no_scope : Option Scope := Option.none in
+    let one : RangedFileCheck := {
+        path := file_path,
+        diagnostics := [one_diag],
+        cache := cache,
+        ranges := ranges,
+        scope := no_scope,
+    } in
     one
+
+/// No declaration ranges: a buffer the strict parse rejected outright, and
+/// the empty accumulator of a range walk. Named rather than written
+/// `List.empty` at each use, per this file's own convention -- an
+/// unannotated empty list in argument position is the shape that resolved
+/// to the wrong instance in the `Map.empty` bug.
+def no_decl_ranges : List DeclRange := List.empty
 
 /// A buffer the lenient top-level walk truncated.
 ///
@@ -2702,10 +2748,17 @@ def ranged_parse_failure (cache : ModuleInfoCache) (file_path : String) (source 
 /// `ParseError`, so the message and the position come from
 /// `render_parse_error`, the same renderer the rest of the tree uses,
 /// instead of a second and worse spelling of the same fact.
+///
+/// `located` is the caller's lenient parse, and its ranges are carried
+/// through to the result: the declarations the walk DID read are real
+/// declarations at real positions, and dropping them here would make the
+/// outline empty in precisely the file that needs one.
 #[partial]
-def ranged_truncation (cache : ModuleInfoCache) (file_path : String) (source : String) : RangedFileCheck :=
+def ranged_truncation (cache : ModuleInfoCache) (file_path : String) (source : String)
+    (located : LocatedDecls) : RangedFileCheck :=
+    let ranges : List DeclRange := decl_ranges_of_located located in
     match decls_parser_strict source {
-        ParseResult.fail e => ranged_parse_failure cache file_path source e,
+        ParseResult.fail e => ranged_parse_failure cache file_path source ranges e,
         // Unreachable in practice: `decls_skip_strict` consumes the whole
         // input or fails, so a lenient truncation implies a strict failure.
         // Kept as a stated `Option.none` rather than an invented position,
@@ -2714,11 +2767,23 @@ def ranged_truncation (cache : ModuleInfoCache) (file_path : String) (source : S
         ParseResult.success _ _ =>
             let msg : String := "error: " ++ file_path ++ " did not fully parse (stopped before end of file)" in
             let none_range : Option SourceRange := Option.none in
-            let one : RangedFileCheck := { path := file_path, diagnostics := [Diagnostic.mk msg none_range], cache := cache } in
+            let no_scope : Option Scope := Option.none in
+            let one : RangedFileCheck := {
+                path := file_path,
+                diagnostics := [Diagnostic.mk msg none_range],
+                cache := cache,
+                ranges := ranges,
+                scope := no_scope,
+            } in
             one,
     }
 
 /// The buffer parsed, so elaborate it and check it -- the ordinary path.
+///
+/// This is the ONE place a `Scope` for a buffer exists, so it is the one
+/// place a language server's hover and go-to-definition can get one from;
+/// both arms below therefore carry it out in the result rather than
+/// letting it die with the local (see `RangedFileCheck`'s own doc).
 #[partial]
 def check_buffer_ranged (cache : ModuleInfoCache) (file_path : String) (source : String)
     (located : LocatedDecls) (verbose : Bool) : IO RangedFileCheck := do {
@@ -2729,16 +2794,31 @@ def check_buffer_ranged (cache : ModuleInfoCache) (file_path : String) (source :
         Result.ok em => do {
             let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
             let diags <- check_module_with_scope_ranged em.scope em.target_decls empty_locs (Option.some file_path) decl_ranges verbose;
-            let ok : RangedFileCheck := { path := file_path, diagnostics := diags, cache := out_cache };
+            let warm : Option Scope := Option.some em.scope;
+            let ok : RangedFileCheck := {
+                path := file_path,
+                diagnostics := diags,
+                cache := out_cache,
+                ranges := decl_ranges,
+                scope := warm,
+            };
             return ok
         },
         Result.err e => do {
             // An elaborate-path failure is a rendered `String` by then --
             // the `Location` was discarded on the way down -- so this one
-            // genuinely has no range to report.
+            // genuinely has no range to report. It has no scope either:
+            // elaboration is what builds one, and it did not finish.
             let none_range : Option SourceRange := Option.none;
             let err_diag : Diagnostic := Diagnostic.mk e none_range;
-            let err : RangedFileCheck := { path := file_path, diagnostics := [err_diag], cache := out_cache };
+            let no_scope : Option Scope := Option.none;
+            let err : RangedFileCheck := {
+                path := file_path,
+                diagnostics := [err_diag],
+                cache := out_cache,
+                ranges := decl_ranges,
+                scope := no_scope,
+            };
             return err
         },
     }
@@ -2769,11 +2849,12 @@ def check_buffer_ranged (cache : ModuleInfoCache) (file_path : String) (source :
 pub def check_file_cached_from_source_ranged (cache : ModuleInfoCache) (file_path : String)
     (source : String) (verbose : Bool) : IO RangedFileCheck :=
     match decls_parser_located_with_ranges source {
-        ParseResult.fail e => do { return (ranged_parse_failure cache file_path source e) },
+        ParseResult.fail e =>
+            do { return (ranged_parse_failure cache file_path source no_decl_ranges e) },
         ParseResult.success rem located =>
             if String.is_empty rem
             then check_buffer_ranged cache file_path source located verbose
-            else do { return (ranged_truncation cache file_path source) },
+            else do { return (ranged_truncation cache file_path source located) },
     }
 
 // --- Directory-recursive corpus collection (self-hosted `find *.mo`) ---
