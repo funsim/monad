@@ -1,0 +1,76 @@
+/// The compiler's own identity, as a cache key ingredient.
+///
+/// This is the input that is easiest to get wrong and worst to get wrong.
+/// A cache key that does not pin WHICH COMPILER produced a result will
+/// hand back a stale answer the first time the compiler changes, and
+/// "the compiler changed" is the normal state of this repository.
+
+use io {IO}
+use std::process {capture, process_id}
+use lib::hash {DigestTool, file_digest_with, probe_digest_tool}
+
+/// `/proc/<our pid>/exe` -- the path of the binary currently executing.
+///
+/// The pid must be OURS, which is why `process_id` is threaded in rather
+/// than using `/proc/self/exe`: that is resolved by whichever process
+/// reads it, and `Proc.capture` runs `sh`, so `readlink /proc/self/exe`
+/// would faithfully report the shell's own path instead of the
+/// compiler's.
+def Build.proc_exe_path : String :=
+    String.concat "/proc/" (String.concat (I64.to_string process_id) "/exe")
+
+/// The absolute path of the running binary, or `none` where the
+/// procfs entry does not exist -- Darwin has no `/proc` at all.
+///
+/// `none` is a real answer and not a failure: the caller's job is to turn
+/// it into "the cache is off", never into a weaker key.
+#[partial]
+pub def Build.compiler_exe_path : IO (Option String) := do {
+    let r <- Proc.capture "readlink" ["-f", Build.proc_exe_path];
+    match r {
+        Pair.pair code out =>
+            if code == 0
+            then (if String.is_empty (String.trim out)
+                  then return Option.none
+                  else return (Option.some (String.trim out)))
+            else return Option.none
+    }
+}
+
+/// The digest of the compiler binary that is running right now.
+///
+/// `Result.err` means the cache MUST be disabled. There is deliberately
+/// no fallback -- not to a timestamp, and not to `build_commit`, which is
+/// the obvious wrong choice sitting right there: it is a git revision
+/// baked in at LINK time (`-DMONAD_BUILD_COMMIT`, runtime/src/runtime.c;
+/// `option_env!` for the Rust host), so editing `lang/` and rebuilding
+/// produces a binary reporting the SAME revision, because the commit has
+/// not moved -- only the working tree has. That is precisely the
+/// development loop, so a key built on it would serve stale results
+/// exactly when it matters most. `build_commit` keeps its real job,
+/// stamping a revision into linked output (`llvm/src/link.mo`'s
+/// `build_commit_define`), and stays out of the cache key.
+///
+/// "Only cache safe and expensive work" applied to its own prerequisite:
+/// where safety is unavailable, the answer is no cache.
+#[partial]
+pub def Build.compiler_digest_with (tool : DigestTool) : IO (Result String String) := do {
+    let p <- Build.compiler_exe_path;
+    match p {
+        Option.none => return (err Build.no_exe_path_error),
+        Option.some path => Build.file_digest_with tool path
+    }
+}
+
+def Build.no_exe_path_error : String :=
+    "cannot identify the running compiler: /proc/<pid>/exe is unreadable (no procfs -- Darwin, or a sandbox). The build cache is DISABLED rather than keyed on build_commit, which is a link-time git revision and would not change when an uncommitted compiler edit is rebuilt."
+
+/// Probe a digest tool, then digest the running binary.
+#[partial]
+pub def Build.compiler_digest : IO (Result String String) := do {
+    let t <- Build.probe_digest_tool;
+    match t {
+        err m => return (err m),
+        ok tool => Build.compiler_digest_with tool
+    }
+}

@@ -103,6 +103,26 @@ pub def Build.tree_digest_with (tool : DigestTool) (dir : String) : IO (Result S
     }
 }
 
+/// The digest of ONE file's contents, with no path in it.
+///
+/// The tool reads STDIN rather than being handed a filename, so its
+/// output is `<hex>  -` and carries no trace of where the file lives.
+/// That is the point: this is used for the compiler binary's own
+/// identity, and a key that moved when the binary moved would miss on
+/// every worktree.
+#[partial]
+pub def Build.file_digest_with (tool : DigestTool) (path : String) : IO (Result String String) := do {
+    let script : String :=
+        String.concat (Build.tool_exec tool) (String.concat " < " (Proc.shell_quote path));
+    let r <- Proc.capture "sh" ["-c", script];
+    match r {
+        Pair.pair code out =>
+            if code == 0
+            then return (ok (Sha256.hash out))
+            else return (err (Build.digest_failed_error path out))
+    }
+}
+
 /// Probe, then digest. For one mote; callers digesting a whole closure
 /// should probe once themselves and use `Build.tree_digest_with`.
 #[partial]

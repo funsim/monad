@@ -32,8 +32,13 @@ def IO.is_dir_native (path : String) : IO Bool
 #[native "list_dir"]
 def IO.list_dir_native (path : String) : IO (List String)
 
+// `pub`: three motes outside `std` read the environment through this --
+// `lang/src/mote.mo`'s toolchain-root discovery, `llvm/src/link.mo`'s
+// build-commit override, and `build/src/store.mo`'s MONAD_TARGET_DIR --
+// and the cross-mote warning was already pointing at it before the third
+// arrived.
 #[native "get_env"]
-def IO.get_env (s : String) : IO (Option String)
+pub def IO.get_env (s : String) : IO (Option String)
 
 // Milliseconds since the Unix epoch, from the system WALL clock
 // (`SystemTime::now`, core/src/core_native.rs). Use it for differences
