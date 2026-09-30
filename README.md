@@ -1,188 +1,135 @@
-# Monad language
+# Monad
 
 > [!WARNING]
-> Monad is in **alpha release** and under heavy development. Many features are not implemented yet and are not tested properly. Expect breaking changes, incomplete functionality, and potential bugs.
+> Monad is in **alpha release** and under heavy development. Many features are
+> not implemented yet and are not tested properly. Expect breaking changes,
+> incomplete functionality, and potential bugs.
 >
-> The [Maturity Matrix](docs/src/maturity.md) says, area by area, what actually works today.
+> The [Maturity Matrix](https://monad-lang.org/maturity.html) says, area by
+> area, what actually works today.
 
-A purely functional systems programming language compatible with LLVM made just for fun.
-It is inspired by the languages Rust, Haskell, Idris, Lean and Elm.
+A purely functional, dependently typed systems programming language that
+compiles to native binaries through LLVM. The compiler is written in Monad
+and compiles itself.
 
-🌐 **[Homepage](https://monad-lang.org)** · **[Documentation](docs/src/introduction.md)** · **[Maturity Matrix](docs/src/maturity.md)**
+Homepage: **[monad-lang.org](https://monad-lang.org)**
 
-## Feature goals
+## Why Monad?
 
-- Dependent types
-- Quantitative and linear types (borrowing)
-- Provably correct programs and invariants
-  * Dependent types means you can guarantee with proofs in compile time that an implementation follows a specification.
-  * It is an opt-in feature.
-- Not a proof assistant.
-  * It can represent proofs, but proof tooling will not be part of the core language.
-- Managed side effects using monads
-- Egonomic, expressive and efficient system programming
-- Hygenic macros
-- Practical programming
-- Quantum lambda calculus support
-- Minimal features
-  * No clutter and unecessary features. Keep it simple.
+- **Dependent types** — types can depend on values, with a `Prop` universe
+  and propositional equality for compile-time proofs
+- **Type classes** — ad-hoc polymorphism with automatic instance resolution
+- **Termination checking** — recursive definitions must be structurally
+  decreasing unless you opt out
+- **Hygienic macros** — `defmacro`, `quote`, and compile-time reflection;
+  `#[derive]` is implemented in Monad, not in the compiler
+- **LLVM native** — programs compile to fast native binaries, no VM
+- **Self-hosting** — the compiler in `lang/` is written in Monad and compiles
+  itself, reaching a fixpoint where the binary builds its own successor
 
-## Quick start
-
-### Devenv environment (recommended)
-
-Use [devenv](https://devenv.sh) for a quick and reproducible environment:
+## Install
 
 ```bash
-# Install devenv (if not already installed)
-# https://devenv.sh/getting-started/
-
-# Enter the development shell
-devenv shell
-
-# This provides: Rust toolchain, clang, llvm, lld, wasm-pack, boehmgc, mdbook
+curl -fsSL https://raw.githubusercontent.com/monad-lang/monad/main/scripts/monadup -o monadup
+chmod +x monadup
+./monadup self-install
+export PATH="$HOME/.monad/bin:$PATH"
+monadup default       # install the latest nightly and make it active
+monad version
 ```
 
-If you prefer a manual setup, install:
-- [Rust toolchain](https://rustup.rs) (stable)
-- `clang` and `llc` (for native compilation via the LLVM backend)
-- the Boehm GC development files (the compiled runtime links `-lgc`)
+`monadup` manages nightly builds under `~/.monad`. Use `monadup list`, `monadup
+use <tag>`, `monadup update`, and `monadup uninstall <tag>` to manage installed
+versions. Nightlies are Linux x86_64 and currently need Nix store paths; building
+from source is the portable alternative.
 
-### Build
-
-```bash
-cargo build
-```
-
-### Build the self-hosted compiler
-
-The compiler is written in Monad and compiles itself. The Rust crate is the
-**bootstrap host** that produces the first binary:
+### Build from source
 
 ```bash
+git clone https://tangled.org/monad-lang/monad
+cd monad
+devenv shell          # provides Rust, clang, llc, Boehm GC, mdbook
+cargo build --release
 cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o "$PWD/monad" --release
 ```
 
-The `-o` must be **absolute**: a relative output name is resolved against the
-compiler's own scratch directory, `/tmp/monad_out_<pid>`. The trailing
-`--release` turns off DWARF debug info, which is on by default.
+The `-o` must be **absolute**: a relative output name lands in the compiler's
+scratch directory. The trailing `--release` turns off DWARF debug info, which
+is on by default.
 
-Prebuilt nightlies are published on every push to `main` and installed with
-`scripts/monadup` (`monadup self-install`, then `monadup default`). They are
-Linux x86_64 and are built inside the Nix devenv, so they link store paths and
-will not run on a machine without them -- building from source is the portable
-route. A nightly ships the `init`, `std`, `llvm` and `runtime` mote sources
-beside the binary, so the compiler resolves the standard library and the C
-runtime out of its own install directory and can build a program that lives
-anywhere; point `MONAD_ROOT` at a different tree to override that. See
-[Compiling and Running](docs/src/compiling.md#getting-a-compiler).
-
-### Compile and run a program
+## Quick start
 
 ```bash
-cat > /tmp/main.mo << 'EOF'
-def main : I64 := 42
+cat > /tmp/hello.mo << 'EOF'
+use io {IO}
+open IO {println}
+
+def main (args : List String) : IO Unit := println "Hello, World!"
 EOF
 
-./monad compile /tmp/main.mo -o /tmp/monad_binary
-/tmp/monad_binary
-echo $?   # prints 42
+monad run /tmp/hello.mo
 ```
 
-`monad run /tmp/main.mo` does both steps in one go. (There is also `monad eval`,
-an interpreter, but only eight pure natives are wired into it -- it cannot print.)
-A program is always compiled to a native binary. `def main (args : List String) :
-I64` works too: the C runtime converts `argc`/`argv` to a `List String` and
-passes it to `main_monad`.
-
-The backend wires a subset of the natives (no concurrency yet), and says so at
-compile time rather than emitting a broken binary. See
-[Compiling and Running](docs/src/compiling.md) for the full pipeline, the
-fail-fast validation gates, and how memory is managed.
-
-### Run a program with the bootstrap host
-
-Faster to iterate with, since it skips `llc` and `clang`:
+`monad run` compiles and executes in one step — a Monad program is always a
+native binary. To keep the binary, use `monad compile` with an absolute output
+path:
 
 ```bash
-cargo run -- run examples/hello.mo
+monad compile /tmp/hello.mo -o "$PWD/hello"
+./hello
 ```
 
-The host also carries the LSP and MCP servers, the REPL, and the package system
--- and it differs from the self-hosted compiler in a handful of places. See
-[The Bootstrap Host](docs/src/bootstrap-host.md).
+## Commands
 
-### Run the test suites
+```text
+monad compile <path> [-o <name>] [--verbose/-v] [--debug/-g] [--release]
+        Parse, type-check and compile a .mo source file to a native binary.
 
-```bash
-# Rust unit tests
-cargo test
+monad run <path> [--verbose/-v] [--debug/-g] [--release]
+        Compile and execute. The program's exit code becomes monad's.
 
-# The full .mo sweep, through the SELF-HOSTED runner -- builds the
-# compiled binary first if needed. This is what CI runs.
-scripts/check-monad-tests.sh
+monad eval <path> [--verbose/-v]
+        Evaluate with the built-in interpreter. Pure programs only.
 
-# The sweep runs over min(nproc, 8) shards at once -- one shard per core,
-# nothing held back -- each shard its own `monad` process. Memory is not what
-# sets that: `monad test lang/src/scope.mo`, the heaviest file in the corpus,
-# peaks at 172 MB of summed tree RSS (measured 2026-09-27), and more shards
-# means fewer files through each process. Run 36323615273 showed what the old
-# hold-back cost instead: its shard walls were `947s 1425s 1425s`, so 3797 s
-# of work ran on 3 shards and the 4-core runner's fourth core sat idle for the
-# whole 1425 s critical path. MONAD_SWEEP_JOBS caps that -- `MONAD_SWEEP_JOBS=1`
-# is the single sequential invocation this script used to make, and the shape
-# its sharded totals are checked against. CI sets that variable from a
-# measurement instead of leaving it to this default: its "Settle the CPU
-# budget" step prints the runner's core count both from the host and from
-# inside the dev shell, runs scripts/ci-cpu-budget.sh, and sets the result.
-# The count is per-MACHINE, and that is why no literal appears in the workflow:
-# `runs-on: [self-hosted, linux]` reaches two runners, and "Set up job" names
-# the one that took the job. nixos-server (4 cores) gave 3 shards in run
-# 36301331844, anders-desktop (8 cores) gave 7 in 36322856497. Both readings
-# are printed so a surprising shard count can be traced to its machine.
-MONAD_SWEEP_JOBS=1 scripts/check-monad-tests.sh
+monad check [<path>...] [--workspace/-w] [--verbose/-v]
+        Parse and type-check; no execution.
 
-# There is no separate corpus-wide `check` phase any more. `monad test`
-# elaborates and typechecks every file under the SAME fatal gate before it
-# emits any code for it, so a file the check phase would have failed cannot
-# leave the sweep green -- and that phase was the identical pair of calls
-# over the identical file list, costing 552 s of a 3252 s job (run
-# 36301331844). The sweep's per-shard status and its `FAIL` count are the
-# signal that replaced it.
+monad test [<path>...] [--workspace/-w] [--verbose/-v]
+        Compile each file's #[test] defs and run them.
 
-# Or via the Rust host, which is handy while debugging the runner itself
-cargo run -- test init std lang
+monad pretty <path>
+        Parse and pretty-print a .mo source file.
 
-# Type-check without running
-cargo run -- check init std examples lang
-
-# Type-check every code block in docs/
-scripts/check-docs.sh
+monad version
+        Print the git commit this binary was built from.
 ```
 
-### Bootstrap fixpoint
+Running `monad` with no arguments prints usage. Directory arguments are
+expanded recursively; with no path, commands operate on the mote containing
+the working directory, and `--workspace` covers every mote in the workspace.
 
-Once built, the compiler builds its own successor, and the binary that falls out
-does the job it was built for. CI runs exactly this on every push.
+## Community
 
-```bash
-./monad compile cli/src/main.mo -o "$PWD/monad-next" --release
+| Platform | Link |
+|----------|------|
+| Zulip (main forum) | https://monad-lang.zulipchat.com/ |
+| Tangled (primary repo) | https://tangled.org/monad-lang/monad |
+| GitHub (releases) | https://github.com/monad-lang/monad |
+| Reddit | https://www.reddit.com/r/monad_lang/ |
+| Discord | https://discord.gg/XDKk7PPH |
 
-# Then make the result type-check the compiler's own source
-./monad-next check cli/src/main.mo
-```
+## Documentation
 
-The self-hosted compiler's own subcommands are `compile`, `run`, `eval`,
-`check`, `test`, `pretty`, and `version` -- run it with no arguments for usage.
+The full documentation lives at **[monad-lang.org](https://monad-lang.org)** —
+built with mdBook from `docs/src/`, with every code block type-checked by CI.
 
-### Architecture
+Key pages:
+- [Introduction](https://monad-lang.org/introduction.html)
+- [Getting Started](https://monad-lang.org/getting-started.html)
+- [Maturity Matrix](https://monad-lang.org/maturity.html)
+- [Compiling and Running](https://monad-lang.org/compiling.html)
+- [Reference](https://monad-lang.org/reference.html)
 
-| Component | Location | Description |
-|-----------|----------|-------------|
-| **Rust compiler** | `core/`, `rust-cli/` | Parser, type checker, evaluator, constraint solver, LSP + MCP servers |
-| **Self-hosted codegen** | `lang/src/codegen/` | Monad terms -> LLVM IR |
-| **LLVM backend** | `llvm/src/` | The IR data model, its `.ll` rendering, llc/clang glue |
-| **C runtime** | `runtime/src/runtime.c` | Heap allocation (Boehm GC), constructor/string objects |
-| **Standard library** | `init/src/`, `std/src/` | Prelude types, type classes, native-backed operations |
-| **Self-hosted compiler** | `lang/src/` | Parser, evaluator, lowering pass (Monad-in-Monad) |
+## License
 
+Apache 2.0

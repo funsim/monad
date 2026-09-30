@@ -1,13 +1,22 @@
 # Documentation
 
-The Monad language book, built with [mdBook](https://rust-lang.github.io/mdBook/)
-and published to <https://monad-lang.org> by `.github/workflows/mdbook.yml` on
+The Monad language site, built with [Zola](https://www.getzola.org/) (landing
+page) and [mdBook](https://rust-lang.github.io/mdBook/) (documentation), and
+published to <https://monad-lang.org> by `.github/workflows/mdbook.yml` on
 every push to `main`.
 
+The landing page lives at `monad-lang.org/` and the documentation book at
+`monad-lang.org/docs/`.
+
 ```bash
-mdbook build docs     # render to docs/book (gitignored)
-docs-serve            # devenv script: serve with live reload
+docs-build            # devenv script: build both mdBook and Zola to docs/public
+docs-serve            # devenv script: build mdBook, then serve Zola with live reload
 ```
+
+The Zola project is at `docs/site/` — templates in `docs/site/templates/`,
+styles in `docs/site/sass/`, static assets in `docs/site/static/`. mdBook
+output goes to `docs/site/static/docs/` (configured via `build-dir` in
+`docs/book.toml`), so Zola serves it at `/docs/`.
 
 ## Keeping the examples correct
 

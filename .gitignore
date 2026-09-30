@@ -11,7 +11,11 @@ devenv.local.yaml
 
 # pre-commit
 .pre-commit-config.yaml
-docs/book
+
+# Docs build output (mdBook -> docs/site/static/docs, Zola -> docs/public)
+docs/public
+docs/site/public
+docs/site/static/docs
 
 # Nightly release artifacts (scripts/nightly-release.sh). Build output: the
 # release step uploads them from dist/, which git need not track.

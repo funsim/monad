@@ -2,7 +2,7 @@
 #
 # To get started with mdBook see: https://rust-lang.github.io/mdBook/index.html
 #
-name: Deploy mdBook site to Pages
+name: Deploy site to Pages
 
 on:
   # Runs on pushes targeting the default branch
@@ -30,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MDBOOK_VERSION: 0.4.36
+      ZOLA_VERSION: 0.23.6
     steps:
       - uses: actions/checkout@v5
 
@@ -54,15 +55,29 @@ jobs:
             | tar -xz -C "$RUNNER_TEMP/mdbook"
           echo "$RUNNER_TEMP/mdbook" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/mdbook/mdbook" --version
+      - name: Install Zola
+        run: |
+          set -euo pipefail
+          tarball="zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$RUNNER_TEMP/zola"
+          curl -fsSL --proto '=https' \
+            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/${tarball}" \
+            | tar -xz -C "$RUNNER_TEMP/zola"
+          echo "$RUNNER_TEMP/zola" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/zola/zola" --version
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
-      - name: Build with mdBook
+      - name: Build docs with mdBook
         run: cd docs && mdbook build
+      - name: Build site with Zola
+        run: zola --root docs/site build -o docs/public --force
+      - name: Add CNAME
+        run: cp CNAME docs/public/CNAME
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./docs/book
+          path: ./docs/public
 
   # Deployment job
   deploy:

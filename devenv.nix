@@ -30,6 +30,9 @@
     # locally (`docs-serve`) before it ships, and so `mdbook build` is
     # available to check that SUMMARY.md still resolves.
     mdbook
+    # Zola generates the landing page (monad-lang.org) with Tera templates;
+    # mdBook output lands in Zola's static/docs/ so docs are served at /docs/.
+    zola
     file
 
     # The tools the CI scripts under scripts/ call, declared here because a
@@ -70,7 +73,13 @@
   '';
 
   scripts.docs-serve.exec = ''
-    mdbook serve ${config.devenv.root}/docs --open
+    mdbook build ${config.devenv.root}/docs
+    zola --root ${config.devenv.root}/docs/site serve --open
+  '';
+
+  scripts.docs-build.exec = ''
+    mdbook build ${config.devenv.root}/docs
+    zola --root ${config.devenv.root}/docs/site build -o ${config.devenv.root}/docs/public --force
   '';
 
   scripts.bootstrap.exec = ''

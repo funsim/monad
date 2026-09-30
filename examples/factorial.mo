@@ -2,7 +2,7 @@
 
 open IO {println}
 
-#[terminating]
+#[decreasing n]
 def factorial (n : I64) : I64 :=
     if n == 0
     then 1
