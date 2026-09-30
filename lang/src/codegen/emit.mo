@@ -10,6 +10,7 @@ use std::bench {now, report, report_since, since}
 // being explicitly `use`d.
 use std::map {}
 use std::list {intercalate}
+use lib::mote {toolchain_root}
 use lib::types {
   Con, DebugName, Decl, Def, Identifier, InductConstructor, Inductive, Literal,
   LoadedModules, LocalScope, Location, MatchCase, ModulePath, NamePath, Native,
@@ -5490,11 +5491,36 @@ pub def compile_loaded_modules_to_ir (loaded : LoadedModules) (verbose : Bool) :
 /// prefix uses, which is what `llvm.ir`'s `module_file_ref`
 /// looks up. Built in module order so `!DIFile` id assignment is
 /// reproducible run to run.
+///
+/// `root` is the resolved toolchain root, and every path under it loses
+/// that prefix (`drop_root_prefix` below). Without it the path reaches the
+/// IR -- `llvm_split_path` (llvm/src/ir.mo) takes it verbatim into
+/// `!DIFile(directory: ...)` -- so two byte-identical toolchain roots, which
+/// share one cache key because they are the same bytes, would still write
+/// two different artifacts for it.
 #[partial]
-def module_file_pairs (mods : List ModuleInfo) (acc : List (Pair String String)) : List (Pair String String) := match mods {
+def module_file_pairs (root : Option String) (mods : List ModuleInfo) (acc : List (Pair String String)) : List (Pair String String) := match mods {
     List.empty => acc,
-    List.cons m rest => module_file_pairs rest (List.append acc (List.cons (Pair.pair (show_module_path m.path) m.file_path) List.empty)),
+    List.cons m rest => module_file_pairs root rest (List.append acc (List.cons (Pair.pair (show_module_path m.path) (drop_root_prefix root m.file_path)) List.empty)),
 }
+
+/// `p` with the toolchain root's prefix removed, and unchanged when it is
+/// not under that root -- which is every path in a checkout, so this is
+/// the identity for a local build and changes only the installed case.
+///
+/// Relative-to-the-root is deliberately not spelled as a `../`-style
+/// rebase: the goal is a path that is the same string on two machines, not
+/// one that resolves.
+def drop_root_prefix (root : Option String) (p : String) : String :=
+    match root {
+        Option.none => p,
+        Option.some r => drop_prefix (String.concat r "/") p
+    }
+
+def drop_prefix (prefix : String) (p : String) : String :=
+    if String.starts_with prefix p
+    then String.slice p (String.length prefix) (String.length p - String.length prefix)
+    else p
 
 /// Post-load Term→Term pass: rewrite every ANNOTATED
 /// `Literal.struct_lit` (`{ field := value, ... : StructName }`) whose
@@ -5762,7 +5788,8 @@ pub def compile_loaded_modules_to_ir_with_debug (loaded : LoadedModules) (verbos
     // the final `compile_db_module_with_debug` call, but computing it
     // per-module list walk at the point of use would read structurally
     // like it belongs to a stage it doesn't.
-    let debug_files : List (Pair String String) := module_file_pairs all_mods List.empty;
+    let tc_root <- Mote.toolchain_root;
+    let debug_files : List (Pair String String) := module_file_pairs tc_root all_mods List.empty;
 
     // Debug: log loaded modules count
     let module_count := List.length all_mods;
