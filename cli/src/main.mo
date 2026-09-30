@@ -13,6 +13,7 @@ use lang::mote {MoteManifest}
 use build::closure {input_hash}
 use build::store {artifact_ir_path, ensure_entry_dir, store_path, target_dir_for}
 use build::check {CheckPlan, check_block, check_entry_read, check_maybe_write, check_plan, check_plan_active, check_plan_key, check_plan_reason, check_plan_root, mote_root_of}
+use build::manage {clean_run, gc_run, store_ls, store_verify}
 use std::map {}
 use lang::pretty {show_decls}
 use lang::codegen::test_driver {TestIrResult, compile_loaded_modules_to_test_ir, is_no_tests_error, parse_driver_result}
@@ -1069,6 +1070,83 @@ def run_check (files : List String) (workspace : Bool) (verbose : Bool) (no_cach
     }
 }
 
+/// The target directory a management verb should act on, resolved exactly
+/// the way a build resolves it -- all four tiers of
+/// `Build.resolve_target_dir` -- from the working directory.
+///
+/// `--target-dir` is the flag form of the highest tier, and it earns its
+/// place on THESE verbs more than anywhere else: inspecting or reclaiming a
+/// store without changing into the tree that owns it is most of the reason
+/// to have them. An empty flag leaves the other three tiers to decide,
+/// which is what `build` and `check` do.
+///
+/// `Mote.discover_build_dir`, not `Mote.discover`: the latter stops at a
+/// virtual workspace root, so a store owned by one would be invisible from
+/// inside it. `Build.target_dir_at` makes the same choice for the same
+/// reason.
+#[partial]
+def target_dir_flagged (flag : String) : IO String := do {
+    let d <- Mote.discover_build_dir "";
+    Build.target_dir_of flag d ""
+}
+
+/// `monad clean [--all]`: drop the output directories under `<target-dir>`,
+/// or the whole directory with `--all`.
+///
+/// It takes no paths, on purpose. "Which files were built" is `gc`'s
+/// question and it needs an answer; "where did the build put things" is
+/// this one's and it does not.
+#[partial]
+def run_clean (all : Bool) (target_dir_flag : String) : IO I64 := do {
+    let target_dir <- target_dir_flagged target_dir_flag;
+    Build.clean_run target_dir all
+}
+
+/// `monad gc [<path>...]`: reclaim what the named files cannot reach.
+///
+/// Resolution mirrors `run_check`'s, step for step -- the same
+/// `resolve_target_paths`, the same `expand_check_paths`, the same
+/// directory-vs-file rules -- and it has to, because the reachable set this
+/// deletes everything else in favour of is derived from exactly those
+/// files. A `gc` that resolved a DIFFERENT set than `check` caches would
+/// delete live entries.
+#[partial]
+def run_gc (files : List String) (workspace : Bool) (apply : Bool) (target_dir_flag : String) : IO I64 := do {
+    let targets <- resolve_target_paths "Collecting garbage from" "gc" files workspace;
+    match targets {
+        // Empty only from `--workspace` with no workspace manifest, which
+        // `resolve_target_paths` has already explained. Failing rather than
+        // letting `Build.gc_run` refuse is not redundant: the refusal would
+        // be correct and the message here is the one that names the cause.
+        Option.some ts => if List.is_empty ts then return 1
+        else do {
+            let expanded : List String <- expand_check_paths ts;
+            let target_dir <- target_dir_flagged target_dir_flag;
+            Build.gc_run expanded target_dir host_triple apply
+        },
+        Option.none => no_target_diagnostic "gc"
+    }
+}
+
+/// `monad store ls|verify`: what the store holds.
+///
+/// The two subcommands share `Build.entry_views`, so they cannot disagree
+/// about what an entry IS; what differs is only what they do with it --
+/// `ls` prints every entry, `verify` prints the failures and exits non-zero
+/// on any. Neither derives a key; see `Build.store_verify` for what that
+/// bounding is and why.
+#[partial]
+def run_store (sub : String) (target_dir_flag : String) : IO I64 := do {
+    let target_dir <- target_dir_flagged target_dir_flag;
+    if String.beq sub "ls" then Build.store_ls target_dir
+    else if String.beq sub "verify" then Build.store_verify target_dir
+    else do {
+        println ("monad store: unknown subcommand `" ++ sub ++ "`");
+        println "  usage: monad store ls|verify [--target-dir <dir>]";
+        return 1
+    }
+}
+
 /// A `monad test <path>...` subcommand mirroring `monad-rs test`: for
 /// each resolved file, discover its own `#[test]` defs, compile a
 /// native driver binary (`lang.codegen.test_driver`'s
@@ -1454,6 +1532,17 @@ type Command {
     pretty (file: String),
     check (files: List String) (verbose: Bool) (workspace: Bool) (no_cache: Bool),
     test (files: List String) (verbose: Bool) (workspace: Bool),
+    /// `monad clean [--all] [--target-dir <dir>]`. Removes the output
+    /// directories under `<target-dir>` -- the profile directories -- and
+    /// leaves the store; `--all` is the other verb, `<target-dir>` itself.
+    clean (all: Bool) (target_dir: String),
+    /// `monad gc [<path>...] [--workspace/-w] [--apply] [--target-dir <dir>]`.
+    /// Dry run unless `--apply`; removes only what the named files cannot
+    /// reach, and refuses to remove anything at all when it cannot derive
+    /// a complete reachable set.
+    gc (files: List String) (workspace: Bool) (apply: Bool) (target_dir: String),
+    /// `monad store ls|verify [--target-dir <dir>]`.
+    store (sub: String) (target_dir: String),
     version,
     help
 }
@@ -1616,6 +1705,50 @@ def Command.from_args (args : List String) : Command :=
                                 Command.test rest2 verbose workspace,
                         },
                 }
+            else if cmd == "clean" then
+                // `--all` is peeled before `--target-dir` for the reason
+                // `check` gives for its own two flags: a flag left in the
+                // list is handed to whatever comes next as if it were a
+                // path. Nothing takes a positional here, so the remainder
+                // is deliberately dropped rather than validated.
+                match Cli.take_flag "all" "" rest {
+                    Cli.FlagResult.flag_result all rest1 =>
+                        match Cli.take_opt "target-dir" "" "" rest1 {
+                            Cli.OptResult.opt_result target_dir _rest2 =>
+                                Command.clean all target_dir,
+                        },
+                }
+            else if cmd == "gc" then
+                // The positionals are NOT peeled here: unlike `clean`,
+                // this verb takes paths, and `rest3` is exactly the list
+                // `resolve_target_paths` wants. An empty one means "the
+                // mote containing the working directory", the same
+                // default `check` has.
+                match Cli.take_flag "workspace" "w" rest {
+                    Cli.FlagResult.flag_result workspace rest1 =>
+                        match Cli.take_flag "apply" "" rest1 {
+                            Cli.FlagResult.flag_result apply rest2 =>
+                                match Cli.take_opt "target-dir" "" "" rest2 {
+                                    Cli.OptResult.opt_result target_dir rest3 =>
+                                        Command.gc rest3 workspace apply target_dir,
+                                },
+                        },
+                }
+            else if cmd == "store" then
+                // `ls`/`verify` is a positional, and the flag has to be
+                // taken out from around it first -- `take_opt` walks the
+                // whole list, so `monad store ls --target-dir x` and
+                // `monad store --target-dir x ls` both land here.
+                match Cli.take_opt "target-dir" "" "" rest {
+                    Cli.OptResult.opt_result target_dir rest1 =>
+                        match Cli.take_positional rest1 {
+                            Cli.PosResult.pos_result sub_opt _rest2 =>
+                                match sub_opt {
+                                    Option.some sub => Command.store sub target_dir,
+                                    Option.none => Command.help,
+                                },
+                        },
+                }
             else if cmd == "version" then
                 Command.version
             else
@@ -1673,6 +1806,15 @@ def main (args : List String) : IO I64 {
         test files verbose workspace => do {
             run_test_paths files workspace (Path.to_string default_output_dir) verbose
         },
+        clean all target_dir => do {
+            run_clean all target_dir
+        },
+        gc files workspace apply target_dir => do {
+            run_gc files workspace apply target_dir
+        },
+        store sub target_dir => do {
+            run_store sub target_dir
+        },
         version => do {
             println build_commit;
             return 0
@@ -1715,6 +1857,18 @@ def print_help : IO I64 {
     println "           (only directories that ARE motes: examples/ has no manifest)";
     println "         --verbose/-v prints per-file timing and module-cache statistics";
     println "         A file with no #[test]s is skipped, not failed";
+    println "       monad clean [--all] [--target-dir <dir>]  Remove build output, keeping the store";
+    println "         Removes every output directory under <target-dir> (the profile directories)";
+    println "         --all removes <target-dir> itself, the store included";
+    println "       monad gc [<path>...] [--workspace/-w] [--apply] [--target-dir <dir>]  Remove store entries the named files cannot reach";
+    println "         Dry run by default; --apply removes them. Takes the same <path> forms as check";
+    println "         Refuses to remove ANYTHING when it cannot derive a complete reachable set,";
+    println "           because an incomplete one would delete the store itself";
+    println "       monad store ls|verify [--target-dir <dir>]  List the store, or check its entries";
+    println "         Each line is <kind> <key> <bytes> <state>; an artifact is its binary AND its IR";
+    println "         verify is structural: an entry records neither the file nor the sources behind";
+    println "           it, so it checks that an entry is complete and readable, not that its key";
+    println "           is the right key. It exits non-zero on any incomplete entry";
     println "       monad version  Print the git commit this binary was built from";
     return 0
 }

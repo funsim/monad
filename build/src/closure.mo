@@ -159,6 +159,22 @@ pub def Build.input_hash (dir : String) (profile : String) (triple : String) : I
     }
 }
 
+/// The artifact key, composed from the two digests it is made of.
+///
+/// Split out of `input_hash_with` so that a caller holding MANY roots and
+/// ONE compiler can take each digest once: `input_hash_with` takes the
+/// compiler's digest inside, and its digest is the running binary (tens of
+/// megabytes), so deriving keys for a root set by calling it per
+/// (root, profile) pair would digest that binary twice per root. `gc`
+/// derives exactly such a set -- see `Build.collect_artifacts` in
+/// `build/src/manage.mo`.
+///
+/// One formula, one place: `input_hash_with` is this with both digests
+/// taken inside, so the key a `build` writes and the key a `gc` derives
+/// cannot drift apart.
+pub def Build.artifact_key (closure : String) (compiler : String) (profile : String) (triple : String) : String :=
+    Sha256.hash (List.intercalate "\n" [closure, compiler, profile, triple])
+
 #[partial]
 pub def Build.input_hash_with (tool : DigestTool) (dir : String) (profile : String) (triple : String) : IO (Result String String) := do {
     let closure <- Build.closure_digest_with tool dir;
@@ -168,7 +184,7 @@ pub def Build.input_hash_with (tool : DigestTool) (dir : String) (profile : Stri
             let comp <- Build.compiler_digest_with tool;
             match comp {
                 err m => return (err m),
-                ok k => return (ok (Sha256.hash (List.intercalate "\n" [c, k, profile, triple])))
+                ok k => return (ok (Build.artifact_key c k profile triple))
             }
         }
     }

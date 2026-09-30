@@ -172,24 +172,44 @@ def Build.key_lookup (file : String) (keys : List (Pair String String)) : Option
 /// a key that would serve stale answers the first time the compiler
 /// changed.
 #[partial]
-pub def Build.check_plan (files : List String) (target_dir : String) (requested : Bool) : IO CheckPlan := do {
+pub def Build.check_plan (files : List String) (target_dir : String) (requested : Bool) : IO CheckPlan :=
     if Bool.not requested
     then return (CheckPlan.inactive "")
     else if Bool.not (Build.check_worth_caching (List.length files))
     then return (CheckPlan.inactive "")
-    else do {
-        let t <- Build.probe_digest_tool;
-        match t {
-            err m => return (CheckPlan.inactive m),
-            ok tool => do {
-                let c <- Build.compiler_digest_with tool;
-                match c {
-                    err m => return (CheckPlan.inactive m),
-                    ok compiler => do {
-                        let roots <- Build.plan_roots tool files List.empty List.empty;
-                        let keys <- Build.plan_keys tool compiler files roots List.empty;
-                        return (CheckPlan.active (Build.entry_root_dir target_dir Entry.check) keys)
-                    }
+    else Build.check_plan_all files target_dir
+
+/// The plan with **neither caller half** consulted: no `requested` and no
+/// worth-caching floor.
+///
+/// Both of the gates `check_plan` applies above are about the CHECK verb's
+/// economics, and neither is a statement about whether a key can be
+/// derived. `requested` is the escape hatch and the worth floor is "a
+/// one-file check in an editor loop costs less than the fork its key
+/// needs" -- both reasons not to DO the work, not reasons it would be
+/// wrong to.
+///
+/// So `gc` needs this one. It caches nothing, so the floor buys it nothing,
+/// and `monad gc src/one.mo` is not a degenerate invocation -- it is the
+/// precise one, because it asks for everything a single file cannot reach.
+/// Routed through `check_plan`, that invocation planned nothing, saw an
+/// inactive plan, and (correctly, given what it had been told) refused. The
+/// safe failure and a useless verb at the same time: `gc` could only ever
+/// reclaim from a run that named two or more files. `Build.gc_run` calls
+/// this directly.
+#[partial]
+pub def Build.check_plan_all (files : List String) (target_dir : String) : IO CheckPlan := do {
+    let t <- Build.probe_digest_tool;
+    match t {
+        err m => return (CheckPlan.inactive m),
+        ok tool => do {
+            let c <- Build.compiler_digest_with tool;
+            match c {
+                err m => return (CheckPlan.inactive m),
+                ok compiler => do {
+                    let roots <- Build.plan_roots tool files List.empty List.empty;
+                    let keys <- Build.plan_keys tool compiler files roots List.empty;
+                    return (CheckPlan.active (Build.entry_root_dir target_dir Entry.check) keys)
                 }
             }
         }
@@ -329,7 +349,13 @@ def Build.root_find (root : String) (roots : List (Pair String String)) : Option
 pub def Build.check_entry_dir (root : String) (key : String) : String :=
     String.concat root (String.concat "/" key)
 
-def Build.check_entry_leaf (root : String) (key : String) (leaf : String) : String :=
+/// One leaf of a check entry: `<root>/<key>/<leaf>`.
+///
+/// Public because `store verify` (`build/src/manage.mo`) has to look at
+/// the two leaves a readable entry is made of, and it must spell them the
+/// same way the reader and the writer do. A second copy of this path rule
+/// is a second thing to forget when the format changes.
+pub def Build.check_entry_leaf (root : String) (key : String) (leaf : String) : String :=
     String.concat (Build.check_entry_dir root key) (String.concat "/" leaf)
 
 /// What `check` prints for one file -- and, because this exact string is
