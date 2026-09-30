@@ -8,10 +8,10 @@
 /// key that misses everything is indistinguishable from having none.
 
 use io {IO}
+use std::list {contains_by}
 use std::process {capture, process_id, shell_quote}
-use lib::closure {closure_digest_with, input_hash}
+use lib::closure {closure_digest_with, closure_seed, input_hash, toolchain_seed_wanted}
 use lib::hash {probe_digest_tool}
-
 def Build.fix_root (tag : String) : String :=
     String.concat "/tmp/monad_clo_"
         (String.concat (I64.to_string process_id) (String.concat "_" tag))
@@ -145,6 +145,49 @@ def test_closure_terminates_on_a_cycle : IO Bool := do {
     let r <- Build.closure_of (String.concat d "/a");
     let _c <- Build.rm d;
     match r { ok h => return (Bool.not (String.is_empty h)), err _ => return false }
+}
+
+// ─── what the walk starts from ───
+
+/// The ambient pair the WORKING DIRECTORY offers is part of the key, even
+/// for a root that never declared it.
+///
+/// This is the false hit measured on `examples/`: appending a byte to
+/// `std/src/io.mo` moved no key at all, because the walk started from the
+/// root directory alone while `resolve_module_file` had already resolved
+/// `std` out of the working directory. Conditional on the working
+/// directory, because that is what the seed reads -- under a checkout the
+/// pair must be seeded, and where there is no `init/src/lib.mo` there is
+/// nothing to seed.
+#[test]
+def test_closure_seed_covers_the_working_directory_ambient_pair : IO Bool := do {
+    let d <- Build.two_mote_fixture "ambient";
+    let seed <- Build.closure_seed (String.concat d "/a");
+    let init_here <- IO.file_exists (Path.path "init/src/lib.mo");
+    let std_here <- IO.file_exists (Path.path "std/src/lib.mo");
+    let _c <- Build.rm d;
+    return (List.contains_by String.beq (String.concat d "/a") seed
+        && (if init_here then List.contains_by String.beq "init" seed else true)
+        && (if std_here then List.contains_by String.beq "std" seed else true))
+}
+
+/// The toolchain root is walked ONLY when the working directory did not
+/// answer for the ambient pair, and the polarity here was once inverted in
+/// both directions at once: the root was seeded where the local pair
+/// exists (re-keying every entry in a dev checkout the night a nightly
+/// lands) and skipped where it does not (leaving the `init`/`std` the
+/// compile actually read out of the key -- a false hit, the failure this
+/// whole file exists to prevent).
+///
+/// Asserted on the PREDICATE and not through `toolchain_seed`, because the
+/// seed's other half reads the environment: with no toolchain configured
+/// both polarities return empty, so a test through the seed would have
+/// passed while the bug was live.
+#[test]
+def test_toolchain_root_is_walked_only_without_a_local_pair : IO Bool := do {
+    return (Bool.not (Build.toolchain_seed_wanted ["init", "std"])
+        && Build.toolchain_seed_wanted ["init"]
+        && Build.toolchain_seed_wanted List.empty)
 }
 
 // ─── the full input hash ───

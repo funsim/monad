@@ -9,7 +9,7 @@
 use io {IO}
 use std::list {contains_by, intercalate}
 use std::sha256 {}
-use lang::mote {discover}
+use lang::mote {MoteManifest, discover, toolchain_root, workspace_members}
 use lib::hash {DigestTool, probe_digest_tool, tree_digest_with}
 use lib::identity {compiler_digest_with}
 
@@ -64,12 +64,105 @@ def Build.closure_line (name : String) (digest : String) : String :=
 /// same manifests give the same order, which is all a key needs.
 #[partial]
 pub def Build.closure_digest_with (tool : DigestTool) (dir : String) : IO (Result String String) := do {
-    let r <- Build.closure_walk tool [dir] List.empty List.empty;
+    let seed <- Build.closure_seed dir;
+    let r <- Build.closure_walk tool seed List.empty List.empty;
     match r {
         err m => return (err m),
         ok parts => return (ok (Sha256.hash (List.intercalate "\n" parts)))
     }
 }
+
+/// What the walk starts from, in resolution's own precedence.
+///
+/// `resolve_module_file` tries CWD-relative candidates BEFORE it consults
+/// any manifest, and the ambient pair is reachable that way whether or not
+/// the mote declared it -- so a key built from the declared closure alone is
+/// narrower than the compile it names. Measured on `examples/`: appending a
+/// byte to `std/src/io.mo` moved no key at all, which is a false hit, the
+/// one failure a build cache must not have.
+///
+/// Seeded AHEAD of `dir` so that the walk's name-keyed dedupe is what drops
+/// the declared copy: the CWD-relative candidate is the file resolution
+/// actually reads, and the key has to agree with the compiler about which
+/// one that was.
+///
+/// A root with NO manifest has no declared closure to walk, so it widens to
+/// the workspace it sits in. Coarse, and the only sound answer: such a file
+/// states its dependencies in a `#![mote { ... }]` annotation, and an
+/// annotation is a property of the FILE while this walk starts from a
+/// directory.
+#[partial]
+pub def Build.closure_seed (dir : String) : IO (List String) := do {
+    let cwd <- Build.cwd_ambient_dirs ["init", "std"];
+    let tc <- Build.toolchain_seed cwd;
+    let m <- Mote.discover dir;
+    let members <- Build.workspace_seed m;
+    return (List.append (List.append (List.append cwd tc) members) [dir])
+}
+
+/// The ambient motes the WORKING DIRECTORY offers, by the same probe
+/// resolution accepts them with: `<name>/src/lib.mo`, the file the bare
+/// `init`/`std` imports resolve to. A directory named `init` that carries no
+/// sources is not a candidate, and must not shadow one that does.
+#[partial]
+def Build.cwd_ambient_dirs (names : List String) : IO (List String) :=
+    match names {
+        List.empty => return List.empty,
+        List.cons n rest => do {
+            let here <- IO.file_exists (Path.path (String.concat n "/src/lib.mo"));
+            let tail <- Build.cwd_ambient_dirs rest;
+            return (if here then (List.cons n tail) else tail)
+        }
+    }
+
+/// Whether the resolved toolchain root has to be walked at all: only when
+/// the working directory did NOT answer for the whole ambient pair.
+///
+/// `cwd` is `Build.cwd_ambient_dirs ["init", "std"]`, so two entries mean
+/// `./init` and `./std` are what `resolve_module_file` will read and the
+/// toolchain has nothing to do with this compile -- seeding it anyway
+/// re-keys every entry in a dev checkout the night a nightly lands, for
+/// sources nothing read.
+///
+/// Its own def, spelled as a literal `if`, because the polarity is the
+/// whole content of it: the inline `not (len == 2)` this replaces had it
+/// backwards in both directions at once -- a false hit where the local pair
+/// is absent (the toolchain's `init`/`std` are read but unkeyed) and a
+/// spurious re-key where it is present.
+pub def Build.toolchain_seed_wanted (cwd : List String) : Bool :=
+    if I64.beq (List.length cwd) 2 then false else true
+
+/// The resolved toolchain root as a walk root, when the working directory
+/// did not already answer for the ambient pair (`toolchain_seed_wanted`).
+///
+/// Seeded as a DIRECTORY, so what enters the key is its whole tree --
+/// `init`, `std` and `runtime/src/runtime.c` included -- which is exactly
+/// what the compile reads when the pair is not local. Probed by
+/// `init/src/prelude.mo`, the file `toolchain_has_ambient_sources`
+/// (lang/src/module.mo) uses for the same question, so this is not a
+/// second opinion about what a root carries.
+#[partial]
+def Build.toolchain_seed (cwd : List String) : IO (List String) := do {
+    if Build.toolchain_seed_wanted cwd then do {
+        let root <- Mote.toolchain_root;
+        match root {
+            Option.none => return List.empty,
+            Option.some r => do {
+                let ok <- IO.file_exists (Path.path (String.concat r "/init/src/prelude.mo"));
+                return (if ok then (List.cons r List.empty) else List.empty)
+            }
+        }
+    } else return List.empty
+}
+
+/// A manifest-less root's stand-in for a declared closure: the workspace it
+/// sits in. Empty for a root that HAS a manifest, whose declared closure is
+/// the precise answer.
+def Build.workspace_seed (m : Option MoteManifest) : IO (List String) :=
+    match m {
+        Option.none => Mote.workspace_members "",
+        Option.some _ => do { return List.empty }
+    }
 
 #[partial]
 def Build.closure_walk (tool : DigestTool) (pending : List String) (seen : List String) (acc : List String) : IO (Result String (List String)) :=
