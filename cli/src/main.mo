@@ -330,7 +330,12 @@ def build_cached_keyed (src : String) (target_dir : String) (h : String) (ir : O
     let hit <- IO.file_exists (Path.path entry);
     if hit
     then do {
-        let _mk <- exec_cmd "mkdir" ["-p", dest_dir];
+        // `Path.parent dest`, not `dest_dir`: `-o sub/hello` nests, and the
+        // MISS path gets that directory from `link_ir`'s own mkdir while a
+        // hit has to make it here. Without it `cp` fails and the run still
+        // prints `cached:` -- a success line over a failing exit code.
+        let parent : String := Path.parent (Path.path dest);
+        let _mk <- (if String.beq parent "" then return 0 else exec_cmd "mkdir" ["-p", parent]);
         let rc <- exec_cmd "cp" ["-f", entry, dest];
         let _ir <- replay_ir_beside ir dest;
         ok_line ("cached: " ++ dest ++ " (" ++ h ++ ")");
@@ -341,8 +346,24 @@ def build_cached_keyed (src : String) (target_dir : String) (h : String) (ir : O
         if rc == 0
         then do {
             let _d <- Build.ensure_entry_dir target_dir Entry.artifact;
-            let _c <- exec_cmd "cp" ["-f", dest, entry];
-            return 0
+            // Temp then rename, with the status CHECKED. `cp -f` straight to
+            // `entry` leaves a truncated file when it dies (an interrupt, a
+            // full disk), and the hit test is a bare `file_exists` -- so a
+            // stump would be served as a hit, printing `cached:` over a
+            // binary that is not the one this key names. `mv` inside the
+            // store directory is the atomic step that lets an entry appear
+            // complete or not at all.
+            let tmp : String := entry ++ ".tmp";
+            let wrc <- exec_cmd "cp" ["-f", dest, tmp];
+            if wrc == 0
+            then do {
+                let _m <- exec_cmd "mv" ["-f", tmp, entry];
+                return rc
+            }
+            else do {
+                let _r <- exec_cmd "rm" ["-f", tmp];
+                return wrc
+            }
         }
         else return rc
     }
