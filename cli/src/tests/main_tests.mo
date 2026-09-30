@@ -13,7 +13,7 @@ use lib::main {*}
 #[test]
 def test_from_args_build_positional_name : Bool :=
     match Command.from_args ["build", "a.mo", "myname"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "myname" && verbose == false && debug == true,
         _ => false,
     }
@@ -21,7 +21,7 @@ def test_from_args_build_positional_name : Bool :=
 #[test]
 def test_from_args_build_default_name : Bool :=
     match Command.from_args ["build", "a.mo"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "source" && verbose == false && debug == true,
         _ => false,
     }
@@ -29,7 +29,7 @@ def test_from_args_build_default_name : Bool :=
 #[test]
 def test_from_args_build_output_flag : Bool :=
     match Command.from_args ["build", "a.mo", "--output", "out", "--verbose"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "out" && verbose == true && debug == true,
         _ => false,
     }
@@ -37,7 +37,7 @@ def test_from_args_build_output_flag : Bool :=
 #[test]
 def test_from_args_build_short_flags : Bool :=
     match Command.from_args ["build", "a.mo", "-o", "out", "-v"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "out" && verbose == true && debug == true,
         _ => false,
     }
@@ -45,7 +45,7 @@ def test_from_args_build_short_flags : Bool :=
 #[test]
 def test_from_args_build_debug_flag : Bool :=
     match Command.from_args ["build", "a.mo", "--debug"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == false && debug == true,
         _ => false,
     }
@@ -53,7 +53,7 @@ def test_from_args_build_debug_flag : Bool :=
 #[test]
 def test_from_args_build_debug_short_flag : Bool :=
     match Command.from_args ["build", "a.mo", "-g", "-v"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == true && debug == true,
         _ => false,
     }
@@ -63,7 +63,7 @@ def test_from_args_build_debug_short_flag : Bool :=
 #[test]
 def test_from_args_build_release_opts_out_of_debug : Bool :=
     match Command.from_args ["build", "a.mo", "--release"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == false && debug == false,
         _ => false,
     }
@@ -73,7 +73,7 @@ def test_from_args_build_release_opts_out_of_debug : Bool :=
 #[test]
 def test_from_args_build_debug_beats_release : Bool :=
     match Command.from_args ["build", "a.mo", "--release", "--debug"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == false && debug == true,
         _ => false,
     }
@@ -85,7 +85,7 @@ def test_from_args_build_debug_beats_release : Bool :=
 #[test]
 def test_from_args_build_with_no_path_defaults_to_the_mote : Bool :=
     match Command.from_args ["build"] {
-        Command.build path out_name verbose debug =>
+        Command.build path out_name verbose debug _no_cache =>
             Path.to_string path == "." && Path.to_string out_name == "source" && verbose == false && debug == true,
         _ => false,
     }
@@ -95,11 +95,32 @@ def test_from_args_build_with_no_path_defaults_to_the_mote : Bool :=
 #[test]
 def test_from_args_build_bare_and_dot_agree : Bool :=
     match Command.from_args ["build"] {
-        Command.build p1 o1 _v1 _d1 => match Command.from_args ["build", "."] {
-            Command.build p2 o2 _v2 _d2 =>
+        Command.build p1 o1 _v1 _d1 _n1 => match Command.from_args ["build", "."] {
+            Command.build p2 o2 _v2 _d2 _n2 =>
                 Path.to_string p1 == Path.to_string p2 && Path.to_string o1 == Path.to_string o2,
             _ => false,
         },
+        _ => false,
+    }
+
+// `build`'s cache escape hatch, peeled for the same reason `check`'s is:
+// it is a flag, not a path, and left in the list it would be handed to the
+// path expander as a filename.
+#[test]
+def test_from_args_build_no_cache_flag : Bool :=
+    match Command.from_args ["build", "a.mo", "--no-cache"] {
+        Command.build path _out_name _verbose _debug no_cache =>
+            Path.to_string path == "a.mo" && no_cache == true,
+        _ => false,
+    }
+
+// Named, not merely accepted: a build that did not ask for the hatch must
+// not get it, or the flag would be indistinguishable from one that is
+// silently always on.
+#[test]
+def test_from_args_build_without_no_cache_is_false : Bool :=
+    match Command.from_args ["build", "a.mo"] {
+        Command.build _path _out_name _verbose _debug no_cache => no_cache == false,
         _ => false,
     }
 
@@ -122,7 +143,7 @@ def test_from_args_pretty : Bool :=
 #[test]
 def test_from_args_check : Bool :=
     match Command.from_args ["check", "a.mo", "b.mo", "-v"] {
-        Command.check files verbose workspace =>
+        Command.check files verbose workspace no_cache =>
             files == ["a.mo", "b.mo"] && verbose == true && workspace == false,
         _ => false,
     }
@@ -130,7 +151,7 @@ def test_from_args_check : Bool :=
 #[test]
 def test_from_args_check_workspace_flag : Bool :=
     match Command.from_args ["check", "--workspace"] {
-        Command.check files verbose workspace =>
+        Command.check files verbose workspace no_cache =>
             List.is_empty files && workspace == true && verbose == false,
         _ => false,
     }
@@ -138,7 +159,7 @@ def test_from_args_check_workspace_flag : Bool :=
 #[test]
 def test_from_args_check_workspace_short_flag : Bool :=
     match Command.from_args ["check", "-w", "-v"] {
-        Command.check files verbose workspace =>
+        Command.check files verbose workspace no_cache =>
             List.is_empty files && workspace == true && verbose == true,
         _ => false,
     }
@@ -148,7 +169,7 @@ def test_from_args_check_workspace_short_flag : Bool :=
 #[test]
 def test_from_args_check_workspace_flag_not_a_path : Bool :=
     match Command.from_args ["check", "--workspace", "a.mo"] {
-        Command.check files verbose workspace =>
+        Command.check files verbose workspace no_cache =>
             files == ["a.mo"] && workspace == true,
         _ => false,
     }
@@ -161,8 +182,36 @@ def test_from_args_check_workspace_flag_not_a_path : Bool :=
 #[test]
 def test_from_args_check_no_files_is_a_check_command : Bool :=
     match Command.from_args ["check"] {
-        Command.check files verbose workspace =>
-            List.is_empty files && workspace == false && verbose == false,
+        Command.check files verbose workspace no_cache =>
+            List.is_empty files && workspace == false && verbose == false && no_cache == false,
+        _ => false,
+    }
+
+// `--no-cache` is peeled for the same reason `--workspace` is: it is a
+// flag, not a path. Left in the list it would be handed to the path
+// expander as a filename, where it would surface as a file that does not
+// exist rather than as a flag that was ignored.
+#[test]
+def test_from_args_check_no_cache_flag : Bool :=
+    match Command.from_args ["check", "--no-cache", "a.mo"] {
+        Command.check files verbose workspace no_cache =>
+            files == ["a.mo"] && no_cache == true && workspace == false && verbose == false,
+        _ => false,
+    }
+
+#[test]
+def test_from_args_check_no_cache_flag_combines_with_workspace : Bool :=
+    match Command.from_args ["check", "-w", "--no-cache", "a.mo", "b.mo"] {
+        Command.check files verbose workspace no_cache =>
+            files == ["a.mo", "b.mo"] && workspace == true && no_cache == true,
+        _ => false,
+    }
+
+#[test]
+def test_from_args_check_without_no_cache_is_false : Bool :=
+    match Command.from_args ["check", "a.mo"] {
+        Command.check files verbose workspace no_cache =>
+            files == ["a.mo"] && no_cache == false,
         _ => false,
     }
 
@@ -225,3 +274,39 @@ def test_from_args_help_on_unknown : Bool :=
         Command.help => true,
         _ => false,
     }
+
+// ─── the IR path ───
+//
+// Not argv parsing, but the other pure rule in `main.mo`, and the one the
+// artifact cache's correctness rests on: the file `llc` is pointed at must
+// be named by the cache key rather than by the output, because `llc`
+// records that name (its basename) in the object it emits, and an object
+// that records the output name is an object that differs between two
+// builds of one unchanged source. `Build.artifact_ir_path` supplies the
+// keyed path; `resolve_ir_path` is what lets every caller with no key to
+// name one by keep the output-derived path it always had.
+
+/// A key is a key: the IR follows it and nothing else. There is no
+/// output-name parameter to pass, and that is the fix stated as a type.
+#[test]
+def test_resolve_ir_path_prefers_the_keyed_path : Bool :=
+    String.beq
+        (Path.to_string (resolve_ir_path (Option.some (Path.path "target/store/abc.ll")) (Path.path "out") (Path.path "hello")))
+        "target/store/abc.ll"
+
+/// The no-key fallback: `run`, the test driver, and a build whose
+/// compiler digest could not be taken. Unchanged behaviour for all of
+/// them, which is why they did not have to change.
+#[test]
+def test_resolve_ir_path_falls_back_to_the_output : Bool :=
+    String.beq
+        (Path.to_string (resolve_ir_path Option.none (Path.path "out") (Path.path "hello")))
+        "out/hello.ll"
+
+/// ...and the fallback still honours `Path.join`'s absolute-name rule,
+/// which is what every ladder script's absolute `-o` relies on.
+#[test]
+def test_resolve_ir_path_fallback_replaces_an_absolute_output : Bool :=
+    String.beq
+        (Path.to_string (resolve_ir_path Option.none (Path.path "out") (Path.path "/tmp/x/hello")))
+        "/tmp/x/hello.ll"

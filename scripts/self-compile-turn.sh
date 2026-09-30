@@ -4,6 +4,13 @@
 # <out-dir>/<name>, and the IR it emits lands beside it as
 # <out-dir>/<name>.ll -- which is what the ladder's `cmp`s compare.
 #
+# That contract holds on a build-cache HIT as well as a miss: a hit copies
+# the cached IR out of the store beside the binary (`replay_ir_beside`,
+# cli/src/main.mo). It has to. `build` is cached, so without that a second
+# local ladder run took a hit on a rung, wrote no `.ll`, and the caller's
+# `cmp` failed on a missing file -- while the rung itself stopped compiling
+# anything, which is the quieter half of the same bug.
+#
 # Two callers perform this same turn: scripts/bootstrap-compile.sh (once per
 # build mode, on a binary it just built) and the flake's `checks.bootstrap`
 # (on the packaged compiler, and then on the binary that falls out of it).

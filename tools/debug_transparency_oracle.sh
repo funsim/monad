@@ -35,8 +35,14 @@
 # Usage:  tools/debug_transparency_oracle.sh examples/*.mo
 #         MONAD_BIN=/path/to/monad tools/debug_transparency_oracle.sh ...
 # Needs a devenv shell (the generated runtime links against boehmgc).
-# Scratch dir for the two builds per file; override to keep them.
+# Scratch dir for the two builds per file; override to keep them. Made
+# here rather than assumed: `mktemp -d` creates it, but a caller's
+# ORACLE_TMP is a name they want kept and so is usually one that does not
+# exist yet -- and an absent scratch dir does not fail loudly, it makes
+# every `>"$SP/x.log"` redirect fail and reports the whole corpus as
+# "no IR emitted".
 SP="${ORACLE_TMP:-$(mktemp -d)}"
+mkdir -p "$SP"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 cd "$HERE" || exit 1
 
@@ -47,7 +53,7 @@ cd "$HERE" || exit 1
 MONAD_BIN="${MONAD_BIN:-${TMPDIR:-/tmp}/monad-bootstrap-ci/monad}"
 if [ ! -x "$MONAD_BIN" ]; then
   echo "no self-hosted compiler at $MONAD_BIN"
-  echo "build one:  cargo run --release -- run cli/src/main.mo compile cli/src/main.mo -o \"$MONAD_BIN\" --release"
+  echo "build one:  cargo run --release -- run cli/src/main.mo build cli/src/main.mo -o \"$MONAD_BIN\" --release"
   echo "or point MONAD_BIN at an existing binary."
   exit 1
 fi
@@ -93,6 +99,36 @@ is_known_gap() {
   return 1
 }
 
+# The build store, moved out of the way for the duration.
+#
+# `build` is the only verb left (the `compile` verb this oracle used to
+# call was removed -- two verbs that both produce a binary differ only in
+# which one you remember), and `build` is CACHED. This oracle gates what
+# the compiler EMITS, so every one of its files has to compile for real
+# rather than possibly replay a recorded emission.
+#
+# A hit no longer *breaks* this oracle -- the IR is keyed and a hit replays
+# it beside the binary (`replay_ir_beside`, cli/src/main.mo), so the `.ll`
+# this reads exists either way. That is what the private store used to be
+# for, back when a hit wrote no `.ll` and every replayed file read as
+# "no IR emitted" -- a FAIL with no compiler anywhere in it. What the
+# private store still buys is the stronger claim: with it, the emission
+# being gated was produced by the compiler under test in this run, not
+# recorded earlier from the same key. Sound either way (the key covers the
+# compiler digest), so this is a choice about what the oracle is evidence
+# for -- and for an oracle, "the compiler just emitted this" is the one
+# worth paying for.
+#
+# A private store per run is how that is guaranteed, rather than left to
+# the accident of a cold one -- and a fresh `mktemp -d` per run is how it
+# stays private, rather than a fixed name this script would have to clear
+# first. `ORACLE_TMP` exists to KEEP the scratch of a run, so a second run
+# sharing one must not find the first run's entries in it. Nothing is
+# deleted here, on purpose: `ORACLE_TMP` is a caller's path and this
+# script has no business removing anything under it.
+MONAD_TARGET_DIR="$(mktemp -d "$SP/store.XXXXXX")"
+export MONAD_TARGET_DIR
+
 norm() { awk 'BEGIN{n=0}{l[n++]=$0}END{while(n>0&&l[n-1]=="")n--;for(i=0;i<n;i++)print l[i]}' "$1"; }
 pass=0; fail=0; todo=0
 for f in "$@"; do
@@ -100,11 +136,11 @@ for f in "$@"; do
   if is_known_gap "$b"; then
     echo "TODO  $f ($(gap_reason "$b"))"; todo=$((todo+1)); continue
   fi
-  # `--release`, not a bare compile: debug info is ON by default since
-  # stage 5, so a bare compile is itself a --debug build and comparing
+  # `--release`, not a bare build: debug info is ON by default since
+  # stage 5, so a bare build is itself a --debug build and comparing
   # it to `--debug` passes vacuously.
-  "$MONAD_BIN" compile "$f" --release -o "$SP/o_$b.ll" >"$SP/o_$b.log" 2>&1
-  "$MONAD_BIN" compile "$f" --debug -o "$SP/d_$b.ll" >"$SP/d_$b.log" 2>&1
+  "$MONAD_BIN" build "$f" --release -o "$SP/o_$b.ll" >"$SP/o_$b.log" 2>&1
+  "$MONAD_BIN" build "$f" --debug -o "$SP/d_$b.ll" >"$SP/d_$b.log" 2>&1
   # The compiler's OWN verdict on whether it got as far as trustworthy
   # IR. Not the exit code, which says "linked" and so fails on every
   # file without a `main`; and not file existence either, because a

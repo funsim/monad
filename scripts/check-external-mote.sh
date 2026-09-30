@@ -286,8 +286,42 @@ printf '%s\n' "$tag" > "$home/active"
 
 # From inside the fixture's own repository, which is the state a user is in
 # after `monadup install`: the install is elsewhere, on `$MONAD_HOME` alone.
+#
+# Both cached verbs below run with the cache OFF, and that is what they are
+# for rather than a precaution. Configurations 3 and 4 build the SAME
+# fixture, from the SAME directory, through two toolchain roots that are
+# `cp -R` copies of each other -- differing only in which variable names the
+# root. That is not an input to a key, and should not be: identical bytes
+# are identical work. So the two configurations key identically and the
+# second replays the first. Measured, one shared store: config 3's `check`
+# writes two entries and config 4's `check` adds none, because it is reading
+# those two. What config 4 exists to establish is that the `$MONAD_HOME` +
+# `active` route RESOLVES, and a replay resolves nothing -- a gate leaning
+# on the cache is a gate that goes quiet when the cache gets correct.
+#
+# `MONAD_NO_CACHE=1` is off in both directions (nothing read, nothing
+# written), so what runs here is the resolution it claims to be. Config 3
+# keeps the cache on deliberately: it is the configuration whose entries are
+# being shared, and it is the one that has to miss for the sharing to be
+# observable at all. The build below was masked by a separate defect until
+# now -- a mote whose manifest sits in the working directory keyed on an
+# empty root, which the shell could not `cd` into, so the builder silently
+# disabled its own cache and config 4 compiled for real. Fixing that is what
+# makes this line load-bearing.
+#
+# And "load-bearing" is measured rather than argued: with the root fix in,
+# one shared store gives config 3 a missing build (one key) and config 4 a
+# `cached:' hit with no key of its own, for byte-identical binaries -- which
+# is precisely the replay this hatch exists to refuse, since config 4 is
+# here to show that its OWN root resolves. The two REAL compiles are not
+# byte-identical either, and the difference is the sharper reason: 12
+# `!DIFile' lines, because a module resolved through an absolute toolchain
+# root carries that root's path into the IR (`llvm_split_path',
+# llvm/src/ir.mo:979, takes a module's path verbatim). Without the hatch,
+# `out4' would be config 3's artifact down to the toolchain path in its
+# debug info.
 monad_home_check="$work/check4.log"
-MONAD_HOME="$home" "$monad" check > "$monad_home_check" 2>&1 \
+MONAD_NO_CACHE=1 MONAD_HOME="$home" "$monad" check > "$monad_home_check" 2>&1 \
   || { cat "$monad_home_check" >&2; die "config 4: 'monad check' did not resolve the \$MONAD_HOME toolchain"; }
 if grep -qE '^FAIL' "$monad_home_check"; then
   die "config 4: check reported a FAIL line"
@@ -301,7 +335,7 @@ grep -q "1/1 total tests passed" "$monad_home_test" \
   || { cat "$monad_home_test" >&2; die "config 4: the test did not run and pass"; }
 ok "config 4: test resolves init/std/runtime from \$MONAD_HOME + active"
 
-MONAD_HOME="$home" "$monad" build src/main.mo -o "$work/out4" > "$work/compile4.log" 2>&1 \
+MONAD_NO_CACHE=1 MONAD_HOME="$home" "$monad" build src/main.mo -o "$work/out4" > "$work/compile4.log" 2>&1 \
   || { cat "$work/compile4.log" >&2; die "config 4: compile did not find runtime.c through \$MONAD_HOME"; }
 [ "$("$work/out4")" = "/var/lib/game/data" ] \
   || die "config 4: the compiled binary printed the wrong thing"

@@ -65,6 +65,29 @@ pub def Build.probe_digest_tool : IO (Result String DigestTool) := do {
     }
 }
 
+/// The directory the digest walks, as a shell word.
+///
+/// An empty root means the working directory -- the convention
+/// `Build.default_target_dir` and `MoteManifest.src_root` both spell out --
+/// and it arrives here for the most ordinary layout there is: a mote whose
+/// `mote.toml` sits in the working directory, built as
+/// `cd mymote && monad build src/main.mo`. `Mote.discover` reports that
+/// manifest's directory as `""` (the same tree spelled `./src/main.mo`
+/// gives `"."`), and the shell cannot take the empty one: `cd ''` fails
+/// with "no such file or directory", so `tree_digest_with` is an error, so
+/// `Build.input_hash` is an error, so `build_cached` falls back to
+/// `compile_file` with the cache OFF -- silently, apart from one line
+/// under `--verbose`. Measured, one file and one directory, two spellings:
+/// `src/main.mo` wrote no store entry at all, `./src/main.mo` wrote one.
+///
+/// So the one consumer that forgot the convention spells it out. `.` is the
+/// same directory under a name the shell accepts, and the digest does not
+/// depend on which spelling it got (`find` prints `./src/main.mo` either
+/// way) -- which is what makes the two spellings of one build share an
+/// entry rather than each compiling.
+def Build.digest_dir (dir : String) : String :=
+    if String.is_empty dir then "." else dir
+
 /// The shell pipeline. Three choices in it are load-bearing for a cache
 /// key, and none of them is incidental:
 ///
@@ -85,9 +108,14 @@ pub def Build.probe_digest_tool : IO (Result String DigestTool) := do {
 /// compiler's inputs, and `mote.toml` is in it because
 /// `gate_declared_deps` (lang/src/module.mo) can fail a load on a
 /// manifest edit alone.
+///
+/// Its directory arrives through `Build.digest_dir` rather than directly,
+/// because the empty root names the working directory and the shell cannot
+/// take it -- the two spellings of one build then share an entry instead of
+/// each compiling.
 def Build.digest_script (tool : DigestTool) (dir : String) : String :=
     String.concat "cd "
-        (String.concat (Proc.shell_quote dir)
+        (String.concat (Proc.shell_quote (Build.digest_dir dir))
             (String.concat " && find . -type f \\( -name '*.mo' -o -name '*.c' -o -name '*.h' -o -name mote.toml \\) -exec "
                 (String.concat (Build.tool_exec tool) " {} + | LC_ALL=C sort")))
 

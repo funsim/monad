@@ -104,7 +104,7 @@ monad build hello.mo -o "$PWD/hello"
 ## The Commands
 
 ```text
-monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]
+monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]
         Parse, type-check and compile a .mo source file to a native binary.
         <path> may also be a mote DIRECTORY, in which case its [bin] target is
         built: `monad build cli` builds cli/src/main.mo as `monad`, the name
@@ -127,11 +127,12 @@ monad eval <path> [--verbose/-v]
 monad pretty <path>
         Parse and pretty-print a .mo source file.
 
-monad check [<path>...] [--workspace/-w] [--verbose/-v]
+monad check [<path>...] [--workspace/-w] [--verbose/-v] [--no-cache]
         Parse and type-check; no execution.
         Any <path> that is a directory is expanded recursively to its *.mo files.
         With no <path>, checks the mote containing the working directory;
         --workspace checks every mote in the enclosing workspace.
+        --no-cache (or MONAD_NO_CACHE) skips the cache; a single-file run always does.
         With no <path> and no mote above the working directory it prints why
         and exits 1, rather than reporting a pass for having checked nothing.
 
@@ -175,18 +176,76 @@ there is no need to run it from the workspace root.
 
 ### Where the binary lands
 
-`compile` and `run` resolve the output name against a default output directory,
-`/tmp/monad_out_<pid>` — the pid is there so parallel invocations cannot collide.
-An **absolute** output name replaces that directory outright; a relative one is
-placed inside it. So:
+`build` resolves the output name against the **target directory**: the nearest
+`[build] target-dir` above the source, else `target/` beside the manifest, else
+plain `target/` in the working directory for a file in no workspace at all.
+`MONAD_TARGET_DIR` overrides that, and `--target-dir` overrides both. This
+repository sets `target-dir = "target/monad"`, so cargo's `target/` and monad's
+do not eat each other — a `cargo clean` must not delete a monad binary.
+
+Debug info is on by default, so a plain build is a `debug` build:
 
 ```bash
-monad build hello.mo -o hello          # -> /tmp/monad_out_1234/hello
-monad build hello.mo -o "$PWD/hello"   # -> ./hello
+monad build hello.mo -o hello            # -> target/monad/debug/hello
+monad build hello.mo -o hello --release  # -> target/monad/release/hello
+monad build hello.mo -o "$PWD/hello"     # -> ./hello
 ```
 
-This surprises everyone once. When you want the binary in the working directory,
-say so with an absolute path.
+An **absolute** output name replaces the directory outright; a relative one —
+including one with slashes in it — is placed inside it, because `-o` is a NAME,
+not a path. A relative name that looks like a path is nested rather than
+rejected:
+
+```bash
+monad build hello.mo -o sub/hello        # -> target/monad/debug/sub/hello
+```
+
+This surprises everyone once. When you want the binary somewhere specific, say
+so with an absolute path.
+
+`monad run` is the exception: it compiles to `/tmp/monad_out_<pid>`, the pid
+being there so parallel invocations cannot collide.
+
+### The build cache
+
+Artifacts are **input-addressed**. `build` hashes the mote's whole declared
+closure, the compiler binary itself, the profile and the target triple, and if
+the store already holds a binary under that hash it copies it out instead of
+compiling — so rebuilding an unchanged tree is a file copy, not a build, and
+`cached: <dest> (<hash>)` is what a hit prints.
+
+The key is the whole name: nothing you type with `-o` is part of it. Keeping that
+true took a fix upstream of the cache. The intermediate `.ll` used to be named
+after `-o`, and `llc` records its input file's name in the object it emits, so
+two builds of one unchanged source under two output names differed by a byte.
+The IR is now named by the cache key and kept in the store
+(`<target-dir>/store/<hash>.ll`), which makes the artifact a function of the key
+alone; the `.ll` your `-o` implies is still written beside the binary as a
+convenience copy, for anyone reading the IR by hand. A cache hit writes it too —
+from the copy in the store, and only when the bytes there differ — so a build
+leaves the same two files behind whether or not it had to compile.
+
+`check` caches the same way, one entry per file, under
+`<target-dir>/check/<hash>`: a corpus check that takes minutes cold takes about
+a second warm, and a hit replays the recorded output byte for byte.
+
+Two properties are worth knowing before you trust it. The key covers the
+compiler as well, so editing the compiler invalidates everything it built —
+and where an input cannot be determined the cache turns itself **off** rather
+than answering from a weaker key, because a stale binary is worse than a slow
+build. And the key is coarse by direction, not by accident: it covers the
+file's entire declared closure, so a one-line edit can re-check more files than
+it changed. Anything that needs the real work to happen — a gate that inspects
+the emitted IR, say — says so with one of two switches, which mean the same
+thing: nothing is read, and nothing is written.
+
+```bash
+monad build hello.mo --no-cache
+MONAD_NO_CACHE=1 monad check init std
+```
+
+`--verbose` on `check` turns the cache off too: its trace is a record of what
+the checker did, and a replayed entry has no trace to show.
 
 ### Debug info and `--release`
 

@@ -101,6 +101,25 @@ pub def build_commit_define (from_env : Option String) (compiler_commit : String
 /// Returns 0 on success, 1 on any tool failure (each reported on the way
 /// out).
 ///
+/// `ir_path` is the file `llc` is pointed at, and the CALLER owns it.
+/// That is deliberate: `llc` records its input's name in the object it
+/// emits, so this path ends up inside the linked binary. Naming it after
+/// the caller's output would therefore make the artifact depend on
+/// something that is not an input, and two builds of one source under two
+/// output names would differ by a byte -- see `Build.artifact_ir_path`,
+/// which is what the cached `build` path passes here. A caller with no
+/// key to name it by (a `run`, a test driver, a build whose compiler
+/// digest could not be taken) passes the output-derived path by way of
+/// `cli/src/main.mo`'s `resolve_ir_path`, which is the behaviour every one
+/// of them had before this was a parameter.
+///
+/// The output-derived `.ll` is still written, as a convenience copy, for
+/// the readers that already know that path -- `tools/debug_transparency_
+/// oracle.sh` and anyone inspecting a build by hand. It is written from
+/// the same text rather than copied, and it is never what `llc` reads:
+/// a convenience copy that the compiler consulted would put the leak
+/// straight back.
+///
 /// `link_libs` is the deduplicated union of `[link] libs` across every mote
 /// in the program's dependency closure (`lang.module`'s `collect_link_libs`);
 /// each becomes a `-l<lib>` on the final link, which is what makes a mote
@@ -121,13 +140,12 @@ pub def build_commit_define (from_env : Option String) (compiler_commit : String
 /// where the "compile_file total minus compile_loaded_modules_to_ir total"
 /// remainder actually goes, before guessing at a fix.
 #[partial]
-pub def link_ir (runtime_c : String) (ir_text : String) (output_dir : Path) (output_name : Path) (link_libs : List String) (compiler_commit : String) (verbose : Bool) : IO I64 {
+pub def link_ir (runtime_c : String) (ir_text : String) (ir_path : Path) (output_dir : Path) (output_name : Path) (link_libs : List String) (compiler_commit : String) (verbose : Bool) : IO I64 {
     // `Path.join` here is THE fix for the mangled-double-slash bug this
     // whole `Path` type exists to prevent: if `output_name` is already
     // absolute, it replaces `output_dir` outright instead of naively
     // concatenating (`os.path.join`-style semantics).
     let target := Path.join output_dir output_name;
-    let ir_path := Path.with_suffix target ".ll";
     let obj_path := Path.with_suffix target ".o";
     // Beside the other artifacts (i.e. next to `target`), NOT in
     // `output_dir` -- an absolute or directory-bearing `output_name`
@@ -154,8 +172,27 @@ pub def link_ir (runtime_c : String) (ir_text : String) (output_dir : Path) (out
         then return 0
         else exec_cmd "mkdir" ["-p", target_dir]);
 
+    // ...and the IR's own directory, which is a DIFFERENT one on the
+    // cached `build` path: the target sits in `<target-dir>/<profile>/`
+    // while the IR sits in `<target-dir>/store/`. Two calls rather than
+    // one because which two directories those are is the caller's
+    // business; `mkdir -p` is idempotent, and this is two forks against a
+    // compile that costs tens of seconds.
+    let ir_dir : String := Path.parent ir_path;
+    let _mkdir_ir <- (if String.beq ir_dir ""
+        then return 0
+        else exec_cmd "mkdir" ["-p", ir_dir]);
+
     let t_write : I64 <- Bench.now;
     IO.write_file ir_path ir_text;
+    // The convenience copy, for a reader that already knows this path
+    // because `-o` implies it. Skipped when it IS the IR (the callers with
+    // no key to name one by), so the common case still writes one file.
+    let beside : String := Path.to_string (Path.with_suffix target ".ll");
+    if Bool.not (String.beq beside ir_path_s) then do {
+        IO.write_file (Path.path beside) ir_text;
+        return unit
+    } else return unit;
     if verbose then do {
         Bench.report_since "link_ir: write .ll" t_write;
         return unit

@@ -67,6 +67,27 @@ def test_store_path_separates_the_three_kinds : Bool :=
 def test_store_path_omits_an_empty_slug_cleanly : Bool :=
     String.beq (Build.store_path "t" Entry.artifact "abc" "") "t/store/abc"
 
+/// The IR lives in the artifact root, named by the key: no slug, no
+/// profile, no output name -- the key and the target dir, and nothing a
+/// user typed. Its directory moves with the target dir like every other
+/// entry's.
+///
+/// This is what makes a build under `-o a` and one under `-o b`
+/// byte-identical, and it is not cosmetic: `llc` records its input's
+/// BASENAME in the object it emits, so this name ends up inside the
+/// artifact. Two names, two artifacts, one source.
+#[test]
+def test_artifact_ir_path_is_keyed_inside_the_artifact_root : Bool :=
+    String.beq (Build.artifact_ir_path "t" "abc") "t/store/abc.ll" &&
+    String.beq (Build.artifact_ir_path "t/monad" "abc") "t/monad/store/abc.ll"
+
+/// Two keys are two files. If this ever collapsed, a rebuild after an edit
+/// would compile the OLD IR under the new key -- the worst failure a cache
+/// can produce, and a name collision is enough to cause it.
+#[test]
+def test_artifact_ir_path_moves_with_the_key : Bool :=
+    Bool.not (String.beq (Build.artifact_ir_path "t" "abc") (Build.artifact_ir_path "t" "abd"))
+
 // ─── compiler identity ───
 
 /// There is a running binary and we can name it. If this fails on a

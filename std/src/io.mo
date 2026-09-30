@@ -78,7 +78,7 @@ def IO.current_time : IO I64
 #[native current_time_nano]
 def IO.current_time_nano : IO I64
 
-def IO.write_file (path : Path) (content : String) : IO Unit :=
+pub def IO.write_file (path : Path) (content : String) : IO Unit :=
     IO.write_file_native (Path.to_string path) content
 
 pub def IO.read_file (path : Path) : IO String :=

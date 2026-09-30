@@ -9,9 +9,10 @@ use runtime {}
 use lang::codegen::emit {compile_db_module_with_debug, compile_loaded_modules_to_ir_with_debug, ok}
 use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, ElaboratedModules, FileCheckAndCache, LoadedModules, ModuleInfo, ModuleInfoCache, bench_step, check_file_cached, check_module_with_scope, elaborate_loaded_modules, elaborate_loaded_modules_cached, elaborate_module_decls_best_effort, expand_check_paths, extract_directory, load_file_modules, load_module_with_info, module_name_from_path, module_info_cache_empty, resolve_runtime_src, try_parse_decls, try_parse_decls_strict}
 use lang::scope {resolve_class_calls_decls}
-use lang::mote {MoteManifest, discover_build_dir}
+use lang::mote {MoteManifest}
 use build::closure {input_hash}
-use build::store {ensure_entry_dir, store_path, target_dir_of}
+use build::store {artifact_ir_path, ensure_entry_dir, store_path, target_dir_for}
+use build::check {CheckPlan, check_block, check_entry_read, check_maybe_write, check_plan, check_plan_active, check_plan_key, check_plan_reason, check_plan_root, mote_root_of}
 use std::map {}
 use lang::pretty {show_decls}
 use lang::codegen::test_driver {TestIrResult, compile_loaded_modules_to_test_ir, is_no_tests_error, parse_driver_result}
@@ -47,7 +48,7 @@ def default_output_dir : Path := Path.path ("/tmp/monad_out_" ++ I64.to_string p
 /// is enough here (the `--verbose` compile pipeline prints the precise
 /// stage names too).
 #[partial]
-def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : List String) (base_dir : String) (output_dir : Path) (output_name : Path) (verbose : Bool) : IO I64 :=
+def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : List String) (base_dir : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) : IO I64 :=
     match mod_result {
         Result.err e => do {
             println ("FAILED at stage: compile_loaded_modules_to_ir (" ++ e ++ ")");
@@ -65,7 +66,7 @@ def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : Li
             let ir_text : String := emit_module mod_;
             let _t_emit : I64 <- bench_step verbose "emit_module (render .ll)" t_emit (String.length ir_text);
             let runtime_src : String <- resolve_runtime_src base_dir;
-            link_ir runtime_src ir_text output_dir output_name link_libs build_commit verbose
+            link_ir runtime_src ir_text (resolve_ir_path ir output_dir output_name) output_dir output_name link_libs build_commit verbose
         },
     }
 
@@ -79,16 +80,17 @@ def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : Li
 /// extra flag required (confirmed directly -- a `-g`-style flag doesn't
 /// exist on `llc`, unlike `clang`'s own C-source `-g`).
 #[partial]
-def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir : Path) (output_name : Path) (verbose: Bool) (source_path : Option String) : IO I64 {
+def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose: Bool) (source_path : Option String) : IO I64 {
     let mod_ : LLVMModule := compile_db_module_with_debug decl_list source_path List.empty;
     let ir_text := emit_module mod_;
+    let ir_path : Path := resolve_ir_path ir output_dir output_name;
     // This is the module-loading-FAILURE fallback: there is no
     // `LoadedModules`, so no manifest closure to read `[link] libs`
     // from. A program that needs `-l` flags cannot reach here anyway --
     // its `use` lines are what failed to load.
-    println <| "Writing LLVM IR to: " ++ Path.to_string (Path.with_suffix (Path.join output_dir output_name) ".ll");
+    println <| "Writing LLVM IR to: " ++ Path.to_string ir_path;
     let runtime_src : String <- resolve_runtime_src base_dir;
-    link_ir runtime_src ir_text output_dir output_name List.empty build_commit verbose
+    link_ir runtime_src ir_text ir_path output_dir output_name List.empty build_commit verbose
 }
 
 // (The v1 per-def location table this section used to build --
@@ -160,40 +162,6 @@ def host_triple : String := "x86_64-unknown-linux-gnu"
 /// never share a cache entry.
 def profile_name (debug : Bool) : String := if debug then "debug" else "release"
 
-/// The MOTE ROOT for `src`, which is what the closure digest must be
-/// taken over -- not the source directory.
-///
-/// The difference is load-bearing: a mote's `mote.toml` sits at the root
-/// while its sources sit in `src/`, so digesting `extract_directory src`
-/// would silently leave the manifest out of the key, and
-/// `gate_declared_deps` can fail a load on a manifest edit alone. Falls
-/// back to the source directory for a file outside any mote, which has no
-/// manifest to miss.
-#[partial]
-def mote_root_of (src : String) : IO String := do {
-    let m <- Mote.discover (extract_directory src);
-    match m {
-        Option.some manifest => return manifest.dir,
-        Option.none => return (extract_directory src)
-    }
-}
-
-/// Where a build's output goes by default, and where its store lives.
-///
-/// `--target-dir` is not wired to a flag yet, so the flag tier is empty
-/// and the env/manifest/default tiers do the work
-/// (`build/src/store.mo`'s `resolve_target_dir` owns the precedence).
-#[partial]
-def target_dir_for (src : String) : IO String := do {
-    // `Mote.discover_build_dir`, not `Mote.discover`: the latter stops at
-    // a virtual workspace root, so a script-mode file under one (anything
-    // in `examples/`) would never see the workspace's `[build]
-    // target-dir` and would write to `target/` -- straight into cargo's
-    // directory, which is the collision the setting exists to prevent.
-    let d <- Mote.discover_build_dir (extract_directory src);
-    Build.target_dir_of "" d ""
-}
-
 /// Build `src`, consulting the artifact store first.
 ///
 /// A hit copies the stored binary to the destination and skips the
@@ -205,27 +173,82 @@ def target_dir_for (src : String) : IO String := do {
 /// OFF and the build proceeds normally. That is the rule the whole design
 /// hangs on: a weaker key would serve a stale binary, and a stale binary
 /// is worse than a slow build.
+///
+/// The caller's escape hatch (`--no-cache`, `MONAD_NO_CACHE`) means the
+/// store is neither read nor written: a caller reaching for it is settling
+/// a suspicion about a stored entry, so recording a new one from the run
+/// it asked to be clean is the one thing it did not ask for. It is NOT,
+/// however, checked before the key: the key is what names the intermediate
+/// `.ll`, and the IR name is recorded inside the artifact, so a hatch build
+/// that skipped the key would produce a byte-different binary from the
+/// cached build it is supposed to be checking. See `resolve_ir_path`. (It
+/// did use to come first, to spare a caller who declined the cache the cost
+/// of a digest. One `sha256sum` fork against a compile of tens of seconds
+/// is the cheaper side of that trade, and byte-comparability is the whole
+/// value of the hatch.)
+///
+/// A platform with no procfs has no key to compute at all; the hatch still
+/// works there, because "cannot name the IR by a key" is `Option.none` and
+/// not a refusal to build.
+///
+/// Both of the things it needs -- which mote owns `src`, and which
+/// directory that mote's store is under -- are `build`'s to answer
+/// (`Build.mote_root_of`, `Build.target_dir_for`), because the `check`
+/// and `test` caches need the identical answers and a second copy of
+/// either rule is a second place for it to drift.
 #[partial]
-def build_cached (src : String) (dest_name : Path) (verbose : Bool) (debug : Bool) : IO I64 := do {
-    let root <- mote_root_of src;
-    let target_dir <- target_dir_for src;
+def build_cached (src : String) (dest_name : Path) (verbose : Bool) (debug : Bool) (no_cache : Bool) : IO I64 := do {
+    // Resolved either way: it is where the binary lands, not a cache
+    // decision.
+    let target_dir <- Build.target_dir_for src;
+    let dest_dir : String := build_dest_dir target_dir debug;
+    let root <- Build.mote_root_of src;
     let key <- Build.input_hash root (profile_name debug) host_triple;
-    match key {
-        err m => do {
+    // The key names the IR, so it is resolved from the key, and a key that
+    // could not be taken leaves the IR where it always was (beside the
+    // output). That is the ONLY case where a `build` puts `-o` inside the
+    // artifact, and it is the case the cache has already declined to serve
+    // -- so nothing stored can ever disagree with it.
+    let ir : Option Path := match key {
+        Result.ok h => Option.some (Path.path (Build.artifact_ir_path target_dir h)),
+        Result.err _ => Option.none,
+    };
+    let enabled <- cache_enabled no_cache;
+    if Bool.not enabled
+    then do {
+        stage verbose "cache off: MONAD_NO_CACHE (or --no-cache) is set";
+        compile_file src (Path.path dest_dir) dest_name ir verbose debug
+    }
+    else match key {
+        Result.err m => do {
             stage verbose ("cache off: " ++ m);
-            compile_file src (Path.path (build_dest_dir target_dir debug)) dest_name verbose debug
+            compile_file src (Path.path dest_dir) dest_name ir verbose debug
         },
-        ok h => build_cached_keyed src target_dir h dest_name verbose debug
+        Result.ok h => build_cached_keyed src target_dir h ir dest_name verbose debug
     }
 }
 
-/// The last path component of `p`, or `p` when it has no separator.
+/// The IR path to hand `llvm.link.link_ir`, given the caller's optional
+/// key-derived one.
 ///
-/// Used for the store slug, which must not contain directories.
-#[partial]
-def base_name (p : String) : String :=
-    let idx : I64 := String.find_last p "/" in
-    if I64.lt idx 0 then p else String.drop (idx + 1) p
+/// `Option.some` is a caller that HAS a cache key, and therefore a
+/// standard, key-derived IR path (`Build.artifact_ir_path`); it is passed
+/// through untouched, because the entire point is that the file `llc`
+/// reads is named by the key rather than by the output.
+///
+/// `Option.none` is every caller with no key to name one by -- `run`, the
+/// test driver, and a `build` whose compiler digest could not be taken --
+/// and it falls back to the output-derived `<dest>.ll`, which is the
+/// behaviour all of them had before this became a parameter. That fallback
+/// is precisely what a cached build must NOT do: it puts the user's `-o`
+/// into the artifact, by way of the filename `llc` records in the object
+/// it emits. See `Build.artifact_ir_path` for the one-byte measurement
+/// that makes this a correctness requirement rather than tidiness.
+def resolve_ir_path (ir : Option Path) (output_dir : Path) (output_name : Path) : Path :=
+    match ir {
+        Option.some p => p,
+        Option.none => Path.with_suffix (Path.join output_dir output_name) ".ll",
+    }
 
 /// `<target-dir>/<profile>` -- where a binary lands when the caller did
 /// not name an absolute path.
@@ -239,26 +262,81 @@ def base_name (p : String) : String :=
 def build_dest_dir (target_dir : String) (debug : Bool) : String :=
     String.concat target_dir (String.concat "/" (profile_name debug))
 
+/// A HIT leaves the destination exactly as a MISS would -- binary AND IR.
+///
+/// The store holds the IR (`Build.artifact_ir_path`) because that is the
+/// file `llc` read to make the artifact, so it is meaningful to replay
+/// beside the binary, where the miss path's convenience copy lands. Two
+/// callers read that file rather than the binary: the ladder
+/// (`scripts/self-compile-turn.sh` promises `<out-dir>/<name>.ll`, and
+/// `scripts/bootstrap-compile.sh` `cmp`s it against the previous rung's)
+/// and `tools/debug_transparency_oracle.sh`. Without this a warm store made
+/// the ladder fail on a missing file -- and, worse, made its rung vacuous.
+/// Restoring it is also the honest reading of what the cache claims: the
+/// entry is valid for the source AND the compiler digest it was keyed on,
+/// so recompiling to re-derive a file already recorded is work the key has
+/// proved unnecessary.
+///
+/// `cmp -s` first, so a hit does not rewrite a file that already holds the
+/// right bytes -- `cp` would move its mtime, and "the `.ll` did not move" is
+/// how a reader tells a hit from a miss (`target/verify/escape_hatch.sh`
+/// prints it as one of three signals). Nothing depends on it for
+/// correctness: the ladder `cmp`s content. `cmp` is POSIX, so unlike the
+/// digest tool of Phase 0c it needs no probe.
+///
+/// An entry whose IR has gone is a no-op, not an error. The cache is a
+/// cache; a missing convenience copy costs a reader one `monad build`.
+def replay_ir_beside (ir : Option Path) (dest : String) : IO Unit :=
+    match ir {
+        Option.none => return unit,
+        Option.some p => do {
+            let store_ir : String := Path.to_string p;
+            let beside : String := String.concat dest ".ll";
+            if String.beq store_ir beside
+            then return unit
+            else do {
+                let stored <- IO.file_exists (Path.path store_ir);
+                let have <- IO.file_exists (Path.path beside);
+                if stored
+                then do {
+                    let same : I64 <- if have then exec_cmd "cmp" ["-s", store_ir, beside] else return 1;
+                    if same == 0
+                    then return unit
+                    else do {
+                        let _c <- exec_cmd "cp" ["-f", store_ir, beside];
+                        return unit
+                    }
+                }
+                else return unit
+            }
+        },
+    }
+
 #[partial]
-def build_cached_keyed (src : String) (target_dir : String) (h : String) (dest_name : Path) (verbose : Bool) (debug : Bool) : IO I64 := do {
+def build_cached_keyed (src : String) (target_dir : String) (h : String) (ir : Option Path) (dest_name : Path) (verbose : Bool) (debug : Bool) : IO I64 := do {
     let dest_dir : String := build_dest_dir target_dir debug;
     let dest : String := Path.to_string (Path.join (Path.path dest_dir) dest_name);
-    // The slug is the output's BARE NAME. `dest_name` may be an absolute
-    // path (every ladder script passes one to `-o`), and feeding that in
-    // whole produced `target/store/<hash>-/tmp/.../thing` -- a path with
-    // directories inside the slug, which `cp` cannot create. The slug is
-    // a human convenience only; nothing parses it back.
-    let entry : String := Build.store_path target_dir Entry.artifact h (base_name (Path.to_string dest_name));
+    // No slug. It used to be the output's bare name, which made the name an
+    // INPUT: a build under `-o a` could not share with the same build under
+    // `-o b`, so one unchanged source compiled twice. The name reached the
+    // artifact through the intermediate `.ll` -- named after the output, and
+    // recorded by `llc` in the object it emits. Now the IR is keyed
+    // (`Build.artifact_ir_path`), so the artifact is a function of the key
+    // alone and the entry can be named by the key alone. The human-readable
+    // half belongs in `db/<hash>.json`, the metadata kind the plan's layout
+    // reserves for it.
+    let entry : String := Build.store_path target_dir Entry.artifact h "";
     let hit <- IO.file_exists (Path.path entry);
     if hit
     then do {
         let _mk <- exec_cmd "mkdir" ["-p", dest_dir];
         let rc <- exec_cmd "cp" ["-f", entry, dest];
+        let _ir <- replay_ir_beside ir dest;
         ok_line ("cached: " ++ dest ++ " (" ++ h ++ ")");
         return rc
     }
     else do {
-        let rc <- compile_file src (Path.path dest_dir) dest_name verbose debug;
+        let rc <- compile_file src (Path.path dest_dir) dest_name ir verbose debug;
         if rc == 0
         then do {
             let _d <- Build.ensure_entry_dir target_dir Entry.artifact;
@@ -269,10 +347,10 @@ def build_cached_keyed (src : String) (target_dir : String) (h : String) (dest_n
     }
 }
 
-def build_target (path : String) (out_name : String) (verbose : Bool) (debug : Bool) : IO I64 := do {
+def build_target (path : String) (out_name : String) (verbose : Bool) (debug : Bool) (no_cache : Bool) : IO I64 := do {
     let is_a_dir : Bool <- IO.is_dir (Path.path path);
     if Bool.not is_a_dir
-    then build_cached path (Path.path out_name) verbose debug
+    then build_cached path (Path.path out_name) verbose debug no_cache
     else do {
         let m <- Mote.discover path;
         match m {
@@ -291,7 +369,7 @@ def build_target (path : String) (out_name : String) (verbose : Bool) (debug : B
                     Option.some src => do {
                         let name : String := compile_out_name out_name manifest src;
                         println ("building mote `" ++ manifest.name ++ "`'s [bin] target: " ++ src);
-                        build_cached src (Path.path name) verbose debug
+                        build_cached src (Path.path name) verbose debug no_cache
                     }
                 }
             }
@@ -320,7 +398,7 @@ def build_target (path : String) (out_name : String) (verbose : Bool) (debug : B
 /// purely to improve codegen's own dictionary-dispatch resolution (see its
 /// own doc comment) -- that is NOT a second copy of this gate.
 #[partial]
-def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (verbose : Bool) (debug : Bool) : IO I64 {
+def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) (debug : Bool) : IO I64 {
     // Checked HERE, before anything is printed: a missing input is not a
     // load failure to be recovered from, and reporting it as one
     // ("FAILED at stage: load (could not load dependencies: ...)") buries
@@ -363,7 +441,7 @@ def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (
                         },
                         List.empty => do {
                             stage verbose "codegen + link";
-                            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, verbose := verbose, debug := debug, preloaded := Option.some em.loaded };
+                            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, ir := ir, verbose := verbose, debug := debug, preloaded := Option.some em.loaded };
                             if verbose then do {
                                 Bench.report_since "compile_file total" total_start;
                                 return unit
@@ -374,7 +452,7 @@ def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (
             },
         Result.err e => do {
             fail_line ("FAILED at stage: load (could not load dependencies: " ++ e ++ ")");
-            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, verbose := verbose, debug := debug, preloaded := Option.none };
+            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, ir := ir, verbose := verbose, debug := debug, preloaded := Option.none };
             if verbose then do {
                 Bench.report_since "compile_file total" total_start;
                 return unit
@@ -393,7 +471,10 @@ def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (
 #[partial]
 def run_file (file_path : String) (output_dir : Path) (verbose : Bool) (debug : Bool) : IO I64 {
     let out_name : Path := Path.path "run_out";
-    let compile_result <- compile_file file_path output_dir out_name verbose debug;
+    // `Option.none`: a `run` is not a cache entry, so there is no key to
+    // name the IR by -- the output-derived `run_out.ll` is what this path
+    // has always used and it stays out of anything stored.
+    let compile_result <- compile_file file_path output_dir out_name Option.none verbose debug;
     if not (compile_result == 0) then do {
         println "run: compilation failed";
         return 1
@@ -544,7 +625,7 @@ def show_lower_error (e : LowerError) : String :=
 /// `source_path`/`debug_files` -- see `parse_all_decls`' own doc comment
 /// for the bug that divergence caused.
 #[partial]
-def compile_file_codegen (file_path : String) (output_dir : Path) (output_name : Path) (verbose : Bool) (debug : Bool) (preloaded : Option LoadedModules) : IO I64 {
+def compile_file_codegen (file_path : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) (debug : Bool) (preloaded : Option LoadedModules) : IO I64 {
     // `preloaded` is the module set the typecheck gate already loaded, if
     // it got that far -- reusing it avoids reading and re-parsing the
     // target's ENTIRE transitive closure (prelude and init included) a
@@ -592,7 +673,7 @@ def compile_file_codegen (file_path : String) (output_dir : Path) (output_name :
             // a package-level build property, read from the manifests
             // rather than from any `#[extern "c"]` attribute.
             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
-            link_compiled_module mod_result link_libs (extract_directory file_path) output_dir output_name verbose
+            link_compiled_module mod_result link_libs (extract_directory file_path) output_dir output_name ir verbose
         },
         Result.err e => do {
             println ("Failed to parse dependencies: " ++ e);
@@ -604,7 +685,7 @@ def compile_file_codegen (file_path : String) (output_dir : Path) (output_name :
             match try_parse_decls source {
                 Option.some decl_list => do {
                     let source_path : Option String := if debug then Option.some file_path else Option.none;
-                    compile_parsed_decls decl_list (extract_directory file_path) output_dir output_name verbose source_path
+                    compile_parsed_decls decl_list (extract_directory file_path) output_dir output_name ir verbose source_path
                 },
                 Option.none => do {
                     // `try_parse_decls` (leniently truncate-and-succeed) just
@@ -655,8 +736,24 @@ def print_diagnostics (diags : List String) : IO I64 :=
 /// all, indistinguishable from "not reached" — see the corpus-check
 /// driver this feeds, which needs a real per-file pass/fail matrix,
 /// not just a final count).
+///
+/// `plan` is the `check` cache's decision for this run, and a HIT IS
+/// REPLAYED IN PLACE — inside this one loop, at this file's own position
+/// in the output. That is the whole point of the shape. The loop threads
+/// ONE `ModuleInfoCache`, and that cache is what makes a file's
+/// dependency closure free once an earlier file has loaded it (measured
+/// at 75% of dependency loads across 5 files, `lang/src/module.mo`). A
+/// cache that split the run into "the hits" and "the misses" — or worse,
+/// into one invocation per file — would throw exactly that away, which is
+/// why one large file on its own never finishes while all 195 together
+/// are 789 seconds. Composability comes from the recorded keys, never
+/// from splitting the work.
+///
+/// An inactive plan is the same code path with no keys: every file is
+/// checked, nothing is recorded, and the output is byte-identical to what
+/// this command printed before any cache existed.
 #[partial]
-def run_check_loop (cache : ModuleInfoCache) (files : List String) (checked : I64) (errors : I64) (verbose : Bool) : IO I64 :=
+def run_check_loop (cache : ModuleInfoCache) (files : List String) (checked : I64) (errors : I64) (verbose : Bool) (plan : CheckPlan) : IO I64 :=
     match files {
         List.empty => do {
             println (I64.to_string checked ++ " file(s) checked, " ++ I64.to_string errors ++ " error(s)");
@@ -674,26 +771,55 @@ def run_check_loop (cache : ModuleInfoCache) (files : List String) (checked : I6
             return (if I64.gt errors 0 then 1 else 0)
         },
         List.cons f rest => do {
-            let checked_and_cache <- check_file_cached cache f verbose;
-            match checked_and_cache {
-                FileCheckAndCache.mk result updated_cache =>
-                    match result {
-                        FileCheckResult.mk path diags =>
-                            match diags {
-                                List.empty => do {
-                                    println ("ok    " ++ path);
-                                    run_check_loop updated_cache rest (checked + 1) errors verbose
-                                },
-                                List.cons _ _ => do {
-                                    println ("FAIL  " ++ path ++ " (" ++ I64.to_string (List.length diags) ++ " error(s))");
-                                    print_diagnostics diags;
-                                    run_check_loop updated_cache rest (checked + 1) (errors + List.length diags) verbose
+            match Build.check_plan_key plan f {
+                // No key for this file (the plan is inactive, or its
+                // digest failed): check it, and record nothing.
+                Option.none => run_check_file cache f rest checked errors verbose plan Option.none,
+                Option.some key => do {
+                    let stored <- Build.check_entry_read (Build.check_plan_root plan) key;
+                    match stored {
+                        // A hit: replay what was recorded, verbatim, and
+                        // count it exactly as the original run counted
+                        // it. No `check_file_cached` call at all.
+                        Option.some p =>
+                            match p {
+                                Pair.pair counted block => do {
+                                    println block;
+                                    run_check_loop cache rest (checked + 1) (errors + counted) verbose plan
                                 }
-                            }
+                            },
+                        Option.none => run_check_file cache f rest checked errors verbose plan (Option.some key)
                     }
+                }
             }
         }
     }
+
+/// Check one file and record the result. The only place a `check` result
+/// is produced, replayed or not.
+///
+/// The whole per-file report is printed as ONE string built by
+/// `Build.check_block`, where this used to print a header and then each
+/// diagnostic on its own line. Same bytes -- `println (intercalate "\n"
+/// xs)` is `mapM_ println xs` -- and routing both the printing and the
+/// storing through one function is what keeps a replayed hit from
+/// drifting out of step with a fresh miss.
+#[partial]
+def run_check_file (cache : ModuleInfoCache) (f : String) (rest : List String) (checked : I64) (errors : I64) (verbose : Bool) (plan : CheckPlan) (key : Option String) : IO I64 := do {
+    let checked_and_cache <- check_file_cached cache f verbose;
+    match checked_and_cache {
+        FileCheckAndCache.mk result updated_cache =>
+            match result {
+                FileCheckResult.mk path diags => do {
+                    let block : String := Build.check_block path diags;
+                    let counted : I64 := List.length diags;
+                    println block;
+                    let _rec <- Build.check_maybe_write plan key counted block;
+                    run_check_loop updated_cache rest (checked + 1) (errors + counted) verbose plan
+                }
+            }
+    }
+}
 
 /// Parse + typecheck each file with `lang.module.check_file_cached` — no
 /// execution, no compilation. See lang/module.mo's `check_file_cached`/
@@ -827,8 +953,89 @@ def no_target_diagnostic (subcommand : String) : IO I64 := do {
     return 1
 }
 
+/// Whether a run may use the store at all, from BOTH switches.
+///
+/// `--no-cache` and `MONAD_NO_CACHE` are one decision, and the environment
+/// half treats ANY non-empty value as off -- `MONAD_NO_CACHE=0` included.
+/// An escape hatch that the value someone happened to write can silently
+/// disarm is not an escape hatch, and the variable's whole job is to be
+/// believed.
+///
+/// Read by `build` as well as `check`, which is why this is named for the
+/// decision and not for the caller. The environment half matters more to
+/// `build` than the flag does: a gate that wants the compiler to actually
+/// RUN -- `tools/debug_transparency_oracle.sh` inspects the `.ll` it emits,
+/// and `scripts/check-external-mote.sh`'s config 4 asserts on a linked
+/// binary `build` would otherwise copy out of the store -- cannot assume
+/// the tool it drives has grown `--no-cache` yet, and a gate that silently
+/// replays a stored answer instead of compiling is a gate that passed
+/// without testing anything. The variable is how such a caller states its
+/// requirement without depending on this flag's existence.
+///
+/// Off means off in BOTH directions for the ARTIFACT: nothing is read from
+/// the store and no entry is recorded. A caller reaching for this is
+/// settling a suspicion about a stored entry; recording a new one from the
+/// run it asked for as clean is the one thing it did not ask for.
+///
+/// The key-named IR is the one thing a hatch build still writes, and it
+/// writes it INTO the store (`<target-dir>/store/<hash>.ll`), deliberately:
+/// the IR filename is what `llc` records in the object it emits, so a hatch
+/// build that named its IR after `-o` instead would produce bytes that could
+/// not be compared with the cached build it exists to check. That write is a
+/// no-op in CONTENT whenever the key is a function of everything reaching
+/// the IR -- which is the property the IR filename was made key-derived for
+/// -- so it is invisible today in every case where the key is complete.
+/// Measured where it is not: two byte-identical toolchain roots share one
+/// key but carry different absolute `!DIFile` directories
+/// (`llvm_split_path`, llvm/src/ir.mo:979, takes a module's path verbatim),
+/// so a hatch build through one root REWRITES the IR the other recorded.
+/// The artifact is never touched, so the answer served stays correct; what
+/// this note corrects is only the older claim that a hatch run writes
+/// nothing at all. See `target/verify/c3c4_build.sh` for the measurement and
+/// the plan's resolved-toolchain-root item for the fix.
 #[partial]
-def run_check (files : List String) (workspace : Bool) (verbose : Bool) : IO I64 := do {
+def cache_enabled (no_cache : Bool) : IO Bool := do {
+    if no_cache then return false
+    else do {
+        let e <- IO.get_env "MONAD_NO_CACHE";
+        match e {
+            Option.none => return true,
+            Option.some v => return (String.is_empty v)
+        }
+    }
+}
+
+/// Make the store directory, if there is one to make.
+#[partial]
+def check_store_ready (plan : CheckPlan) : IO I64 := do {
+    if Build.check_plan_active plan
+    then Build.ensure_dir (Build.check_plan_root plan)
+    else return 0
+}
+
+/// Say why the cache is off, when the reason is one a user can act on, and
+/// create the store either way.
+///
+/// Nothing here can change an ANSWER: an inactive plan is exactly the
+/// behaviour `check` had before a cache existed. So this is a diagnostic
+/// and not a warning, which is why the two deliberate cases -- a
+/// single-file run, and `--no-cache` -- carry no message at all, while a
+/// missing digest tool or an unreadable `/proc/<pid>/exe` does. A silently
+/// disabled cache on the machine that needed it is the one outcome worth
+/// a line.
+#[partial]
+def announce_check_cache (plan : CheckPlan) : IO I64 := do {
+    let reason : String := Build.check_plan_reason plan;
+    if String.is_empty reason
+    then check_store_ready plan
+    else do {
+        println ("check cache off: " ++ reason);
+        check_store_ready plan
+    }
+}
+
+#[partial]
+def run_check (files : List String) (workspace : Bool) (verbose : Bool) (no_cache : Bool) : IO I64 := do {
     let targets <- resolve_target_paths "Checking" "check" files workspace;
     match targets {
         // Empty only from `--workspace` with no workspace manifest --
@@ -838,8 +1045,22 @@ def run_check (files : List String) (workspace : Bool) (verbose : Bool) : IO I64
         Option.some ts => if List.is_empty ts then return 1
         else do {
             let expanded : List String <- expand_check_paths ts;
+            // One target directory for the whole run, resolved from the
+            // working directory rather than per file: every file in a
+            // workspace resolves to the same one anyway, and resolving it
+            // once is what keeps a `--workspace` run over eleven motes
+            // from writing eleven partial stores.
+            let target_dir <- Build.target_dir_at "";
+            let requested <- cache_enabled no_cache;
+            // `--verbose` disables the cache outright rather than
+            // bypassing hits: its trace is a record of what the checker
+            // DID, and a replayed entry has no trace to show. A cache
+            // that silently suppressed the trace it was asked for would
+            // be worse than a slow one.
+            let plan <- Build.check_plan expanded target_dir (requested && Bool.not verbose);
+            let _prep <- announce_check_cache plan;
             let cache : ModuleInfoCache := module_info_cache_empty;
-            run_check_loop cache expanded 0 0 verbose
+            run_check_loop cache expanded 0 0 verbose plan
         },
         // Nothing named, inside no mote: say why, and fail. `print_help`
         // with its exit 0 was the behaviour before any of this existed,
@@ -1123,7 +1344,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                             // `undefined reference` at link.
                             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
                             let runtime_src : String <- resolve_runtime_src (extract_directory f);
-                            let link_result <- link_ir runtime_src ir_text (Path.path out_dir) (Path.path bin_name) link_libs build_commit verbose;
+                            let link_result <- link_ir runtime_src ir_text (resolve_ir_path Option.none (Path.path out_dir) (Path.path bin_name)) (Path.path out_dir) (Path.path bin_name) link_libs build_commit verbose;
                             if not (link_result == 0) then do {
                                 // A file-level failure, counted as such:
                                 // no test in it ever ran, so folding it
@@ -1227,11 +1448,11 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
 // helpers with the macro-derived demo in cli/src/tests/cli_derive_tests.mo,
 // though — same argv-munging primitives either way.
 type Command {
-    build (file: Path) (out_name: Path) (verbose: Bool) (debug: Bool),
+    build (file: Path) (out_name: Path) (verbose: Bool) (debug: Bool) (no_cache: Bool),
     run (file: Path) (verbose: Bool) (debug: Bool),
     eval (file: Path) (verbose: Bool),
     pretty (file: String),
-    check (files: List String) (verbose: Bool) (workspace: Bool),
+    check (files: List String) (verbose: Bool) (workspace: Bool) (no_cache: Bool),
     test (files: List String) (verbose: Bool) (workspace: Bool),
     version,
     help
@@ -1263,7 +1484,15 @@ def Command.from_args (args : List String) : Command :=
                                         // opts out, an explicit `--debug`/
                                         // `-g` opts back in over it.
                                         let debug := if debug_explicit then true else not release in
-                                        match Cli.take_opt "output" "o" "" rest1b {
+                                        // Peeled here rather than after the
+                                        // positionals, for the reason `check`
+                                        // gives: `--no-cache` is a flag, not a
+                                        // path, and left in the list it would be
+                                        // handed to the path expander as a
+                                        // filename.
+                                        match Cli.take_flag "no-cache" "" rest1b {
+                                            Cli.FlagResult.flag_result no_cache rest1c =>
+                                        match Cli.take_opt "output" "o" "" rest1c {
                                     Cli.OptResult.opt_result opt_out_name rest2 =>
                                         match Cli.take_positional rest2 {
                                             Cli.PosResult.pos_result path_opt rest3 =>
@@ -1294,11 +1523,12 @@ def Command.from_args (args : List String) : Command :=
                                                             err _ => Command.help,
                                                             ok p => match Path.of out_name {
                                                                 err _ => Command.help,
-                                                                ok o => Command.build p o verbose debug,
+                                                                ok o => Command.build p o verbose debug no_cache,
                                                             },
                                                         },
                                                 },
                                         },
+                                            },
                                 },
                         },
                 },
@@ -1362,7 +1592,15 @@ def Command.from_args (args : List String) : Command :=
                         // question, not this one's.
                         match Cli.take_flag "workspace" "w" rest1 {
                             Cli.FlagResult.flag_result workspace rest2 =>
-                                Command.check rest2 verbose workspace,
+                                // `--no-cache` is peeled here for the same
+                                // reason `--workspace` is: it is a flag,
+                                // not a path, and left in the list it
+                                // would be handed to the path expander as
+                                // a filename.
+                                match Cli.take_flag "no-cache" "" rest2 {
+                                    Cli.FlagResult.flag_result no_cache rest3 =>
+                                        Command.check rest3 verbose workspace no_cache,
+                                },
                         },
                 }
             else if cmd == "test" then
@@ -1389,10 +1627,10 @@ def Command.from_args (args : List String) : Command :=
 def main (args : List String) : IO I64 {
     let cmd : Command := Command.from_args args;
     match cmd {
-        build file_path out_name verbose debug => do {
+        build file_path out_name verbose debug no_cache => do {
             // A directory is a mote to build (`build_target`); a file goes
             // straight to `compile_file`.
-            build_target (Path.to_string file_path) (Path.to_string out_name) verbose debug
+            build_target (Path.to_string file_path) (Path.to_string out_name) verbose debug no_cache
         },
         run file_path verbose debug => do {
             run_file (Path.to_string file_path) default_output_dir verbose debug
@@ -1429,8 +1667,8 @@ def main (args : List String) : IO I64 {
                 }
             }
         },
-        check files verbose workspace => do {
-            run_check files workspace verbose
+        check files verbose workspace no_cache => do {
+            run_check files workspace verbose no_cache
         },
         test files verbose workspace => do {
             run_test_paths files workspace (Path.to_string default_output_dir) verbose
@@ -1450,22 +1688,26 @@ def print_help : IO I64 {
     println "Monad is in alpha mode and under heavy development.";
     println "Expect breaking changes, bugs, and incomplete features.";
     println "";
-    println "Usage: monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]";
+    println "Usage: monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]";
     println "         Compile a .mo source file, or a mote, to a native binary";
     println "         <path> may be a mote DIRECTORY, in which case its [bin] target is built";
     println "           (`monad build cli` builds cli/src/main.mo as `monad`)";
     println "         With no <path>, builds the mote containing the working directory";
     println "         --verbose/-v prints each module as it loads and one line per pipeline stage";
     println "         --debug/-g emits DWARF debug info (one source location per top-level def)";
+    println "         --no-cache (or MONAD_NO_CACHE) compiles for real, reading and writing no store entry";
     println "       monad run <path> [--verbose/-v] [--debug/-g] [--release]  Compile and execute a .mo source file";
     println "       monad eval <path> [--verbose/-v]  Evaluate a .mo source file using the built-in interpreter (pure programs only)";
     println "       monad pretty <path>  Parse and pretty print a .mo source file";
-    println "       monad check [<path>...] [--workspace/-w] [--verbose/-v]  Parse and typecheck .mo source files (no execution)";
+    println "       monad check [<path>...] [--workspace/-w] [--verbose/-v] [--no-cache]  Parse and typecheck .mo source files (no execution)";
     println "         Any <path> that's a directory is recursively expanded to its *.mo files";
     println "         With no <path>, checks the mote containing the working directory";
     println "         --workspace/-w checks every mote in the enclosing workspace";
     println "           (only directories that ARE motes: examples/ has no manifest)";
     println "         --verbose/-v prints a per-declaration progress trace while checking";
+    println "         Results are cached under <target-dir>/check for multi-file runs, keyed on";
+    println "           the file, its mote's whole declared closure, and the running compiler";
+    println "         --no-cache (or MONAD_NO_CACHE) skips the cache; a single-file run always does";
     println "       monad test [<path>...] [--workspace/-w] [--verbose/-v]  Compile and run each file's own #[test] defs as a native binary";
     println "         Any <path> that's a directory is recursively expanded to its *.mo files";
     println "         With no <path>, tests the mote containing the working directory";

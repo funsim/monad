@@ -5,9 +5,12 @@
 /// interesting ones are the two negatives: a digest must not move when a
 /// file's timestamp moves, and must not move when the tree does.
 ///
-/// Fixtures are built by shelling out because `IO.write_file` is
-/// package-private to `std`, and widening it for a test is the wrong
-/// trade.
+/// Fixtures are built by shelling out. `IO.write_file` is `pub` now --
+/// the `build` mote's own check cache writes its entries with it -- so
+/// `Build.put_file` no longer HAS to redirect through `sh`. It still
+/// does, because the two helpers beside it genuinely need a shell
+/// (`rm -rf`, and `rm -rf && mkdir -p` in one call), and three fixture
+/// helpers of one shape read better than two shapes to save four lines.
 
 use io {IO}
 use std::process {capture, process_id, shell_quote}
@@ -154,6 +157,25 @@ def test_tree_digest_of_an_empty_tree_succeeds : IO Bool := do {
     let r <- Build.tree_digest d;
     let _c <- Build.rm_fixture d;
     match r { ok _ => return true, err _ => return false }
+}
+
+/// The empty root names the working directory, and the digest has to take
+/// it. `Mote.discover` reports `""` for a manifest sitting in the working
+/// directory -- `cd mymote && monad build src/main.mo`, the most ordinary
+/// layout there is -- and `cd ''` is not a directory the shell can enter,
+/// so the key became an error and the cache quietly declined to serve.
+/// `.` is the same directory; that the two agree is what makes the two
+/// spellings of one build share an entry instead of each compiling.
+///
+/// The `is_empty` guard is the other half: both sides being `""` (from two
+/// errors) would satisfy equality and prove nothing.
+#[test]
+def test_tree_digest_takes_the_empty_root_as_the_working_directory : IO Bool := do {
+    let r1 <- Build.tree_digest "";
+    let r2 <- Build.tree_digest ".";
+    let a : String := Build.digest_or_empty r1;
+    let b : String := Build.digest_or_empty r2;
+    return (String.beq a b && Bool.not (String.is_empty a))
 }
 
 /// A directory that does not exist is an error naming the directory, not
