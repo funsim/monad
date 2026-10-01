@@ -12,9 +12,8 @@
 /// (`rm -rf`, and `rm -rf && mkdir -p` in one call), and three fixture
 /// helpers of one shape read better than two shapes to save four lines.
 
-use io {IO}
-use std::process {capture, process_id, shell_quote}
-use lib::hash {probe_digest_tool, tree_digest}
+use std::process {process_id}
+use build::hash {Build.probe_digest_tool, Build.tree_digest}
 
 /// A pid-and-tag-scoped fixture root, created empty. Pid-scoped because
 /// the corpus sweep runs sharded and a fixed `/tmp` name would collide

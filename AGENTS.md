@@ -33,7 +33,7 @@ a different branch and cause confusion.
 │       ├── io.mo         # The `IO` type + `Monad IO` instance only -- no natives
 │       ├── list.mo        # List.get and other List-specific extras
 │       ├── string.mo      # String operations
-│       ├── lib.mo          # Re-export hub (`pub use io {*}` etc.) -- bare `init` resolves here
+│       ├── lib.mo          # Re-export hub (`pub use lib::io {*}` etc.) -- bare `init` resolves here
 │       └── tests.mo       # Standard library tests
 ├── std/              # OS-specific implementations and side effects (see below)
 │   ├── mote.toml
@@ -195,7 +195,7 @@ ITSELF is resolved through the manifest (`Mote.discover`,
 
 ### Visibility: `pub`, `priv`, and the default
 
-```monad
+```monad,check
 pub def exported : I64 := 1    // visible everywhere
 def package_private : I64 := 2 // visible inside this mote (the default)
 priv def module_only : I64 := 3 // visible only in this file's module
@@ -266,7 +266,7 @@ compiler checking itself) took 223s in a debug build vs 99s
 ordinary `.mo` file, since the self-hosted path's cost is dominated by
 interpreter dispatch/allocation overhead that `-O` optimizes less
 aggressively than typical Rust control flow). Prefer
-`cargo build --release` + `target/release/monad-rs run cli/src/main.mo --
+`cargo build --release` + `target-rust/release/monad-rs run cli/src/main.mo --
 ...` (or `cargo run --release -- run cli/src/main.mo -- ...`) over a plain
 debug build for any workload that runs `cli/src/main.mo` against a large
 file or corpus, rather than iterating on the reference compiler itself.
@@ -278,7 +278,7 @@ Monad source files use the `.mo` extension.
 
 ### Type Definitions
 
-```monad
+```monad,check
 // Inductive type (algebraic data type)
 type Maybe A {
     some (a: A),
@@ -359,7 +359,7 @@ When writing Monad source files:
 
 ### Class Definitions (Type Classes)
 
-```monad
+```monad,check
 // Similar to Haskell type classes
 class Functor (F: Type -> Type) {
     def map (f: A -> B) : (F A) -> F B
@@ -560,7 +560,7 @@ x + y
 
 **Inside do-blocks** (`{ ... }` def bodies): statements use `;` separation, NO `in`.
 
-```monad
+```monad,check
 def example : I64 {
   let x : I64 := 10;
   let y : I64 := x + 5;
@@ -628,7 +628,7 @@ So to embed the literal text `"##`, use `n = 3` (`r###"..."###`) since
 `"##` (two hashes) is not a closer for `n = 3`. A raw string parses to the
 same `Literal::Str` value an ordinary `"..."` string produces:
 
-```monad
+```monad,check
 def regex : String := r#"\w+\s*"\s*\w+"#   // body: \w+\s*"\s*\w+
 def path : String := r"C:\Users\monad\src\main.mo"   // backslashes literal
 // r"\n" == "\\n"   // true — raw backslash-n == escaped backslash + n
@@ -663,20 +663,25 @@ infix:20 (++) := List.append
 
 ### Module Imports
 
-```monad
+```monad,check
 // Load a module, listing exactly the names needed.
 // `::` separates module path segments -- `use` only.
-use std::list {intercalate}
-use io {IO}
-
-// This mote's own library root (Rust's `crate`), root-relative
-// within the mote.
-use lib::codegen::emit {compile_db_module}
+use std::process {exec_cmd}
 
 // Open a namespace: make defs available without their prefix.
 // `open` names a NAMESPACE, not a file, so it keeps `.`.
 open IO {println}
+
+def status : IO Unit := do {
+    let rc <- exec_cmd "true" [];
+    println (I64.to_string rc)
+}
 ```
+
+`lib` is the other legal head: `use lib::codegen::emit {compile_db_module}`
+imports from the importing mote's own `src/` (Rust's `crate`). It has no
+meaning inside a documentation block -- a block is not in a mote, so there
+is no `lib` for it to name -- which is why it is not in the fence above.
 
 `::` is for `use` paths and nothing else. Dotted def names
 (`String.length`), member access (`x.field`), constructor paths
@@ -699,10 +704,29 @@ each has a test pinning the truncated shape
 `test_use_rejects_dotted_path`, `core/src/parser/test/declarations.rs`).
 
 Note the difference between the two, since it bites when porting a dotted
-call site: `use std::list {intercalate}` binds the BARE name, so the call
-site is `intercalate xs`, not `std.list.intercalate` -- a
-module-qualified term reference is a separate spelling and is not what a
-`use` line gives you.
+call site: `use std::list {intercalate}` is rejected, because `intercalate`
+is the DOTTED def `List.intercalate` and a brace item is matched against a
+declaration's own SPELLED name (`use std::process {exec_cmd}` binds bare
+`exec_cmd`; `use std::list {List.intercalate}` binds the dotted one). A
+brace item is a NAME PATH -- one `.`-joined spelling, the same kind of thing
+you write at the call site -- not a module path, so the dots are part of the
+name rather than a separator to strip.
+
+That is an ERROR at the `use` line rather than a silent no-op. Every name
+in a brace list must be a top-level declaration of the target module --
+`def`, `type`, `struct`, `class`, `instance` or `defmacro` -- checked on the
+declaration by both compilers (`validate_use_names`, both
+`lang/src/module.mo` and `core/src/term/module.rs`; the self-hosted one
+delegates to `check_use_filters`). The match is on the full spelling, so
+`{intercalate}` is rejected while `{List.intercalate}` is accepted -- `List.
+length` and `String.length` are two different declarations, so a bare tail
+could not say which one is meant. A name that declares nothing at all,
+dotted or a typo, is rejected with a hint naming the spelling that works
+(`use std::list {List.intercalate}`). Constructors are the one exception and
+are still nameable by their bare name (`{cons}` for `List.cons`), because
+the host stores a constructor as `List.cons` while the self-hosted parser
+stores it single-segment -- see `decl_carried_names`, `lang/src/module.mo`.
+`{*}` and `{}` are unchanged, and `{n as m}` is checked against `n`.
 
 That separate spelling is parsed but does NOT resolve yet in the
 self-hosted compiler: `lower_name_ref`'s `nqn` arm throws the structure
@@ -714,10 +738,26 @@ lowering pass's infix table"). No corpus file needs the form, which is
 why the migration above went to bare imported names -- reach for those,
 not for a qualified term reference.
 
-A `use` path also accepts a bare module name with no mote prefix when the
-module lives under `motes/<member>/src/` -- the search path mirrors the
-Rust host's (`build_default_search_paths`, `core/src/lib.rs`; the
-self-hosted twin is `motes_src_paths`, `lang/src/module.mo`).
+The FIRST segment of a `use` path must name a MOTE or `lib`. A bare module
+name is a hard error in both compilers, with a hint naming the right
+spelling:
+
+```
+error: `use greet` does not name a mote
+  hint: name the mote that owns it (`use <mote>::greet`), or write
+        `use lib::greet` for this mote's own
+```
+
+So `motes/example/src/greet.mo` is imported as `use example::greet {greet}`
+(`examples/test_mote.mo`). The rule is enforced on the declaration, before
+resolution, by both compilers (`check_use_spellings`,
+`lang/src/module.mo`; `validate_use_qualification`, `core/src/term/module.rs`),
+so the two cannot drift on what a one-segment path means.
+
+A qualified path is answered by `motes/<head>/src/<rest>.mo`
+(`mote_relative_file`, `lang/src/module.mo`) -- the same route the Rust host
+takes by pushing `cwd/motes` onto its search path
+(`build_default_search_paths`, `core/src/lib.rs`).
 
 `{*}` imports/opens everything explicitly; a bare `use`/`open` (no braces) still parses but is deprecated in favor of an explicit filter.
 
@@ -725,7 +765,7 @@ self-hosted twin is `motes_src_paths`, `lang/src/module.mo`).
 
 Call Rust functions from Monad using the `#[native "..."]` attribute:
 
-```monad
+```monad,check
 #[native "add"]
 def add (a: I64) (b: I64) : I64
 ```
@@ -929,8 +969,14 @@ def function_name (args: Types) : ReturnType
 
 **`init/` must never depend on `std/`.** The `init/` directory contains core language definitions (prelude, io, types) that are foundational. The `std/` directory contains higher-level modules that depend on `init/`.
 
-- `std/` modules may `use` `init/` modules (e.g., `use io`)
+- `std/` modules may `use` `init/` modules (e.g., `use init::io`)
 - `init/` modules must **NOT** `use` `std/` modules
+- A `use` names a mote or `lib` in its first segment, never a bare module —
+  `use io` is an error, `use init::io` and `use lib::io` are the two legal
+  spellings. The same rule applies to `open`: the prelude is ambient, so
+  `use prelude` is an error too. Both compilers enforce it
+  (`check_one_use_spelling`, `lang/src/module.mo`;
+  `validate_use_qualification`, `core/src/term/module.rs`)
 - **Tests for `std/` modules go in `std/`**, not in `init/` — `init/src/tests.mo` must not import from `std/`
 
 When adding a new `std/` module with tests, place the test file within `std/`:

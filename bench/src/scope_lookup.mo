@@ -26,15 +26,13 @@
 /// `type`/`struct` decls, each contributing more entries for their own
 /// constructors).
 ///
-/// `use std.map {}` (empty import) deliberately matches
-/// `std/map_tests.mo`'s own documented workaround: explicitly naming
-/// any of `std.map`'s `Map`-class-instance exports exposes a
-/// pre-existing latent instance/dictionary-resolution bug — everything
-/// below remains available regardless via the same always-on mechanism
-/// that lets any top-level type/def resolve without being explicitly
-/// `use`d.
-use std::map {}
-use std::bench {now, report_since}
+/// The names below come from `std.map`, listed like any other import.
+/// The benchmark used to mirror `std/map_tests.mo`'s now-retired
+/// workaround — an empty import, to avoid naming `std.map`'s
+/// `Map`-class-instance exports — which that file's note explains was
+/// unnecessary.
+use std::map {BTreeMap, HashMap}
+use std::bench {Bench.now, Bench.report_since}
 
 // --- List: build via repeated cons (matches `scope_data_add_def`'s
 // real access pattern), lookup via linear scan (matches

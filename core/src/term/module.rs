@@ -440,28 +440,10 @@ impl GlobalScopeData {
     // the bare names it's allowed to contribute. `UseFilter::Bare` (no
     // braces, deprecated) allows everything, matching pre-brace-syntax
     // behavior.
-    let mut filter_map: Map<ModulePath, AllowedNames> = Map::new();
-    for use_decl in module.get_uses() {
-      if !test_mode && use_decl.has_cfg_test_attr() {
-        continue;
-      }
-      match &use_decl.filter {
-        UseFilter::Bare => {
-          merge_allowed(
-            &mut filter_map,
-            use_decl.module_path.clone(),
-            AllowedNames::All,
-          );
-        }
-        UseFilter::Items(items) => {
-          for item in items {
-            for (path, allowed) in item.flatten(&use_decl.module_path) {
-              merge_allowed(&mut filter_map, path, allowed);
-            }
-          }
-        }
-      }
-    }
+    let filter_map = use_selection_map(
+      module.get_uses().iter().map(|ctx| ctx.value()).collect(),
+      test_mode,
+    );
 
     // Make sub-modules named in a nested `use` filter (e.g. `io.file` from
     // `use io {file {read}}`) visible for qualified access too, not just
@@ -483,19 +465,40 @@ impl GlobalScopeData {
 
     for (_mod_path, modu) in &visible_modules {
       let is_current = modu.path() == module.path();
-      let allowed = filter_map.get(modu.path());
-      let is_used = allowed.is_some();
+      // `None` = no `use` line names this module: the consumer itself, and
+      // the ambient modules (`prelude`/`init`/`std` + their `pub use`
+      // re-exports), which every file sees whole.
+      let selection = filter_map.get(modu.path());
+      let is_used = selection.is_some();
+      // Which of this module's `full_path`s are constructors. A brace item
+      // may name one by its bare name (`cons`) — see `spelling_selected`.
+      //
+      // Ordinary inductives only, matching `declared_names_of` below: a
+      // `struct`/`class` is an inductive here too, but the self-hosted
+      // `decl_local_name` names the type itself and not its members, so
+      // widening this set past `Generic` would let the scope accept a
+      // `{mk}` the `use`-name check rejects.
+      let constructor_paths: Set<NamePath> = modu
+        .inductives()
+        .into_iter()
+        .filter(|ind| *ind.variant() == InductiveVariant::Generic)
+        .flat_map(|ind| ind.constructors().into_iter().map(|c| c.name().clone()))
+        .collect();
 
       for d in modu.get_def_refs(&opens, test_mode) {
         let bare_name = d.name.clone();
+        // A brace item matches a declaration's OWN SPELLED NAME
+        // (`List.length`) — never its last segment, so `use M {length}`
+        // no longer reaches `List.length`. `full_path` is that spelling.
+        let full_path = &d.full_path;
+        let is_constructor = constructor_paths.contains(full_path);
 
-        let included = match allowed {
-          Some(AllowedNames::All) => true,
-          Some(AllowedNames::Only(names)) => names.contains(bare_name.last()),
-          None => true,
-        };
+        let selected_bare =
+          is_current || selection.is_none_or(|s| s.selects_bare(full_path, is_constructor));
+        let selected_qual =
+          is_current || selection.is_none_or(|s| s.selects_qual(full_path, is_constructor));
 
-        if !included {
+        if !selected_bare && !selected_qual {
           continue;
         }
 
@@ -509,25 +512,33 @@ impl GlobalScopeData {
           // New `::`-qualified spelling (`std::list::List.cons`) and the
           // transition-only flattened spelling (`std.list.cons`), side by
           // side — see the `qualified_refs`/`legacy_flat_refs` field docs.
-          qualified_refs.insert(
-            QualifiedName {
-              module: modu.path().clone(),
-              name: bare_name.clone(),
-            },
-            (d.typ.clone(), d.term.clone(), d.module.clone()),
-          );
-          legacy_flat_refs.insert(
-            NamePath::new(
-              modu
-                .path()
-                .segments()
-                .iter()
-                .cloned()
-                .chain(bare_name.segments().iter().cloned())
-                .collect(),
-            ),
-            (d.typ.clone(), d.term.clone(), d.module.clone()),
-          );
+          if selected_qual {
+            qualified_refs.insert(
+              QualifiedName {
+                module: modu.path().clone(),
+                name: bare_name.clone(),
+              },
+              (d.typ.clone(), d.term.clone(), d.module.clone()),
+            );
+            legacy_flat_refs.insert(
+              NamePath::new(
+                modu
+                  .path()
+                  .segments()
+                  .iter()
+                  .cloned()
+                  .chain(bare_name.segments().iter().cloned())
+                  .collect(),
+              ),
+              (d.typ.clone(), d.term.clone(), d.module.clone()),
+            );
+          }
+
+          // A brace-less `use M` / `use M {}` selects nothing BARE — that
+          // is the difference between it and `use M {*}`.
+          if !selected_bare {
+            continue;
+          }
 
           match bare_names.get(&bare_name) {
             Some(prev_module) if prev_module != modu.path() => {
@@ -657,22 +668,15 @@ impl GlobalScopeData {
   }
 }
 
-/// Merge a flattened `(ModulePath, AllowedNames)` entry into a filter map,
-/// unioning `Only` name sets and letting `All` dominate.
-fn merge_allowed(map: &mut Map<ModulePath, AllowedNames>, path: ModulePath, allowed: AllowedNames) {
+/// Merge a flattened `(ModulePath, Selection)` entry into the consumer's
+/// selection map. A file may `use M` more than once; the union of what
+/// those lines select is what `M` ends up contributing.
+fn merge_selection(map: &mut Map<ModulePath, Selection>, path: ModulePath, selection: Selection) {
   match map.get_mut(&path) {
     None => {
-      map.insert(path, allowed);
+      map.insert(path, selection);
     }
-    Some(AllowedNames::All) => {}
-    Some(existing) => match allowed {
-      AllowedNames::All => *existing = AllowedNames::All,
-      AllowedNames::Only(names) => {
-        if let AllowedNames::Only(existing_names) = existing {
-          existing_names.extend(names);
-        }
-      }
-    },
+    Some(existing) => existing.merge(&selection),
   }
 }
 
@@ -1966,7 +1970,12 @@ fn load_decl_uses_modules(
   decls: &[SourceContext<Decl>],
   loaded: LoadedModules,
   in_progress: &mut Set<ModulePath>,
+  file: Option<&std::path::Path>,
 ) -> Result<LoadedModules, LoadingError> {
+  // Before resolution, and before the `get_module` shortcut below, which
+  // consults `init_package_sources`' seeded names first -- a check placed
+  // at file resolution would never see a `use` the seed already answers.
+  validate_use_qualification(decls, file)?;
   let test_mode = loaded.config.test_mode;
   let mut uses = decls.iter().filter_map(|ctx| match ctx.value() {
     Decl::Use(u) if test_mode || !u.has_cfg_test_attr() => Some(u),
@@ -1984,7 +1993,100 @@ fn load_decl_uses_modules(
       Ok(loaded)
     },
   )?;
+  // Here rather than beside `validate_use_qualification` above, because
+  // that check runs before the fold and this one needs the module each
+  // `use` names to be LOADED -- which is exactly what the fold did.
+  validate_use_names(decls, &loaded, file)?;
   Ok(loaded)
+}
+
+/// The loader's half of the completeness rule: under
+/// `MONAD_USE_COMPLETENESS=error`, a file that reaches a non-ambient name
+/// without importing it fails to LOAD — which is what makes the rule hold
+/// for every entry point at once (`run`, `test`, `compile`, the LSP),
+/// not only for `check`.
+///
+/// In the default (warn) mode this reports nothing at all, on purpose.
+/// The diagnostic half of the rule belongs where the SOURCE text is still
+/// in hand — [`unimported_name_diagnostics`], called by `check_source` —
+/// so that one finding is reported once, in the shape the rest of the
+/// compiler's diagnostics take, rather than once as a diagnostic and
+/// again on stderr.
+fn check_use_completeness(
+  consumer: ModulePath,
+  decls: &[SourceContext<Decl>],
+  loaded: &LoadedModules,
+  file: Option<&std::path::Path>,
+) -> Result<(), LoadingError> {
+  if !use_completeness_is_strict() {
+    return Ok(());
+  }
+  let unimported = unimported_names(&consumer, decls, loaded);
+  if unimported.is_empty() {
+    return Ok(());
+  }
+  let body = unimported
+    .iter()
+    .map(|u| u.to_string())
+    .collect::<Vec<String>>()
+    .join("\n");
+  Err(match file {
+    Some(f) => format!("{}: {body}", f.display()).into(),
+    None => body.into(),
+  })
+}
+
+/// Whether the completeness rule is being ENFORCED (a failed load) rather
+/// than reported (a warning). One place, so the loader's check and the
+/// diagnostic reporter cannot disagree about which mode they are in.
+fn use_completeness_is_strict() -> bool {
+  std::env::var("MONAD_USE_COMPLETENESS").as_deref() == Ok("error")
+}
+
+/// [`unimported_names`] as ordinary diagnostics — the warning-shaped half
+/// of the completeness rule, for the paths that hold the module's SOURCE
+/// text (`check`/`check_source`, the LSP) and so can run a walk
+/// `module_warnings_with_loaded` cannot: it is handed a built `Module`,
+/// whose decls elaboration has already rewritten a bare reference out of.
+///
+/// Only the warning half: under `MONAD_USE_COMPLETENESS=error` the loader
+/// has already refused the file (`check_use_completeness`), so no module
+/// reachable from here can have an unimported name to report.
+///
+/// No `location`: the reference walk that finds these names tracks
+/// provenance, not positions, and a diagnostic pointing at the wrong line
+/// is worse than one pointing at the file. The message names the
+/// declaration and the `use` line that would select it.
+pub fn unimported_name_diagnostics(
+  consumer: &ModulePath,
+  source: &str,
+  loaded: &LoadedModules,
+  path: Option<&std::path::PathBuf>,
+) -> Vec<Diagnostic> {
+  if use_completeness_is_strict() {
+    return Vec::new();
+  }
+  let context = ModuleContext::new(consumer.clone(), path.cloned());
+  let Ok(decls) = load_decls_from_text_with_path(source, &context) else {
+    // Unparseable source already has a parse error of its own to report.
+    return Vec::new();
+  };
+  unimported_names(consumer, &decls, loaded)
+    .into_iter()
+    .map(|u| {
+      let owner = module_path_spelling(&u.owner);
+      let spelling = u.spelling.to_string();
+      Diagnostic {
+        severity: Severity::Warning,
+        message: u.to_string(),
+        suggestions: vec![Suggestion {
+          message: format!("add `{spelling}` to this file's `use {owner} {{...}}` line"),
+        }],
+        path: path.cloned(),
+        ..Default::default()
+      }
+    })
+    .collect()
 }
 
 pub fn load_module_files(
@@ -2020,7 +2122,23 @@ fn load_module_files_impl(
   let search_paths = loaded.search_paths().clone();
   let decls = load_decls(path, &search_paths)?;
   let parse_dur = parse_start.elapsed();
-  let mut loaded = load_decl_uses_modules(&decls, loaded, in_progress)?;
+  // The same file `load_decls` just resolved, for the guard's message and
+  // for the mote probe. Re-resolving is a handful of `exists` calls against
+  // a parse-and-typecheck that already happened.
+  let file = resolve_module_file(path, &search_paths);
+  // `in_progress` holds this path plus every ancestor on the recursion, so
+  // a depth of one is the module the caller actually asked for. Reported
+  // only there: a dependency's own violation belongs to the dependency's
+  // own file, which the caller (a corpus check, a CI sweep) checks on its
+  // own pass. Without this every `monad check one.mo` would also fail on
+  // its dependencies, and a migration could not proceed file by file.
+  let top_level = in_progress.len() == 1;
+  // Kept for the completeness check below, which must run on the PARSED
+  // decls (elaboration erases the bare/qualified axis it is built on) but
+  // only once this module has been built and added to `loaded` (so its own
+  // decl-gen output counts as its own).
+  let written_decls = decls.clone();
+  let mut loaded = load_decl_uses_modules(&decls, loaded, in_progress, file.as_deref())?;
   let decls = filter_cfg_test_decls(decls, loaded.config.test_mode);
   validate_open_filters(&decls)?;
   let tc_start = Instant::now();
@@ -2042,6 +2160,9 @@ fn load_module_files_impl(
     },
   );
   loaded.add_module(mo);
+  if top_level {
+    check_use_completeness(path.clone(), &written_decls, &loaded, file.as_deref())?;
+  }
   Ok(loaded)
 }
 
@@ -2105,6 +2226,921 @@ fn resolve_lib_alias_uses(
       })
     })
     .collect()
+}
+
+// ─── A `use` must name a mote, or `lib` ──────────────────────────────
+//
+// The same rule, and the same messages, as the self-hosted compiler's
+// `check_one_use_spelling` (lang/src/module.mo): a `use` path's first
+// segment names a MOTE -- `init`, `std`, `runtime`, any `motes/*` -- or the
+// reserved alias `lib`; and an explicit import of the ambient `prelude` is
+// an error in either spelling.
+//
+// This OVERRIDES the design intent recorded on `ModulePath::to_mote_file_path`
+// (core/src/term.rs: "the Rust host stays permissive ... enforcement is the
+// self-hosted compiler's job"). It has to: a bare `use io` resolves to
+// `init/src/io.mo` here and to `std/src/io.mo` under the self-hosted
+// compiler when the importing file sits in `std/src/`, so a host that
+// accepted it could not say which file a source meant. Keeping the two
+// compilers agreeing on MEANING is the whole point of the rule.
+//
+// On the `Decl::Use`, never on resolution: the loader's own ambient seed
+// (`init_package_sources`, which registers `'prelude` and the bare `io`
+// these messages talk about) is not a declaration and must not trip this.
+
+/// Whether a `use` path names the ambient prelude -- bare `prelude`, or
+/// `init::prelude`, its one other spelling.
+fn use_names_ambient_prelude(path: &ModulePath) -> bool {
+  match path.segments() {
+    [one] => one.as_str() == "prelude",
+    [mote, name] => mote.as_str() == "init" && name.as_str() == "prelude",
+    _ => false,
+  }
+}
+
+/// The ambient trio, which every file may name without declaring anything.
+/// `prelude` is the language's own; `init`/`std` are the re-export hubs the
+/// loader seeds into every file's closure.
+fn is_ambient_mote(name: &str) -> bool {
+  matches!(name, "prelude" | "init" | "std")
+}
+
+/// The directory a mote called `name` was found in, working-directory
+/// relative -- the three layouts `mote_named_at` (lang/src/module.mo)
+/// probes, in the same order.
+fn mote_named_at(name: &str) -> Option<std::path::PathBuf> {
+  for dir in [
+    std::path::PathBuf::from(name),
+    std::path::Path::new("motes").join(name),
+    std::path::Path::new("..").join(name),
+  ] {
+    if dir.join("mote.toml").is_file() {
+      return Some(dir);
+    }
+  }
+  None
+}
+
+/// Does this machine's toolchain root provide a mote called `name`? A mote
+/// in its own repository has no checkout and may declare nothing, and
+/// resolution answers a toolchain-provided name from the install, so the
+/// guard must not demand a declaration nothing could supply. Same probe as
+/// `is_installed_mote` (lang/src/module.mo).
+#[cfg(not(feature = "embed-stdlib"))]
+fn is_installed_mote(name: &str) -> bool {
+  stdlib_dir()
+    .parent()
+    .and_then(|p| p.parent())
+    .map(|root| root.join(name).join("mote.toml").is_file())
+    .unwrap_or(false)
+}
+
+/// Nothing is installed when the stdlib is compiled in.
+#[cfg(feature = "embed-stdlib")]
+fn is_installed_mote(_name: &str) -> bool {
+  false
+}
+
+/// Whether a bare name is a MOTE -- the only thing a one-segment `use` may
+/// name, besides `lib`. Probed, never looked up: no side keeps a registry
+/// of mote names, and both compilers ask the same questions.
+fn head_names_mote(file: Option<&std::path::Path>, head: &str) -> bool {
+  if is_ambient_mote(head) || is_installed_mote(head) || mote_named_at(head).is_some() {
+    return true;
+  }
+  let Some(dir) = file.and_then(|f| f.parent()) else {
+    return false;
+  };
+  let Some((_manifest_path, manifest)) = crate::term::mote::Manifest::discover(dir) else {
+    return false;
+  };
+  if manifest.mote.as_ref().map(|m| m.name.as_str()) == Some(head) {
+    return true;
+  }
+  // Both maps: the self-hosted `MoteManifest.deps` folds
+  // `dev-dependencies` in with `dependencies`, and a test file may only
+  // have the former.
+  manifest.dependencies.contains_key(head) || manifest.dev_dependencies.contains_key(head)
+}
+
+/// The mote that owns the module a bare name resolves to, so the hint can
+/// name the line to write rather than describe the rule. Probed with
+/// resolution's own precedence: the importing file's directory first, then
+/// the working directory's `init`/`std`/`lang`. `None` when no candidate
+/// exists at all -- the bare name resolves nowhere, and a generic hint is
+/// better than an invented owner.
+fn bare_use_owner(file: Option<&std::path::Path>, head: &str) -> Option<String> {
+  if let Some(dir) = file.and_then(|f| f.parent()) {
+    let beside = dir.join(format!("{head}.mo"));
+    if beside.is_file() {
+      return mote_name_of_file(&beside);
+    }
+  }
+  for mote in ["init", "std", "lang"] {
+    if std::path::Path::new(mote)
+      .join("src")
+      .join(format!("{head}.mo"))
+      .is_file()
+    {
+      return Some(mote.to_string());
+    }
+  }
+  None
+}
+
+/// The message for a one-segment `use` that names a module rather than a
+/// mote.
+fn bare_use_error(
+  file: Option<&std::path::Path>,
+  path: &ModulePath,
+  owner: Option<&str>,
+) -> String {
+  let spelled = path.to_string();
+  let where_ = match file {
+    Some(f) => format!(
+      "  `use {spelled}` in {} is a module path relative to the importing file, so which module it names depends on where that file sits\n",
+      f.display()
+    ),
+    None => format!(
+      "  `use {spelled}` is a module path relative to the importing file, so which module it names depends on where that file sits\n"
+    ),
+  };
+  let hint = match owner {
+    Some(o) => format!(
+      "write `use {o}::{spelled}` for that module, or `use lib::{spelled}` for this mote's own"
+    ),
+    None => format!(
+      "name the mote that owns it (`use <mote>::{spelled}`), or write `use lib::{spelled}` for this mote's own"
+    ),
+  };
+  format!("error: `use {spelled}` does not name a mote\n{where_}  hint: {hint}")
+}
+
+/// The message for an explicit import of the prelude, which is ambient.
+///
+/// The check sits on the DECLARATION and never on resolution: the loader
+/// seeds `prelude` into every file's closure, and that alias is
+/// load-bearing -- `MoteManifest.dep_dir_of`'s self arm (lang/src/mote.mo)
+/// is what makes the prelude of the mote `init` reachable from inside
+/// `init/` at all.
+fn prelude_import_error(file: Option<&std::path::Path>, path: &ModulePath) -> String {
+  let spelled = path.to_string();
+  let included = match file {
+    Some(f) => format!("{} included", f.display()),
+    None => "this file included".to_string(),
+  };
+  format!(
+    "error: `use {spelled}` names the prelude, which is ambient\n  every file already sees `prelude` -- the loader seeds it into each module's closure, {included}\n  hint: delete the `use {spelled}` line"
+  )
+}
+
+/// Reject a `use` whose first segment names no mote, and any import of the
+/// ambient prelude. Only ONE-segment paths are judged here: a multi-segment
+/// head is a mote reference, which the declared-dependency gate already
+/// validates (`validate_declared_deps`, lang/src/module.mo, and its Rust
+/// counterpart).
+fn validate_use_qualification(
+  decls: &[SourceContext<Decl>],
+  file: Option<&std::path::Path>,
+) -> Result<(), LoadingError> {
+  for ctx in decls {
+    let Decl::Use(u) = ctx.value() else {
+      continue;
+    };
+    if use_names_ambient_prelude(&u.module_path) {
+      return Err(LoadingError::Generic(prelude_import_error(
+        file,
+        &u.module_path,
+      )));
+    }
+    let [head] = u.module_path.segments() else {
+      continue;
+    };
+    let head = head.as_str();
+    if head == "lib" || head_names_mote(file, head) {
+      continue;
+    }
+    let owner = bare_use_owner(file, head);
+    return Err(LoadingError::Generic(bare_use_error(
+      file,
+      &u.module_path,
+      owner.as_deref(),
+    )));
+  }
+  Ok(())
+}
+
+/// Reject a `use M {…}` entry that names nothing `M` declares.
+///
+/// `use M {n}` binds `n` only when `M` declares a top-level name that IS
+/// `n`, matched against the declaration's own SPELLED name. A dotted def
+/// is more than one segment on this side (`pub def List.length` is
+/// `[List, length]`) and the brace item now spells those segments back
+/// out (`use std::list {List.length}`, `use_item_name`,
+/// `core/src/parser.rs`) -- so the bare tail `use std::list {length}`
+/// names nothing. It used to be a silent no-op whose failure surfaced
+/// later as `unknown variable` at the CALL site, if at all. `{*}` and
+/// `{}` are deliberately unchanged -- this is a resolution rule, not
+/// import-list minimalism.
+///
+/// Runs AFTER `load_decl_uses_modules`'s fold, which is what makes the
+/// target module available to consult; `validate_use_qualification` above
+/// runs before it and could not. Mirror of `validate_use_names`
+/// (lang/src/module.mo): the two must agree, because CI checks the corpus
+/// with both compilers.
+fn validate_use_names(
+  decls: &[SourceContext<Decl>],
+  loaded: &LoadedModules,
+  file: Option<&std::path::Path>,
+) -> Result<(), LoadingError> {
+  for ctx in decls {
+    let Decl::Use(u) = ctx.value() else {
+      continue;
+    };
+    let UseFilter::Items(items) = &u.filter else {
+      continue;
+    };
+    check_use_items(loaded, &u.module_path, items, file)?;
+  }
+  Ok(())
+}
+
+/// One brace list, checked against the module its path names.
+///
+/// A path that resolves to no LOADED module is left alone: that is an
+/// ordinary module-not-found (or a `lib::` alias, rewritten later), which
+/// the loader reports where it happens. Reporting it here would say it
+/// twice, and with the wrong reason.
+fn check_use_items(
+  loaded: &LoadedModules,
+  module_path: &ModulePath,
+  items: &[UseItem],
+  file: Option<&std::path::Path>,
+) -> Result<(), LoadingError> {
+  let Some(target) = loaded.get_module(module_path) else {
+    return Ok(());
+  };
+  let names = declared_names_of(target);
+  for item in items {
+    match item {
+      UseItem::Name(n) => check_one_use_name(module_path, &names, n, file)?,
+      // The name half is what has to exist; the alias is the caller's own
+      // choice of spelling and is never checked against the target.
+      UseItem::Rename(n, _) => check_one_use_name(module_path, &names, n, file)?,
+      UseItem::Glob => {}
+      // `use foo { bar { baz } }`: the sub-list is checked against the
+      // module at the EXTENDED path, not against `foo`.
+      UseItem::SubModule { name, items } => {
+        let sub = module_path.append(vec![name.clone()]);
+        check_use_items(loaded, &sub, items, file)?;
+      }
+      UseItem::SubModuleRename {
+        name,
+        alias: _,
+        items,
+      } => {
+        let sub = module_path.append(vec![name.clone()]);
+        check_use_items(loaded, &sub, items, file)?;
+      }
+    }
+  }
+  Ok(())
+}
+
+/// Every name a module declares at the top level, rendered the way it is
+/// DECLARED, plus its inductives' constructor names.
+///
+/// "Declared" is the whole rule. A dotted def is written with its dot in
+/// source (`def List.length`), so its rendering carries the dot and
+/// `use M {length}` cannot name it -- the asymmetry W2 exists for.
+/// A constructor is written BARE in the inductive body
+/// (`cons (a : A) (List A)`), so its rendering is the bare name even
+/// though this side stores it two-segment (`List.cons`, see
+/// `term::induct_constructor`). That last-segment step is not tidiness:
+/// `lang/src/parser.mo`'s constructors are single-segment already, so
+/// rendering the full path here would make this check reject a
+/// `use M {cons}` the self-hosted check accepts, and CI checks the
+/// corpus with BOTH compilers -- they must agree on the SET, or a file
+/// one accepts the other rejects.
+///
+/// Every map that can hold a declaration is walked, not just `defs`: a
+/// brace list routinely names types and classes (`use init::io {IO}`,
+/// `use std::show {Show}`), and `inductives` is where both live here
+/// (`InductiveVariant::Class`). Constructors count because they are
+/// ordinary scope entries -- see the `Generic` guard below for the two
+/// inductive kinds whose constructors the self-hosted side does not
+/// name. Instances count because `lang/src/module.mo`'s
+/// `decl_local_name` counts them.
+///
+/// An UNNAMED instance's synthesized name (`instance-Semigroup-String`,
+/// see `term::instance`) is inert here: it is not a parsable brace item,
+/// so it can never match one. The self-hosted side synthesizes nothing
+/// and contributes the empty string instead -- different junk, same
+/// nothing.
+fn declared_names_of(module: &Module) -> Vec<String> {
+  let mut names: Vec<String> = module
+    .defs
+    .keys()
+    .chain(module.inductives.keys())
+    .chain(module.macro_defs.keys())
+    .chain(module.decl_gens.keys())
+    .map(|k| k.to_string())
+    .collect();
+  for ind in module.inductives.values() {
+    // Only an ordinary inductive names constructors. A `struct` and a
+    // `class` are stored as inductives here too, but the self-hosted side
+    // keeps them as distinct decl kinds whose `decl_local_name` returns
+    // the type's own name and NOTHING else, so pushing one here would
+    // make this check accept a `use M {mk}` for a struct that the
+    // self-hosted check rejects.
+    if *ind.value().variant() == InductiveVariant::Generic {
+      for con in ind.value().constructors() {
+        // The constructor's BARE name (`cons`, not `List.cons`). The host
+        // stores a constructor as `List.cons` (`term::induct_constructor`)
+        // while the self-hosted parser stores it single-segment and binds
+        // it bare, so the bare name is the one spelling both sides agree
+        // on — see `decl_carried_names` in `lang/src/module.mo`, which
+        // says in as many words that the two must stay in step.
+        names.push(con.name().last().to_string());
+      }
+    }
+  }
+  for inst in module.instances.iter() {
+    names.push(inst.value().name().to_string());
+  }
+  names
+}
+
+// ─── Completeness: a name you reach must be one you named ────────
+//
+// The other half of "`use` lines mean what they say". `validate_use_names`
+// above guards SOUNDNESS — every name you write in a brace list must exist.
+// This guards COMPLETENESS — every non-ambient name you REACH must have been
+// named in one of your own `use`/`open` lines. Without it a `use` line is
+// documentation, not a dependency: resolution is a flat whole-closure
+// namespace (`GroundTruth`, `core/src/core_check_module.rs`), so a bare
+// `HashMap` resolves whether or not any `use` names it.
+//
+// The oracle here is deliberately NOT "what resolution finds" — that is
+// exactly the flat namespace this check exists to stop trusting — but the
+// same per-module filter `GlobalScopeData::from_module` already applies to
+// the LSP path. Both go through `use_selection_map`, so the scope the
+// editor sees and the check the loader runs cannot drift apart.
+
+/// One name a module reaches from another module without importing it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnimportedName {
+  /// The name as written at the reference site.
+  pub name: NamePath,
+  /// The loaded module whose declaration that name resolves to.
+  pub owner: ModulePath,
+  /// The declaration's own spelled name in `owner`, which is what a brace
+  /// item would have to say — already reduced to the list-item form by
+  /// [`item_spelling`], so a constructor reads `cons`, not `List.cons`.
+  pub spelling: NamePath,
+  /// Whether the declaration is an inductive constructor, which may also
+  /// be named by its bare tail (`{cons}` for `List.cons`).
+  pub is_constructor: bool,
+}
+
+/// The finding itself, WITHOUT a severity word: this is both a warning
+/// (`unimported_name_diagnostics`) and, under `MONAD_USE_COMPLETENESS=
+/// error`, a failed load, so the prefix has to come from the site that
+/// knows which it is — otherwise a warning reads `warning: error: ...`.
+impl Display for UnimportedName {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let module = module_path_spelling(&self.owner);
+    write!(
+      f,
+      "`{}` is not imported\n  `{}` is declared in `{}`\n  hint: add it to a `use {} {{...}}` line -- `use {} {{{}}}` names it",
+      self.name, self.spelling, module, module, module, self.spelling
+    )
+  }
+}
+
+/// The selection each of a consumer's own `use` lines makes, keyed by the
+/// module it names.
+///
+/// A module ABSENT from the map is not imported by name at all: it is the
+/// consumer itself, or one of the ambient modules, which every file sees
+/// whole (`ambient_seen_modules`).
+///
+/// Shared with `GlobalScopeData::from_module` so the LSP's scope and this
+/// check can never disagree about what a brace list selects.
+fn use_selection_map(uses: Vec<&Use>, test_mode: bool) -> Map<ModulePath, Selection> {
+  let mut filter_map: Map<ModulePath, Selection> = Map::new();
+  for use_decl in uses {
+    if !test_mode && use_decl.has_cfg_test_attr() {
+      continue;
+    }
+    let UseFilter::Items(items) = &use_decl.filter else {
+      // Brace-less `use M` and `use M {}` mean the same thing: the whole
+      // module importable, every name reachable QUALIFIED only.
+      merge_selection(
+        &mut filter_map,
+        use_decl.module_path.clone(),
+        Selection::qualified_only(),
+      );
+      continue;
+    };
+    // `use M {}` registers no item, so register the module itself here —
+    // an absent entry would otherwise read as "unfiltered".
+    if items.is_empty() {
+      merge_selection(
+        &mut filter_map,
+        use_decl.module_path.clone(),
+        Selection::qualified_only(),
+      );
+    }
+    for item in items {
+      for (path, selection) in item.flatten(&use_decl.module_path) {
+        merge_selection(&mut filter_map, path, selection);
+      }
+    }
+  }
+  filter_map
+}
+
+/// Every module every file sees WHOLE, without a `use`: the ambient trio
+/// and whatever they re-export through `pub use`, transitively.
+///
+/// `prelude` is the language's own; `init`/`std` are the hub `lib.mo`
+/// files, `pub use`-ing the submodules that make up their public surface.
+/// Note what is NOT here: `std/lib.mo` re-exports only `path`/`io`/
+/// `process`, so `std::list`, `std::map` and `std::array` are ordinary
+/// modules a file has to name for itself.
+pub fn ambient_seen_modules(_loaded: &LoadedModules) -> Set<ModulePath> {
+  // Computed from the hub SOURCES, not from `loaded`, and cached: the hub
+  // is loaded LAST of the default modules, so asking `loaded` for it gives
+  // no re-exports at all while the first few `init/*` modules are being
+  // loaded -- which is exactly when they are checked.
+  static AMBIENT: std::sync::OnceLock<Set<ModulePath>> = std::sync::OnceLock::new();
+  AMBIENT.get_or_init(compute_ambient_seen_modules).clone()
+}
+
+fn compute_ambient_seen_modules() -> Set<ModulePath> {
+  let Ok(sources) = init_package_sources() else {
+    return Set::default();
+  };
+  // Each default module's own `pub use` targets, so the closure can be
+  // followed transitively whatever order the loader visits them in.
+  let mut pub_targets: Map<ModulePath, Vec<ModulePath>> = Map::new();
+  for (path, file, text) in &sources {
+    let context = ModuleContext::new(path.clone(), Some(file.clone()));
+    let Ok(decls) = load_decls_from_text_with_path(text, &context) else {
+      continue;
+    };
+    let targets: Vec<ModulePath> = decls
+      .iter()
+      .filter_map(|ctx| match ctx.value() {
+        Decl::Use(u) if u.public => Some(u.module_path.clone()),
+        _ => None,
+      })
+      .collect();
+    pub_targets.insert(path.clone(), targets);
+  }
+  let mut seen: Set<ModulePath> = Set::default();
+  let mut frontier: Vec<ModulePath> = vec![
+    mpt("'prelude"),
+    ModulePath::top("init"),
+    ModulePath::top("std"),
+  ];
+  while let Some(path) = frontier.pop() {
+    if !seen.insert(path.clone()) {
+      continue;
+    }
+    if let Some(targets) = pub_targets.get(&path) {
+      frontier.extend(targets.iter().cloned());
+    }
+  }
+  seen
+}
+
+/// The spellings the consumer's OWN decls declare, in the same key space as
+/// [`declaration_index`] — because a name the consumer declares itself is not
+/// "reached from another module", and must never be reported.
+///
+/// This, rather than comparing an owner to `consumer`, is what identifies the
+/// consumer, and it is not a nicety. The `ModulePath` a caller hands the
+/// loader is whatever the caller knows: `check_files` derives one from the
+/// file it was given, so `monad check std/src/ansi.mo` checks that file as
+/// `std::src::ansi`. Meanwhile the SAME file, loaded as a dependency of
+/// `std::log` via `use lib::ansi`, is `std::ansi`. Both are correct in their
+/// own context, so an equality test against `consumer` misses every
+/// self-declaration of the first kind — which is to say, every constructor of
+/// the file being checked, since only constructors are absent from
+/// `names_of_decls`'s `to_ref` rendering.
+fn own_declared_keys(decls: &[SourceContext<Decl>]) -> Set<String> {
+  let mut keys: Set<String> = Set::default();
+  for ctx in decls {
+    match ctx.value() {
+      Decl::Def(d) => {
+        keys.insert(d.name.to_string());
+      }
+      Decl::DefMacro(d) => {
+        keys.insert(d.name.to_string());
+      }
+      Decl::DeclGen(g) => {
+        keys.insert(g.name.to_string());
+      }
+      Decl::Type(ind) => {
+        keys.insert(ind.name().to_string());
+        for cons in ind.constructors() {
+          // The BARE tail, for every variant. A `struct`/`class` is stored
+          // as an inductive whose single constructor is `mk`
+          // (`term::stru`), and `match p { mk x y => ... }` is how this
+          // corpus writes one — so the consumer's own scope binds `mk`
+          // whether or not `declared_names_of` will hear of it. Omitting
+          // it is not a missed convenience: `mk` is a spelling half the
+          // corpus uses for its own local structs, and a loaded module
+          // that happens to declare a constructor named `mk`
+          // (`lang::parser::core`'s `OpEntry`) then becomes the "owner" of
+          // a name the file declares itself — a report whose suggested fix
+          // is an import of a module the file has no business naming.
+          keys.insert(cons.name().last().to_string());
+          // The FULL spelling only for an ordinary inductive, which is
+          // `declared_names_of`'s rule and has to stay this check's:
+          // `{List.cons}` names no declaration (a brace item is a plain
+          // identifier), so listing it would invite a `use` item the
+          // validator then rejects.
+          if *ind.variant() == InductiveVariant::Generic {
+            keys.insert(cons.name().to_string());
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+  keys
+}
+
+/// The BARE tail of every constructor a loaded module declares, whatever
+/// the inductive's variant. The elaborated twin of `own_declared_keys`'s
+/// constructor half, and separate from [`declared_names_of`] on purpose:
+/// that function is the SOUNDNESS oracle (`validate_use_names`), and a
+/// `struct`'s constructor is deliberately absent from it — a `use M {mk}`
+/// naming one must keep failing, because no brace item could ever select
+/// it (`item_spelling`). Completeness needs the opposite answer for the
+/// same declaration: the module that DECLARES a struct binds its `mk`
+/// itself, so a reference to it is not a name reached from anywhere.
+fn own_constructor_tails(module: &Module) -> Vec<String> {
+  module
+    .inductives
+    .values()
+    .flat_map(|ind| {
+      ind
+        .value()
+        .constructors()
+        .iter()
+        .map(|cons| cons.name().last().to_string())
+    })
+    .collect()
+}
+
+/// Every spelling a loaded module's declarations can be REFERRED to by,
+/// mapped to the declaration it names: the module that declares it, the
+/// declaration's own spelled name, and whether it is a constructor.
+///
+/// Two spellings per constructor on purpose. `declared_names_of` lists a
+/// constructor by its bare tail (`cons`), because that is how both parsers
+/// write it in the inductive body; a reference site inside this crate may
+/// use the host's two-segment spelling (`List.cons`). Indexing both means
+/// either written form finds its declaration, and the check then asks the
+/// `use` line about the declaration's OWN spelling — so `{cons}` and
+/// `{List.cons}` are judged by the same rule.
+fn declaration_index(loaded: &LoadedModules) -> Map<String, Vec<(ModulePath, NamePath, bool)>> {
+  let mut index: Map<String, Vec<(ModulePath, NamePath, bool)>> = Map::new();
+  let mut push = |key: String, owner: &ModulePath, spelling: NamePath, is_ctor: bool| {
+    let entry = index.entry(key).or_default();
+    let row = (owner.clone(), spelling, is_ctor);
+    if !entry.contains(&row) {
+      entry.push(row);
+    }
+  };
+  for module in loaded.modules() {
+    let owner = module.path().clone();
+    for ctx in module.defs() {
+      let spelling = ctx.value().name.clone();
+      push(spelling.to_string(), &owner, spelling, false);
+    }
+    for ctx in module.get_macro_defs() {
+      let spelling = ctx.value().name.clone();
+      push(spelling.to_string(), &owner, spelling, false);
+    }
+    for (name, _) in module.decl_gens_map() {
+      push(name.to_string(), &owner, name.clone(), false);
+    }
+    for ind in module.inductives() {
+      let name = ind.name().clone();
+      push(name.to_string(), &owner, name, false);
+      // Only an ordinary inductive names constructors — see
+      // `declared_names_of` for why a struct/class must not widen this.
+      if *ind.variant() != InductiveVariant::Generic {
+        continue;
+      }
+      for cons in ind.constructors() {
+        let spelling = cons.name().clone();
+        push(spelling.last().to_string(), &owner, spelling.clone(), true);
+        push(spelling.to_string(), &owner, spelling, true);
+      }
+    }
+  }
+  index
+}
+
+/// The spelling a brace item must use to select `spelling`: the whole
+/// `NamePath` for a def or type, but only its LAST segment for a
+/// constructor.
+///
+/// `declared_names_of` — this check's own oracle, and the self-hosted
+/// `decl_carried_names` it mirrors — lists a constructor bare, so
+/// `use std::list {cons}` selects `List.cons` while `{List.cons}` names
+/// nothing at all. Suggestion and reachability have to use the same
+/// spelling, or the codemod emits a list item the validator rejects:
+/// `use std::map {HashMap.map}` names no declaration, because the struct
+/// `HashMap`'s constructor is reachable as `{map}`.
+fn item_spelling(spelling: &NamePath, is_ctor: bool) -> NamePath {
+  if is_ctor {
+    NamePath::single(spelling.last().clone())
+  } else {
+    spelling.clone()
+  }
+}
+
+/// The bare names a consumer reaches from another module without saying so.
+///
+/// Runs on the PARSED decls, before elaboration — the same timing as
+/// `validate_use_names`, and for the same reason: elaboration rewrites a
+/// resolved bare reference into its defining module's own spelling, which
+/// is exactly the information this check needs to NOT have.
+///
+/// Returns nothing at all for a module with an unfiltered `open` (`open T`
+/// or `open T {*}`): such an `open` can put an unbounded set of names in
+/// scope, so anything said about it would be a guess. Silence there is a
+/// false negative, never a false positive.
+pub fn unimported_names(
+  consumer: &ModulePath,
+  decls: &[SourceContext<Decl>],
+  loaded: &LoadedModules,
+) -> Vec<UnimportedName> {
+  let test_mode = loaded.config.test_mode;
+  let mut opened_bare: Set<NamePath> = Set::default();
+  for ctx in decls {
+    let (path, filter) = match ctx.value() {
+      Decl::Open(o) => (&o.path, &o.filter),
+      Decl::ScopedOpen { path, filter, .. } => (path, filter),
+      _ => continue,
+    };
+    let OpenFilter::Only(names) = filter else {
+      // `open T` / `open T {*}` — see the doc comment.
+      return Vec::new();
+    };
+    for name in names {
+      // A brace item in an `open` list spells a MEMBER of `T`, and the
+      // reference site writes its last segment (`open List {length}` makes
+      // `length` bare).
+      let segments = spelling_segments(name);
+      opened_bare.insert(NamePath::new(segments.clone()));
+      if let Some(last) = segments.last() {
+        opened_bare.insert(NamePath::single(last.clone()));
+      }
+    }
+    let _ = path;
+  }
+
+  let uses: Vec<&Use> = decls
+    .iter()
+    .filter_map(|ctx| match ctx.value() {
+      Decl::Use(u) => Some(u),
+      _ => None,
+    })
+    .collect();
+  let selection = use_selection_map(uses, test_mode);
+  let ambient = ambient_seen_modules(loaded);
+  let index = declaration_index(loaded);
+  let own = names_of_decls(decls);
+  let mut own_keys = own_declared_keys(decls);
+  // The elaborated consumer, when it happens to be loaded already (a
+  // corpus-wide run; never a single-file one), carries what the parse
+  // cannot: the names decl-gen macros GENERATE. `derive_lens! Point`
+  // makes `Point.x`, `derive_cli! C` makes `parse_<c>`, and neither is a
+  // `Decl` in the file — so a file that generates them looks, to a
+  // parse-time walk, exactly like a file that reaches them from wherever
+  // else the flat namespace happens to have them (`examples::derive` has
+  // its own `Point.x`). They are this module's OWN declarations and no
+  // `use` line could ever name them, so they must never be reported.
+  if let Some(current) = loaded.get_module(consumer) {
+    own_keys.extend(declared_names_of(current));
+    // ...and the constructor tails `declared_names_of` is not allowed to
+    // carry, for the reason `own_declared_keys` gives: they are names this
+    // module's own scope binds, and a loaded module that spells one the
+    // same way must not be mistaken for its owner.
+    own_keys.extend(own_constructor_tails(current));
+  }
+
+  let parsed = module(
+    consumer.clone(),
+    ParsedModule {
+      decls: decls.to_vec(),
+      module_doc: None,
+    },
+  );
+  let written = collect_module_references(&parsed);
+  let mut written_bare = written.bare;
+  written_bare.extend(collect_macro_call_names(decls));
+
+  let mut out: Vec<UnimportedName> = Vec::new();
+  let mut seen: Set<NamePath> = Set::default();
+
+  // A QUALIFIED reference names its module outright (`std::map::HashMap`),
+  // so it is judged against that module's qualified axis -- the axis
+  // `use M {}` and bare `use M` leave wide open. Nothing here is ambiguous
+  // the way a bare name is: there is no guessing which module was meant.
+  for (module, name) in &written.qualified {
+    // The declaration's OWN spelling in `module`, which is what a brace
+    // item has to say: `std::list::cons` names the same declaration as
+    // `List.cons`, and only the latter is a legal list item.
+    let declared = index
+      .get(&name.to_string())
+      .and_then(|rows| rows.iter().find(|(owner, _, _)| owner == module));
+    let Some((_, declared_spelling, declared_ctor)) = declared else {
+      // Not a top-level declaration of `module` at all: no brace item
+      // could name it, so there is nothing to suggest. Whether the name
+      // exists anywhere is resolution's business, not this check's.
+      continue;
+    };
+    let spelling = item_spelling(declared_spelling, *declared_ctor);
+    let is_ctor = *declared_ctor;
+    let visible = module == consumer
+      || ambient.contains(module)
+      || own.contains(&name)
+      || own_keys.contains(&name.to_string())
+      || opened_bare.contains(&name)
+      || selection
+        .get(module)
+        .is_some_and(|s| s.selects_qual(&spelling, is_ctor));
+    if visible || !seen.insert(name.clone()) {
+      continue;
+    }
+    out.push(UnimportedName {
+      name: name.clone(),
+      owner: module.clone(),
+      spelling,
+      is_constructor: is_ctor,
+    });
+  }
+
+  for name in written_bare {
+    if own.contains(&name)
+      || own_keys.contains(&name.to_string())
+      || opened_bare.contains(&name)
+      || !seen.insert(name.clone())
+    {
+      continue;
+    }
+    let Some(candidates) = index.get(&name.to_string()) else {
+      // Declared in no loaded module at all: either a local binding or a
+      // genuinely unknown name, which resolution reports on its own terms.
+      // Not this check's business.
+      continue;
+    };
+    let reachable = candidates.iter().any(|(owner, spelling, is_ctor)| {
+      owner == consumer
+        || ambient.contains(owner)
+        || selection
+          .get(owner)
+          .is_some_and(|s| s.selects_bare(spelling, *is_ctor))
+    });
+    if reachable {
+      continue;
+    }
+    // Prefer naming a module the consumer already `use`s — the fix is then
+    // one more item in an existing brace list, not a new line.
+    let pick = candidates
+      .iter()
+      .find(|(owner, _, _)| selection.contains_key(owner))
+      .or_else(|| candidates.first())
+      .expect("`index` values are never empty");
+    out.push(UnimportedName {
+      name,
+      owner: pick.0.clone(),
+      spelling: item_spelling(&pick.1, pick.2),
+      is_constructor: pick.2,
+    });
+  }
+  out.sort_by(|a, b| a.name.to_string().cmp(&b.name.to_string()));
+  out
+}
+
+/// What a file would have to add to its own `use` lines to be complete,
+/// computed the same way [`unimported_names`] computes it — from the file's
+/// SOURCE, because the check needs the parsed decls and the loaded `Module`
+/// has already been through elaboration (which rewrites a bare reference to
+/// its defining module's qualified spelling, erasing the axis).
+pub struct ImportCompletion {
+  pub unimported: Vec<UnimportedName>,
+  /// 1-indexed line a brand-new `use` line is inserted BEFORE: the first
+  /// `use`/`open` in the file, or — for a file with neither — its first
+  /// declaration that is not the `#![mote …]` attribute, so the new
+  /// imports land below the attribute and above the code.
+  pub insert_line: u32,
+}
+
+/// The `organize-imports` codemod's window into the completeness check: how
+/// this file's own text falls short. `Err` only for a parse failure, which
+/// the caller reports like any other (a file that does not parse has no
+/// `use` lines to fix).
+pub fn import_completion(
+  path: &ModulePath,
+  text: &str,
+  file: Option<PathBuf>,
+  loaded: &LoadedModules,
+) -> Result<ImportCompletion, String> {
+  let file_path = file.unwrap_or_else(|| path.to_file_path());
+  let context = ModuleContext::new(path.clone(), Some(file_path));
+  let decls = load_decls_from_text_with_path(text, &context)?;
+  let insert_line = decls
+    .iter()
+    .find(|ctx| matches!(ctx.value(), Decl::Use(_) | Decl::Open(_)))
+    .map(|ctx| ctx.loc.start.line)
+    .or_else(|| {
+      decls
+        .iter()
+        .find(|ctx| !matches!(ctx.value(), Decl::MoteAttr { .. }))
+        .map(|ctx| ctx.loc.start.line)
+    })
+    .unwrap_or(1);
+  Ok(ImportCompletion {
+    unimported: unimported_names(path, &decls, loaded),
+    insert_line,
+  })
+}
+
+fn check_one_use_name(
+  module_path: &ModulePath,
+  names: &[String],
+  n: &Identifier,
+  file: Option<&std::path::Path>,
+) -> Result<(), LoadingError> {
+  let name = n.as_str();
+  if names.iter().any(|x| x == name) {
+    return Ok(());
+  }
+  Err(LoadingError::Generic(unknown_use_name_error(
+    file,
+    module_path,
+    name,
+    dotted_spelling_of(names, name),
+  )))
+}
+
+/// The declared name `n` is the TAIL of, if the module declares one --
+/// `length` is the tail of `List.length`. A brace item is matched by full
+/// spelling, so an unqualified tail never binds; this is what turns that
+/// error into one that names the spelling the user actually wanted.
+fn dotted_spelling_of<'a>(names: &'a [String], n: &str) -> Option<&'a str> {
+  names
+    .iter()
+    .find(|x| x.rsplit('.').next() == Some(n) && x.len() > n.len())
+    .map(|x| x.as_str())
+}
+
+/// The `::` spelling of a module path, for messages that tell the user
+/// what to WRITE. `ModulePath`'s own `Display` is `.`-joined on purpose
+/// (`QualifiedName`'s `fmt` records why: qualify.mo's symbol encoding
+/// depends on it), so a message built from it would name a `use` line no
+/// one can type -- `use std.list {length}`. `lang/src/module.mo` renders
+/// this error with `module_path_to_string`, which already joins with
+/// `::`, so the two runtimes' messages read the same.
+fn module_path_spelling(path: &ModulePath) -> String {
+  path
+    .segments()
+    .iter()
+    .map(|i| i.as_str())
+    .collect::<Vec<&str>>()
+    .join("::")
+}
+
+fn unknown_use_name_error(
+  file: Option<&std::path::Path>,
+  path: &ModulePath,
+  n: &str,
+  dotted: Option<&str>,
+) -> String {
+  let spelled = module_path_spelling(path);
+  let where_ = match file {
+    Some(f) => format!("  `use {spelled} {{{n}}}` in {}\n", f.display()),
+    None => format!("  `use {spelled} {{{n}}}`\n"),
+  };
+  let hint = match dotted {
+    Some(d) => format!(
+      "  hint: `{d}` is declared there — a brace item is matched against a declaration's full spelled name, not its last segment\n  hint: write `use {spelled} {{{d}}}`"
+    ),
+    None => format!(
+      "  hint: a brace item names a top-level declaration exactly; nothing in `{spelled}` is declared as `{n}`\n  hint: if the module is needed only for its qualified names, write `use {spelled} {{}}`"
+    ),
+  };
+  format!("error: `{spelled}` declares no `{n}`\n{where_}{hint}")
 }
 
 pub fn load_decls(
@@ -2179,13 +3215,23 @@ pub fn load_module_from_text_at(
   loaded: &mut LoadedModules,
 ) -> Result<(), LoadingError> {
   let file_path = file.unwrap_or_else(|| path.to_file_path());
-  let module_context = ModuleContext::new(path.clone(), Some(file_path));
+  let module_context = ModuleContext::new(path.clone(), Some(file_path.clone()));
   let parse_start = Instant::now();
   let init_decls = load_decls_from_text_with_path(text, &module_context)
     .map_err(|e| format!("parse error for {}: {e}", path))?;
   let parse_dur = parse_start.elapsed();
   let mut in_progress = crate::empty_set();
-  *loaded = load_decl_uses_modules(&init_decls, loaded.clone(), &mut in_progress)?;
+  // A caller-supplied source is always the module being asked about, never
+  // a dependency the loader reached on its own — so it is checked for
+  // completeness once built, below. `written_decls` is kept parsed for
+  // that (see `load_module_files_impl`).
+  let written_decls = init_decls.clone();
+  *loaded = load_decl_uses_modules(
+    &init_decls,
+    loaded.clone(),
+    &mut in_progress,
+    Some(&file_path),
+  )?;
   let init_decls = filter_cfg_test_decls(init_decls, loaded.config.test_mode);
   if let Err(e) = validate_open_filters(&init_decls) {
     let file_path = path.to_file_path();
@@ -2220,6 +3266,7 @@ pub fn load_module_from_text_at(
       module_doc: None,
     },
   ));
+  check_use_completeness(path.clone(), &written_decls, loaded, Some(&file_path))?;
   Ok(())
 }
 
@@ -2255,11 +3302,19 @@ pub fn load_module_from_text_typed_at(
   loaded: &mut LoadedModules,
 ) -> Result<(), LoadingError> {
   let file_path = file.unwrap_or_else(|| path.to_file_path());
-  let module_context = ModuleContext::new(path.clone(), Some(file_path));
+  let module_context = ModuleContext::new(path.clone(), Some(file_path.clone()));
   let init_decls = load_decls_from_text_with_path(text, &module_context)
     .map_err(|e| format!("parse error for {}: {e}", path))?;
   let mut in_progress = crate::empty_set();
-  *loaded = load_decl_uses_modules(&init_decls, loaded.clone(), &mut in_progress)?;
+  // See `load_module_from_text_at`: a caller-supplied source is checked for
+  // completeness once built, and `written_decls` is the parsed set it needs.
+  let written_decls = init_decls.clone();
+  *loaded = load_decl_uses_modules(
+    &init_decls,
+    loaded.clone(),
+    &mut in_progress,
+    Some(&file_path),
+  )?;
   let init_decls = filter_cfg_test_decls(init_decls, loaded.config.test_mode);
   validate_open_filters(&init_decls)?;
   // Capture macro-call / `#[derive]` references from the pre-expansion
@@ -2279,6 +3334,7 @@ pub fn load_module_from_text_typed_at(
   );
   built.set_macro_call_names(macro_call_names);
   loaded.add_module(built);
+  check_use_completeness(path.clone(), &written_decls, loaded, Some(&file_path))?;
   Ok(())
 }
 
@@ -2315,24 +3371,33 @@ fn std_dir() -> std::path::PathBuf {
 }
 
 /// `(module path, source text)` pairs for the always-loaded `init`+`std`
-/// packages, in dependency order (`prelude`/`id`/`io`/`number` have no
-/// deps; `math` depends on `number`; `string` depends on `math`; `list`
-/// has no deps; `init` — `init/lib.mo`, the ambient re-export hub —
-/// depends on `io`/`number`/`math`/`string`/`list`; `path` has no deps;
-/// `std.io` depends on `path`; `process` has no deps; `std` —
-/// `std/lib.mo`, the ambient re-export hub — depends on `path`/
-/// `std.io`/`process`) — the same order `init_module` below loads them
-/// in, factored out so a caller that needs the raw `Decl`s (not just an
-/// already-checked `Module`) can get them without hand-duplicating this
-/// path/order list. Respects `embed-stdlib` exactly like `init_module`
-/// does: compiled-in text when that feature is on, read from disk at
-/// runtime (via `stdlib_dir()`/`std_dir()`) otherwise. `io`/`path` are
-/// deliberately full two-segment `std.io`/`std.path` paths, not bare
-/// top-level names — `std/*.mo` files are addressed externally via
-/// `std.<name>` (matching `resolve_module_file`'s own search order,
-/// which tries a bare name against `init/` before `std/`), unlike
-/// `init/*.mo` files, which stay addressed by their bare name. See
-/// AGENTS.md's "init vs std" section.
+/// packages, in dependency order (`prelude`/`init.id`/`init.io`/
+/// `init.number` have no deps; `init.math` depends on `init.number`;
+/// `init.string` depends on `init.math`; `init.list` has no deps;
+/// `init` — `init/lib.mo`, the ambient re-export hub — depends on
+/// `init.id`/`init.io`/`init.number`/`init.math`/`init.string`/
+/// `init.list`; `std.path` has no deps; `std.io` depends on `std.path`;
+/// `std.process` has no deps; `std` — `std/lib.mo`, the ambient re-export
+/// hub — depends on `std.path`/`std.io`/`std.process`) — the same order
+/// `init_module` below loads them in, factored out so a caller that needs
+/// the raw `Decl`s (not just an already-checked `Module`) can get them
+/// without hand-duplicating this path/order list. Respects `embed-stdlib`
+/// exactly like `init_module` does: compiled-in text when that feature is
+/// on, read from disk at runtime (via `stdlib_dir()`/`std_dir()`)
+/// otherwise.
+///
+/// Every entry is a full two-segment `<mote>.<module>` path, and that is
+/// load-bearing rather than tidiness: a `use` must name a mote or `lib`
+/// (`validate_use_qualification`, above), so the hubs' own re-exports —
+/// `init/lib.mo`'s `pub use lib::io {*}` and `std/lib.mo`'s
+/// `pub use lib::path {*}` — reach the loader as `init.io`, `std.path`,
+/// and nothing declares a module under a bare name any more. A seed
+/// registered as bare `io` would be a module no `Decl::Use` could ever
+/// name, and `build_core_program`'s capture set (which keys the init
+/// package by these paths) would then hold a hub whose own `use`s point
+/// at paths it does not contain — `uses unloaded module: init.io`. The
+/// one exception is `'prelude`, which is deliberately not nameable at all.
+/// See AGENTS.md's "init vs std" section.
 pub fn init_package_sources() -> Result<Vec<(ModulePath, PathBuf, String)>, LoadingError> {
   #[cfg(feature = "embed-stdlib")]
   {
@@ -2349,32 +3414,32 @@ pub fn init_package_sources() -> Result<Vec<(ModulePath, PathBuf, String)>, Load
         include_str!("../../../init/src/prelude.mo"),
       ),
       (
-        mpt("id"),
+        ModulePath::new(vec![id("init"), id("id")]),
         concat!(env!("CARGO_MANIFEST_DIR"), "/../init/src/id.mo"),
         include_str!("../../../init/src/id.mo"),
       ),
       (
-        mpt("io"),
+        ModulePath::new(vec![id("init"), id("io")]),
         concat!(env!("CARGO_MANIFEST_DIR"), "/../init/src/io.mo"),
         include_str!("../../../init/src/io.mo"),
       ),
       (
-        mpt("number"),
+        ModulePath::new(vec![id("init"), id("number")]),
         concat!(env!("CARGO_MANIFEST_DIR"), "/../init/src/number.mo"),
         include_str!("../../../init/src/number.mo"),
       ),
       (
-        mpt("math"),
+        ModulePath::new(vec![id("init"), id("math")]),
         concat!(env!("CARGO_MANIFEST_DIR"), "/../init/src/math.mo"),
         include_str!("../../../init/src/math.mo"),
       ),
       (
-        mpt("string"),
+        ModulePath::new(vec![id("init"), id("string")]),
         concat!(env!("CARGO_MANIFEST_DIR"), "/../init/src/string.mo"),
         include_str!("../../../init/src/string.mo"),
       ),
       (
-        mpt("list"),
+        ModulePath::new(vec![id("init"), id("list")]),
         concat!(env!("CARGO_MANIFEST_DIR"), "/../init/src/list.mo"),
         include_str!("../../../init/src/list.mo"),
       ),
@@ -2418,12 +3483,30 @@ pub fn init_package_sources() -> Result<Vec<(ModulePath, PathBuf, String)>, Load
     let std_dir = std_dir();
     let entries: [(ModulePath, std::path::PathBuf); 12] = [
       (mpt("'prelude"), init_dir.join("prelude.mo")),
-      (mpt("id"), init_dir.join("id.mo")),
-      (mpt("io"), init_dir.join("io.mo")),
-      (mpt("number"), init_dir.join("number.mo")),
-      (mpt("math"), init_dir.join("math.mo")),
-      (mpt("string"), init_dir.join("string.mo")),
-      (mpt("list"), init_dir.join("list.mo")),
+      (
+        ModulePath::new(vec![id("init"), id("id")]),
+        init_dir.join("id.mo"),
+      ),
+      (
+        ModulePath::new(vec![id("init"), id("io")]),
+        init_dir.join("io.mo"),
+      ),
+      (
+        ModulePath::new(vec![id("init"), id("number")]),
+        init_dir.join("number.mo"),
+      ),
+      (
+        ModulePath::new(vec![id("init"), id("math")]),
+        init_dir.join("math.mo"),
+      ),
+      (
+        ModulePath::new(vec![id("init"), id("string")]),
+        init_dir.join("string.mo"),
+      ),
+      (
+        ModulePath::new(vec![id("init"), id("list")]),
+        init_dir.join("list.mo"),
+      ),
       (mpt("init"), init_dir.join("lib.mo")),
       (
         ModulePath::new(vec![id("std"), id("path")]),
@@ -2720,74 +3803,165 @@ pub fn validate_open_filters(decls: &[SourceContext<Decl>]) -> Result<(), TypeEr
   Ok(())
 }
 
+/// The names a module's own declarations reference, kept apart by the axis
+/// each one was WRITTEN on.
+///
+/// A flat `Set<NamePath>` cannot answer the completeness question, because
+/// `M::x` and `M.x` are different claims about the same declaration: a bare
+/// `M.x` needs a brace item that selects the declaration BARE, while
+/// `M::x` — the same declaration, written module-qualified — is satisfied by
+/// `use M {}`, which selects every name of `M` on the qualified axis and
+/// none of them bare. Merging the two (as `collect_referenced_names` must,
+/// for its own unused-import purpose) would make `use std::base {}` plus
+/// `std::base::Ordering.lt` look like an unimported name.
+#[derive(Debug, Default)]
+struct References {
+  /// Written with no module qualifier — `HashMap`, `Map.insert`, `List.cons`.
+  bare: Set<NamePath>,
+  /// Written `module::name` — judged against the QUALIFIED axis of the
+  /// module that was named, not against a declaration's owner.
+  qualified: Set<(ModulePath, NamePath)>,
+}
+
+impl References {
+  fn add_bare(&mut self, path: NamePath) {
+    self.bare.insert(path);
+  }
+
+  fn add_qualified(&mut self, module: ModulePath, name: NamePath) {
+    self.qualified.insert((module, name));
+  }
+
+  /// The flat, axis-erased view `collect_referenced_names` publishes.
+  fn flatten(&self) -> Set<NamePath> {
+    let mut names = self.bare.clone();
+    for (_, name) in &self.qualified {
+      names.insert(name.clone());
+    }
+    names
+  }
+}
+
+/// The names bound by the lambda/pi/forall/match-pattern scopes currently
+/// enclosing the term being walked, innermost last.
+///
+/// A reference whose first segment is on this stack is a LOCAL, not a
+/// module-level declaration, so it is no business of the completeness
+/// check: `std/src/map.mo` has `(fn mk mv _ _ _ => ...)`, and
+/// `lang::parser::core` separately declares a top-level `mk` — without
+/// this stack the check would demand `use lang::parser::core {mk}` for a
+/// lambda parameter, and (because the codemod then ACTS on that) add a
+/// load edge from `std::map` to `lang::parser::core` that cycles.
+type Binders = Vec<Identifier>;
+
+fn is_bound(bound: &Binders, name: &NamePath) -> bool {
+  name.first().is_some_and(|head| bound.contains(head))
+}
+
 /// Walk a `Par` (lambda/pi parameter) for referenced names — its type, and
 /// (for explicit `Par::P` params) its default value expression, if any.
-fn collect_par_names(par: &Par, names: &mut Set<NamePath>) {
+///
+/// The parameter's own name is NOT referenced here; the caller binds it
+/// around the body only, since a parameter type is written in the scope
+/// outside the parameter.
+fn collect_par_names(par: &Par, refs: &mut References, bound: &mut Binders) {
   match par {
-    Par::P(param) => collect_param_names(param, names),
-    Par::I { typ, .. } => collect_term_names(typ, names),
+    Par::P(param) => collect_param_names(param, refs, bound),
+    Par::I { typ, .. } => collect_term_names(typ, refs, bound),
   }
 }
 
-fn collect_param_names(param: &Param, names: &mut Set<NamePath>) {
-  collect_term_names(&param.typ, names);
+fn collect_param_names(param: &Param, refs: &mut References, bound: &mut Binders) {
+  collect_term_names(&param.typ, refs, bound);
   if let Some(default) = &param.default {
-    collect_term_names(default, names);
+    collect_term_names(default, refs, bound);
   }
 }
 
-fn collect_literal_names(lit: &Literal, names: &mut Set<NamePath>) {
+fn collect_literal_names(lit: &Literal, refs: &mut References, bound: &mut Binders) {
   match lit {
     Literal::Str { .. }
     | Literal::Char { .. }
     | Literal::Num { .. }
     | Literal::Float { .. }
     | Literal::Foreign(_) => {}
-    Literal::Term(t) => collect_term_names(t, names),
+    Literal::Term(t) => collect_term_names(t, refs, bound),
     Literal::Match { value, cases } => {
-      collect_term_names(value, names);
+      collect_term_names(value, refs, bound);
       for case in cases {
         // The pattern's constructor name is a bare `Identifier` here (not a
         // `Term::Var`) — this is how `open`-imported constructors used only
         // in match arms (never as a call-position reference) get counted.
-        names.insert(NamePath::single(case.name.clone()));
-        collect_term_names(&case.value, names);
+        refs.add_bare(NamePath::single(case.name.clone()));
+        let mut pushed = 0;
+        for arg in &case.args {
+          bound.push(arg.clone());
+          pushed += 1;
+        }
+        // Pre-elaboration only (`field_pattern` is `None` afterwards): a
+        // `{ f := x }`/`Cons { f := x }` pattern binds each named binder.
+        // The `..`-covered fields are not modelled — `..` discards, and a
+        // name the pattern never mentions can only make this walk more
+        // conservative, never wrongly claim a global was reached.
+        if let Some(fp) = &case.field_pattern {
+          for (_, binder) in &fp.fields {
+            bound.push(binder.clone());
+            pushed += 1;
+          }
+        }
+        collect_term_names(&case.value, refs, bound);
+        for _ in 0..pushed {
+          bound.pop();
+        }
       }
     }
     Literal::If { value, then, els } => {
-      collect_term_names(value, names);
-      collect_term_names(then, names);
-      collect_term_names(els, names);
+      collect_term_names(value, refs, bound);
+      collect_term_names(then, refs, bound);
+      collect_term_names(els, refs, bound);
     }
     Literal::StructLit { fields, type_name } => {
       for t in fields.values() {
-        collect_term_names(t, names);
+        collect_term_names(t, refs, bound);
       }
       if let Some(tn) = type_name {
-        collect_term_names(tn, names);
+        collect_term_names(tn, refs, bound);
       }
     }
     Literal::StructUpdate { base, fields } => {
-      names.insert(NamePath::single(base.clone()));
+      // `base` here is an ordinary expression — nearly always a local —
+      // and not a type name, so a bound `base` is not a reference at all.
+      if !bound.contains(base) {
+        refs.add_bare(NamePath::single(base.clone()));
+      }
       for t in fields.values() {
-        collect_term_names(t, names);
+        collect_term_names(t, refs, bound);
       }
     }
   }
 }
 
 /// Collect every name referenced as a free variable anywhere in `term`
-/// (its own name if it's a `Var`, plus everything nested inside it). Runs
-/// on the raw parsed AST — see `collect_referenced_names` for why.
-fn collect_term_names(term: &Term, names: &mut Set<NamePath>) {
+/// (its own name if it's a `Var`, plus everything nested inside it), with
+/// the enclosing binder scopes in `bound` excluded. Runs on the raw parsed
+/// AST — see `collect_referenced_names` for why.
+fn collect_term_names(term: &Term, refs: &mut References, bound: &mut Binders) {
   match term {
-    Term::Forall { typ, body, .. } => {
-      collect_term_names(typ, names);
-      collect_term_names(body, names);
+    Term::Forall { name, typ, body } => {
+      collect_term_names(typ, refs, bound);
+      bound.push(name.clone());
+      collect_term_names(body, refs, bound);
+      bound.pop();
     }
-    Term::Pi { arg, ret, .. } => {
-      collect_term_names(arg, names);
-      collect_term_names(ret, names);
+    Term::Pi {
+      arg_name, arg, ret, ..
+    } => {
+      collect_term_names(arg, refs, bound);
+      bound.extend(arg_name.clone());
+      collect_term_names(ret, refs, bound);
+      if arg_name.is_some() {
+        bound.pop();
+      }
     }
     Term::Var { name } => {
       // Bare `Id`/`Np` refs record their name path; a post-elaboration
@@ -2796,42 +3970,54 @@ fn collect_term_names(term: &Term, names: &mut Set<NamePath>) {
       // what `referenced_contains_name` matches on either way, but
       // keeping the full path also covers the exact-qualified check.
       if let Some(p) = name.to_name_path() {
-        names.insert(p);
+        if !is_bound(bound, &p) {
+          refs.add_bare(p);
+        }
       } else if let Some(q) = name.to_qualified() {
-        names.insert(q.to_flat_name_path());
+        // A `module::name` reference spells its module outright, so no
+        // binder can shadow it.
+        refs.add_qualified(q.module.clone(), q.name.clone());
       }
     }
     Term::Lam { param, body } => {
-      collect_par_names(param, names);
-      collect_term_names(body, names);
+      collect_par_names(param, refs, bound);
+      match param {
+        Par::P(p) => {
+          bound.push(p.name.clone());
+          collect_term_names(body, refs, bound);
+          bound.pop();
+        }
+        // An implicit parameter (`(' : T)`) is anonymous — nothing to bind.
+        Par::I { .. } => collect_term_names(body, refs, bound),
+      }
     }
     Term::App { fun, arg } => {
-      collect_term_names(fun, names);
-      collect_term_names(arg, names);
+      collect_term_names(fun, refs, bound);
+      collect_term_names(arg, refs, bound);
     }
     Term::Ann { term, typ } => {
-      collect_term_names(term, names);
-      collect_term_names(typ, names);
+      collect_term_names(term, refs, bound);
+      collect_term_names(typ, refs, bound);
     }
-    Term::Lit { value } => collect_literal_names(value, names),
+    Term::Lit { value } => collect_literal_names(value, refs, bound),
     Term::Ntv { native } => {
       for arg in native.args() {
         if let Some(t) = arg {
-          collect_term_names(t, names);
+          collect_term_names(t, refs, bound);
         }
       }
     }
     Term::Con(c) => {
-      names.insert(c.typ_name.clone());
+      refs.add_bare(c.typ_name.clone());
       for arg in &c.args {
         if let Some(t) = arg {
-          collect_term_names(t, names);
+          collect_term_names(t, refs, bound);
         }
       }
     }
-    Term::Ctx { term, .. } => collect_term_names(term, names),
+    Term::Ctx { term, .. } => collect_term_names(term, refs, bound),
     Term::Sort { .. } | Term::Hole => {}
-    Term::Quote { term } => collect_term_names(term, names),
+    Term::Quote { term } => collect_term_names(term, refs, bound),
   }
 }
 
@@ -2898,60 +4084,78 @@ pub fn collect_macro_call_names(decls: &[SourceContext<Decl>]) -> Set<NamePath> 
 /// elaboration-only version is future work — deliberately not done here.
 pub fn collect_referenced_names(module: &Module) -> Set<NamePath> {
   let mut names = module.macro_call_names().clone();
+  names.extend(collect_module_references(module).flatten());
+  names
+}
+
+/// [`collect_referenced_names`] without the flattening: the same walk, with
+/// the axis preserved. The completeness check needs the split; every other
+/// caller wants the union.
+fn collect_module_references(module: &Module) -> References {
+  let mut refs = References::default();
+  let mut bound: Binders = Vec::new();
   for ctx in module.defs() {
     let def = ctx.value();
-    collect_term_names(&def.term, &mut names);
-    collect_term_names(&def.typ, &mut names);
+    collect_term_names(&def.term, &mut refs, &mut bound);
+    collect_term_names(&def.typ, &mut refs, &mut bound);
     for tc in &def.type_constraints {
-      names.insert(tc.class().clone());
+      refs.add_bare(tc.class().clone());
     }
   }
   for ctx in module.get_macro_defs() {
     let def = ctx.value();
-    collect_term_names(&def.term, &mut names);
-    collect_term_names(&def.typ, &mut names);
+    collect_term_names(&def.term, &mut refs, &mut bound);
+    collect_term_names(&def.typ, &mut refs, &mut bound);
   }
   for ind in module.inductives() {
-    collect_term_names(ind.typ(), &mut names);
+    collect_term_names(ind.typ(), &mut refs, &mut bound);
     for tc in &ind.constraints {
-      names.insert(tc.class().clone());
+      refs.add_bare(tc.class().clone());
     }
     for cons in ind.constructors() {
-      collect_term_names(cons.typ(), &mut names);
+      collect_term_names(cons.typ(), &mut refs, &mut bound);
       for p in cons.params() {
-        collect_param_names(p, &mut names);
+        collect_param_names(p, &mut refs, &mut bound);
       }
     }
     for default in ind.defaults.values() {
-      collect_term_names(default, &mut names);
+      collect_term_names(default, &mut refs, &mut bound);
     }
     for tcs in ind.method_constraints.values() {
       for tc in tcs {
-        names.insert(tc.class().clone());
+        refs.add_bare(tc.class().clone());
       }
     }
   }
   for ctx in module.instances() {
     let inst = ctx.value();
-    names.insert(inst.class_name.clone());
+    refs.add_bare(inst.class_name.clone());
     for tc in &inst.constraints {
-      names.insert(tc.class().clone());
+      refs.add_bare(tc.class().clone());
     }
     for arg in &inst.args {
-      collect_term_names(arg, &mut names);
+      collect_term_names(arg, &mut refs, &mut bound);
     }
     for def in inst.impls_map.values() {
-      collect_term_names(&def.term, &mut names);
-      collect_term_names(&def.typ, &mut names);
+      collect_term_names(&def.term, &mut refs, &mut bound);
+      collect_term_names(&def.typ, &mut refs, &mut bound);
       for tc in &def.type_constraints {
-        names.insert(tc.class().clone());
+        refs.add_bare(tc.class().clone());
       }
     }
   }
   for ctx in module.infix() {
-    names.insert(ctx.value().name().clone());
+    refs.add_bare(ctx.value().name().clone());
   }
-  names
+  refs
+}
+
+/// Split a brace item back into the segments it spells: a `use` list item
+/// is recorded as ONE `Identifier` whose text still carries its dots
+/// (`List.length` — see `use_item_name` in `core/src/parser.rs`), so any
+/// comparison against a `NamePath` has to re-split it first.
+fn spelling_segments(name: &Identifier) -> Vec<Identifier> {
+  name.as_str().split('.').map(Identifier::from).collect()
 }
 
 /// Whether `referenced` (from `collect_referenced_names`) shows evidence
@@ -2967,16 +4171,27 @@ pub fn collect_referenced_names(module: &Module) -> Set<NamePath> {
 /// `use`/`open` brace list that turns out not to be strictly needed —
 /// harmless), never the unsafe direction (omitting a name that's
 /// genuinely needed, which would break compilation).
+///
+/// A DOTTED item (`List.length`) is the exception to that looseness: it
+/// names exactly one declaration, so it matches on its whole rendered
+/// spelling instead of on a last segment (which would make it
+/// indistinguishable from `length` — the very confusion the spelled-name
+/// rule exists to remove).
 pub fn referenced_contains_name(
   referenced: &Set<NamePath>,
   context_path: &ModulePath,
   name: &Identifier,
 ) -> bool {
-  let bare = NamePath::single(name.clone());
-  let qualified = NamePath::from(context_path.clone()).append(vec![name.clone()]);
-  referenced.contains(&bare)
-    || referenced.contains(&qualified)
-    || referenced.iter().any(|p| p.last() == name)
+  let segments = spelling_segments(name);
+  let bare = NamePath::new(segments.clone());
+  let qualified = NamePath::from(context_path.clone()).append(segments);
+  if referenced.contains(&bare) || referenced.contains(&qualified) {
+    return true;
+  }
+  if name.as_str().contains('.') {
+    return referenced.iter().any(|p| p.to_string() == name.as_str());
+  }
+  referenced.iter().any(|p| p.last() == name)
 }
 
 /// Unused names in `use`-filter selections: for every non-`pub`
@@ -3009,16 +4224,18 @@ pub fn unused_use_name_warnings(
       let UseFilter::Items(items) = &u.filter else {
         return Vec::new();
       };
-      let mut flat: Map<ModulePath, AllowedNames> = Map::new();
+      let mut flat: Map<ModulePath, Selection> = Map::new();
       for item in items {
         for (k, v) in item.flatten(&u.module_path) {
-          merge_allowed(&mut flat, k, v);
+          merge_selection(&mut flat, k, v);
         }
       }
       flat
         .into_iter()
-        .filter_map(|(module_path, allowed)| {
-          let AllowedNames::Only(names) = allowed else {
+        .filter_map(|(module_path, selection)| {
+          // The BARE axis is what an "unused import" is about: a name only
+          // reachable qualified was never expected to be spelled bare.
+          let AllowedNames::Only(names) = selection.bare else {
             return None;
           };
           // Only a single-name entry (the common case for a leaf import)

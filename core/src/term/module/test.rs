@@ -189,6 +189,358 @@ fn test_lib_alias_only_fires_on_the_head_segment() {
   );
 }
 
+// ─── `use` qualification (validate_use_qualification) ───────────────
+
+/// A real init source path, CWD-independent — cargo runs a test binary from
+/// its own package directory, where a repo-relative `init/src` is not.
+fn init_src(rel: &str) -> std::path::PathBuf {
+  std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../init/src")).join(rel)
+}
+
+fn cli_src(rel: &str) -> std::path::PathBuf {
+  std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/src")).join(rel)
+}
+
+fn std_src(rel: &str) -> std::path::PathBuf {
+  std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../std/src")).join(rel)
+}
+
+fn qualification_error(source: &str, file: Option<&std::path::Path>) -> Option<String> {
+  let decls = parse_file(source.into()).expect("sample parses").decls;
+  match validate_use_qualification(&decls, file) {
+    Ok(()) => None,
+    Err(LoadingError::Generic(m)) => Some(m),
+    Err(other) => panic!("expected a Generic load error, got {other:?}"),
+  }
+}
+
+/// The headline case: `io` is a module of `init`, not a mote, so a bare
+/// `use io` names whichever `io.mo` sits beside the importing file.
+#[test]
+fn test_bare_module_use_is_rejected() {
+  let err = qualification_error("use io {IO}\n", None).expect("bare `use io` must be rejected");
+  assert!(err.contains("does not name a mote"), "{err}");
+  assert!(err.contains("`use io`"), "{err}");
+  assert!(err.contains("hint:"), "{err}");
+}
+
+/// The hint names the file's line to write: resolution's own precedence puts
+/// `init/src/io.mo` first, so the owner is `init`.
+#[test]
+fn test_bare_module_use_hint_names_the_owning_mote() {
+  let err = qualification_error("use io {IO}\n", Some(&init_src("helper.mo")))
+    .expect("bare `use io` must be rejected");
+  assert!(err.contains("write `use init::io`"), "{err}");
+}
+
+/// A bare name that names a module in the importing file's own directory is
+/// reported against THAT mote, not the init fallback — the message has to
+/// match what resolution would actually have picked.
+///
+/// This is the ambiguity the rule exists for, in its exact original form:
+/// `std/src/ansi.mo`'s `use io` resolves to `std/src/io.mo`, while the same
+/// line in `cli/src/main.mo` resolves to `init/src/io.mo`.
+#[test]
+fn test_bare_module_use_hint_prefers_the_importers_own_directory() {
+  let err = qualification_error("use io {IO}\n", Some(&std_src("ansi.mo")))
+    .expect("bare `use io` must be rejected");
+  assert!(err.contains("write `use std::io`"), "{err}");
+}
+
+#[test]
+fn test_bare_non_mote_module_use_is_rejected() {
+  let err = qualification_error("use number {}\n", None).expect("`number` is not a mote");
+  assert!(err.contains("does not name a mote"), "{err}");
+}
+
+/// The prelude is ambient: the loader seeds it into every file's closure, so
+/// an explicit import is redundant — in either spelling.
+#[test]
+fn test_use_of_the_prelude_is_rejected_bare_and_qualified() {
+  for source in ["use prelude\n", "use init::prelude {*}\n"] {
+    let err = qualification_error(source, None).expect("naming the prelude must be rejected");
+    assert!(err.contains("names the prelude, which is ambient"), "{err}");
+    assert!(err.contains("delete the `use"), "{err}");
+  }
+}
+
+/// A rule that rejected everything would pass every test above. `runtime` is
+/// a mote, `lib` the reserved alias, and `std`/`init` the ambient pair —
+/// all one segment, all legal.
+#[test]
+fn test_legal_single_segment_uses_are_accepted() {
+  for source in [
+    "use runtime {}\n",
+    "use lib {IO}\n",
+    "use std\n",
+    "use init\n",
+  ] {
+    assert!(
+      qualification_error(source, None).is_none(),
+      "`{source}` must be accepted"
+    );
+  }
+}
+
+/// The multi-segment half of the same rule: a head that is a mote reference
+/// is left to the declared-dependency gate.
+#[test]
+fn test_qualified_uses_are_accepted() {
+  for source in [
+    "use std::io {IO}\n",
+    "use init::io {IO}\n",
+    "use lang::codegen::emit {}\n",
+  ] {
+    assert!(
+      qualification_error(source, None).is_none(),
+      "`{source}` must be accepted"
+    );
+  }
+}
+
+/// A mote is recognized from the importing file's manifest too, so a
+/// dependency declared but not yet on disk still counts — the same question
+/// the self-hosted `head_names_mote` asks.
+#[test]
+fn test_declared_dependency_counts_as_a_mote() {
+  let file = cli_src("main.mo");
+  let decls = parse_file("use runtime {}\n".into()).expect("parses").decls;
+  assert!(
+    head_names_mote(Some(&file), "runtime"),
+    "cli/mote.toml declares `runtime`, so `use runtime` names a mote"
+  );
+  // ...and the same probe is what makes the rejection above meaningful: a
+  // name no manifest declares and no directory holds is still not a mote.
+  assert!(validate_use_qualification(&decls, Some(&file)).is_ok());
+  assert!(!head_names_mote(Some(&file), "io"));
+}
+
+// ─── `use` brace names must be declarations (validate_use_names) ─────
+//
+// The rule: `use M {n}` binds `n` only when `M` declares a top-level name
+// that IS `n`. A dotted def is more than one segment here (`List.length`
+// is `[List, length]`) and a brace item now spells those segments back out, so
+// `use std::list {List.length}` binds and the bare tail `{length}` does not -- it used to be a
+// silent no-op whose failure surfaced at the CALL site. These exercise the
+// check through `validate_use_names`, the exact entry point
+// `load_decl_uses_modules` uses, so they see what the loader sees.
+
+/// One target module per declaration kind, at `probe::list`, plus the
+/// interesting pair: a bare `length` ALONGSIDE the dotted `List.length`,
+/// so an acceptance test cannot pass by matching the dotted name.
+const USE_TARGET: &str = r#"
+def List.length : I64 := 1
+def length : I64 := 2
+def f : I64 := 3
+type T {
+  mk (u : Unit)
+}
+struct S { x : I64 }
+class C A { def c (a : A) : A }
+instance MyInst : C String {
+  def c (a : String) : String := a
+}
+defmacro dm T := decls { }
+"#;
+
+/// `import_src` as a file that `use`s a module `target_src` declares at
+/// `path`. Returns the check's message, or `None` when it passes.
+///
+/// The target is parsed and registered directly rather than loaded from
+/// disk: `validate_use_names` consults the loaded module's declaration
+/// maps and nothing else, so no checking or resolution is needed. The
+/// importer's own module is deliberately never registered -- the check
+/// asks about the TARGET, never about the importer.
+fn use_name_error_with(modules: &[(&[&str], &str)], import_src: &str) -> Option<String> {
+  let mut loaded = default_modules().unwrap();
+  for (path, target_src) in modules {
+    let path = ModulePath::new(path.iter().map(|s| id(*s)).collect());
+    let parsed = parse_file((*target_src).into()).expect("target parses");
+    loaded.add_module(module(
+      path,
+      ParsedModule {
+        decls: parsed.decls,
+        module_doc: None,
+      },
+    ));
+  }
+  let decls = parse_file(import_src.into()).expect("import parses").decls;
+  match validate_use_names(&decls, &loaded, Some(&init_src("helper.mo"))) {
+    Ok(()) => None,
+    Err(LoadingError::Generic(m)) => Some(m),
+    Err(other) => panic!("expected a Generic load error, got {other:?}"),
+  }
+}
+
+fn use_name_error(import_src: &str) -> Option<String> {
+  use_name_error_with(&[(&["probe", "list"], USE_TARGET)], import_src)
+}
+
+/// A bare spelling is never a match for a dotted declaration: `length` is
+/// not a declaration of the module -- `List.length` is -- so the entry
+/// binds nothing and is an error AT THE `use` LINE, where the corpus used
+/// to accumulate hundreds of dead names that read as if they did
+/// something. The hint names the spelling that WOULD bind it.
+///
+/// The target declares the dotted def and NOTHING else, because
+/// `USE_TARGET` deliberately also declares a bare `length`: without that
+/// separation this test would pass on a check that compared tails.
+#[test]
+fn test_a_bare_spelling_does_not_import_a_dotted_def() {
+  let err = use_name_error_with(
+    &[(&["probe", "list"], "def List.length : I64 := 1\n")],
+    "use probe::list {length}\n",
+  )
+  .expect("`length` must be rejected: only `List.length` is declared");
+  assert!(err.contains("declares no `length`"), "{err}");
+  assert!(err.contains("`List.length` is declared there"), "{err}");
+  assert!(
+    err.contains("write `use probe::list {List.length}`"),
+    "{err}"
+  );
+}
+
+/// The other half, and the point of the whole change: the full spelling
+/// DOES bind the dotted def, so the name is reachable bare via the list
+/// instead of only through the always-on flat scope.
+#[test]
+fn test_a_dotted_spelling_imports_the_dotted_def() {
+  for src in [
+    "use probe::list {List.length}\n",
+    // A dotted prefix names the namespace's members -- how an inductive
+    // drags its constructors in.
+    "use probe::list {List}\n",
+  ] {
+    assert!(
+      use_name_error_with(
+        &[(
+          &["probe", "list"],
+          "def List.length : I64 := 1\ntype List { cons (u : Unit) }\n",
+        )],
+        src,
+      )
+      .is_none(),
+      "`{src}` names a real declaration and must be accepted"
+    );
+  }
+}
+
+/// A typo has no dotted sibling to point at, so the hint has to fall back
+/// to the module-load spelling -- and must not claim a dotted name exists.
+#[test]
+fn test_a_use_name_declared_nowhere_is_rejected() {
+  let err = use_name_error("use probe::list {lenght}\n").expect("`lenght` is declared nowhere");
+  assert!(err.contains("declares no `lenght`"), "{err}");
+  assert!(
+    err.contains("nothing in `probe::list` is declared as `lenght`"),
+    "{err}"
+  );
+  assert!(!err.contains("is declared there"), "{err}");
+}
+
+/// The half a rule that rejected everything would pass without. Every
+/// declaration KIND a brace list names in this corpus is covered -- def,
+/// inductive, a constructor, struct, class, instance, defmacro -- plus the
+/// bare `length` that sits next to `List.length`, which is what proves the
+/// check compares against the DECLARED name and not the textual tail.
+#[test]
+fn test_every_declaration_kind_can_be_imported_by_its_own_name() {
+  for src in [
+    "use probe::list {f}\n",
+    "use probe::list {T}\n",
+    "use probe::list {mk}\n",
+    "use probe::list {S}\n",
+    "use probe::list {C}\n",
+    "use probe::list {MyInst}\n",
+    "use probe::list {dm}\n",
+    "use probe::list {length}\n",
+  ] {
+    assert!(
+      use_name_error(src).is_none(),
+      "`{src}` names a real declaration and must be accepted"
+    );
+  }
+}
+
+/// The mirror of the acceptance test above, and the subtle half: a
+/// `struct`'s synthesized `mk` is NOT a declared name on either compiler
+/// -- `struct` is its own decl kind, and only an ordinary inductive names
+/// constructors. `declared_names_of`'s `Generic` guard is what this pins;
+/// without it, walking every inductive's constructors would accept this.
+#[test]
+fn test_a_structs_synthesized_constructor_is_not_importable() {
+  let err = use_name_error_with(
+    &[(&["probe", "list"], "struct S { x : I64 }\n")],
+    "use probe::list {mk}\n",
+  )
+  .expect("`mk` is synthesized, not declared");
+  assert!(err.contains("declares no `mk`"), "{err}");
+  assert!(!err.contains("is declared there"), "{err}");
+}
+
+/// `{*}` and `{}` are deliberately unchanged: this is a resolution rule,
+/// not import-list minimalism. A bare `use` (no braces) has no list to
+/// check and is the deprecation warning's business, not this check's.
+#[test]
+fn test_a_glob_and_an_empty_list_are_accepted() {
+  for src in [
+    "use probe::list {*}\n",
+    "use probe::list {}\n",
+    "use probe::list\n",
+  ] {
+    assert!(use_name_error(src).is_none(), "`{src}` must be accepted");
+  }
+}
+
+/// A rename is checked against the name it renames FROM. The alias is the
+/// importer's own choice of spelling and is never looked up in the target,
+/// so `{f as g}` is fine while `{g as f}` is not -- `g` is not a
+/// declaration of the target.
+#[test]
+fn test_a_rename_checks_the_name_not_the_alias() {
+  assert!(
+    use_name_error("use probe::list {f as g}\n").is_none(),
+    "`f` is declared; the alias is the importer's own"
+  );
+  let err = use_name_error("use probe::list {g as f}\n").expect("`g` is not declared");
+  assert!(err.contains("declares no `g`"), "{err}");
+}
+
+/// A sub-list is checked against the module at the EXTENDED path, not
+/// against the module that holds it. The two modules are registered with
+/// DIFFERENT names (`g` on `probe::outer`, `f` on `probe::outer::inner`)
+/// so a check that consulted the outer path would accept `inner {g}` and
+/// fail here.
+#[test]
+fn test_a_sub_list_is_checked_against_the_extended_path() {
+  let modules: &[(&[&str], &str)] = &[
+    (&["probe", "outer"], "def g : I64 := 1\n"),
+    (&["probe", "outer", "inner"], "def f : I64 := 1\n"),
+  ];
+  assert!(
+    use_name_error_with(modules, "use probe::outer {inner {f}}\n").is_none(),
+    "`f` is declared by probe::outer::inner"
+  );
+
+  let err = use_name_error_with(modules, "use probe::outer {inner {g}}\n")
+    .expect("`g` is declared by probe::outer, not by probe::outer::inner");
+  assert!(err.contains("declares no `g`"), "{err}");
+  assert!(err.contains("probe::outer::inner"), "{err}");
+}
+
+/// A path that resolves to no LOADED module is left alone. That is an
+/// ordinary module-not-found (or a `lib::` alias, rewritten later), which
+/// the loader reports where it happens -- reporting it here would say it
+/// twice, and with the wrong reason.
+#[test]
+fn test_a_use_of_an_unloaded_module_is_left_alone() {
+  let loaded = default_modules().unwrap();
+  let decls = parse_file("use probe::absent {whatever}\n".into())
+    .expect("parses")
+    .decls;
+  assert!(validate_use_names(&decls, &loaded, None).is_ok());
+}
+
 /// A mote path reads as `<mote>/src/<rest>.mo`, which is what makes
 /// `use lang.codegen.emit` find `lang/src/codegen/emit.mo`.
 #[test]
@@ -319,6 +671,66 @@ fn test_organize_imports_use_minimal_names() {
   );
   assert!(!new_source.contains("unused_fn"));
   // Rewritten source must still parse.
+  assert!(parse_file(new_source.as_str().into()).is_ok());
+}
+
+/// A dotted def has to be emitted under its own SPELLED name. A brace item
+/// is matched against the declaration's full spelling, so `{length}` for
+/// `List.length` would be an item that selects nothing — the codemod must
+/// write `{List.length}`, which is the declaration, not its last segment.
+#[test]
+fn test_organize_imports_emits_a_dotted_spelling() {
+  let loaded = default_modules().unwrap();
+
+  let path_a = ModulePath::top("test_organize_dotted_a");
+  let parsed_a = parse_file(
+    r#"
+    def List.length : I64 := 1
+    def plain : I64 := 2
+    "#
+    .into(),
+  )
+  .unwrap();
+  let decls_a = type_check_module_decls(&path_a, parsed_a.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .unwrap();
+  let mut loaded = loaded;
+  loaded.add_module(module(
+    path_a.clone(),
+    ParsedModule {
+      decls: decls_a,
+      module_doc: None,
+    },
+  ));
+
+  let path_b = ModulePath::top("test_organize_dotted_b");
+  let source_b = format!(
+    "use {}\n\ndef f : I64 := List.length\n",
+    path_a.as_str().unwrap()
+  );
+  let parsed_b = parse_file(source_b.as_str().into()).unwrap();
+  let decls_b = type_check_module_decls(&path_b, parsed_b.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .unwrap();
+  loaded.add_module(module(
+    path_b.clone(),
+    ParsedModule {
+      decls: decls_b,
+      module_doc: None,
+    },
+  ));
+
+  let module_b = loaded.get_module(&path_b).unwrap();
+  let edits = compute_organize_import_edits(module_b, &loaded);
+  assert_eq!(edits.len(), 1);
+  let new_source = apply_text_edits(&source_b, edits);
+  assert!(
+    new_source.contains("use test_organize_dotted_a {List.length}"),
+    "got: {new_source:?}"
+  );
+  assert!(!new_source.contains("plain"), "got: {new_source:?}");
+  // Rewritten source must still parse — the emitted item is a dotted name
+  // path, which the parser only accepts since the brace-item rule widened.
   assert!(parse_file(new_source.as_str().into()).is_ok());
 }
 
@@ -629,7 +1041,7 @@ fn test_global_scope_data_includes_implicit_modules() {
   let path = ModulePath::top("test_mod");
   let parsed = parse_file(
     r#"
-    use io
+    use init::io
     open IO
 
     def test_def : IO Unit := println "test"
@@ -665,7 +1077,7 @@ fn test_global_scope_data_applies_opens() {
   let path = ModulePath::top("test_mod");
   let parsed = parse_file(
     r#"
-    use io
+    use init::io
     open IO
 
     def test_def : IO Unit := println "test"
@@ -699,7 +1111,7 @@ fn test_get_module_scope_returns_correct_scope() {
   let path = ModulePath::top("test_mod");
   let parsed = parse_file(
     r#"
-    use io
+    use init::io
     open IO
 
     def test_def : String := "hello"
@@ -741,7 +1153,7 @@ fn test_instance_resolution_module_restricted() {
   let parsed = parse_file(
     r#"
     use init
-    use math
+    use init::math
 
     def test_eq : Bool := 1 == 1
     "#
@@ -812,10 +1224,13 @@ fn test_module_conflict_detection_bare_name_ambiguous() {
   ));
 
   let path_c = ModulePath::top("test_conflict_c");
+  // The braces matter: a bare `use M` selects every name QUALIFIED only,
+  // so it would leave the scope without a bare `shared_name` at all and
+  // this test would be asserting a not-found, not an ambiguity.
   let parsed_c = parse_file(&format!(
     r#"
-    use {}
-    use {}
+    use {} {{shared_name}}
+    use {} {{shared_name}}
     "#,
     path_a.as_str().unwrap(),
     path_b.as_str().unwrap(),
@@ -975,8 +1390,162 @@ fn test_selective_use_only_filter() {
   assert!(global.find_any_ref(&npt("bar"), &sort1()).is_err());
 }
 
+/// The completeness rule as `check` reports it: a bare name reached from a
+/// module the file did not select it from is a WARNING, and putting the
+/// name in a brace list clears it. Resolution itself is untouched — the
+/// scope is still flat, which is exactly why the check has to exist: the
+/// load succeeds either way.
 #[test]
-fn test_use_glob_equivalent_to_bare() {
+fn test_unimported_name_is_reported_and_importing_it_clears_it() {
+  let loaded = default_modules().unwrap();
+
+  let path_a = ModulePath::top("test_cmp_a");
+  let parsed_a = parse_file(
+    r#"
+    def widget : I64 := 1
+    "#
+    .into(),
+  )
+  .unwrap();
+  let decls_a = type_check_module_decls(&path_a, parsed_a.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .unwrap();
+  let mut loaded = loaded;
+  loaded.add_module(module(
+    path_a.clone(),
+    ParsedModule {
+      decls: decls_a,
+      module_doc: None,
+    },
+  ));
+
+  let path_b = ModulePath::top("test_cmp_b");
+  let a = path_a.as_str().unwrap().to_string();
+
+  // `use A {}` is the qualified-only form: it names the module, not the
+  // name, so reaching `widget` bare is the finding.
+  let source = format!("use {a} {{}}\ndef use_it : I64 := widget\n");
+  let parsed_b = parse_file(source.as_str().into()).unwrap();
+  let decls_b = type_check_module_decls(&path_b, parsed_b.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .expect("the flat scope still resolves `widget`, which is the point");
+  let mut loaded_b = loaded.clone();
+  loaded_b.add_module(module(
+    path_b.clone(),
+    ParsedModule {
+      decls: decls_b,
+      module_doc: None,
+    },
+  ));
+
+  let diagnostics = unimported_name_diagnostics(&path_b, &source, &loaded_b, None);
+  assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+  assert_eq!(diagnostics[0].severity, Severity::Warning);
+  assert!(
+    diagnostics[0].message.contains("`widget` is not imported"),
+    "{}",
+    diagnostics[0].message
+  );
+  assert!(
+    diagnostics[0].message.contains(&a),
+    "the message must name the module that declares it: {}",
+    diagnostics[0].message
+  );
+
+  // The same reference, now selected by name: nothing to report.
+  let selected = format!("use {a} {{widget}}\ndef use_it : I64 := widget\n");
+  let parsed_b = parse_file(selected.as_str().into()).unwrap();
+  let decls_b = type_check_module_decls(&path_b, parsed_b.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .unwrap();
+  let mut loaded_b = loaded;
+  loaded_b.add_module(module(
+    path_b.clone(),
+    ParsedModule {
+      decls: decls_b,
+      module_doc: None,
+    },
+  ));
+  assert!(
+    unimported_name_diagnostics(&path_b, &selected, &loaded_b, None).is_empty(),
+    "`{{widget}}` names it, so there is nothing to report"
+  );
+}
+
+/// A bare name the consumer binds from its OWN declaration is never a
+/// name it "reaches from another module", however many loaded modules
+/// happen to spell one the same way.
+///
+/// The case is `mk`: a `struct` is stored as an inductive whose single
+/// constructor is `mk` (`term::stru`), the corpus pattern-matches it bare
+/// (`match p { mk x y => ... }`), and half the corpus declares a struct.
+/// A module that declares a GENERIC inductive with a constructor named
+/// `mk` — `lang::parser::core`'s `OpEntry` is the one that did it — then
+/// looks like the owner of a name the file declares itself, and the fix
+/// the report suggests is an import of a module the file has no business
+/// naming. The companion assertion is the discriminating half: the
+/// genuinely-foreign `widget` must STILL be reported, so the test cannot
+/// pass by the check having gone silent.
+#[test]
+fn test_own_struct_constructor_is_not_an_unimported_name() {
+  let loaded = default_modules().unwrap();
+
+  let path_a = ModulePath::top("test_mk_a");
+  let parsed_a = parse_file(
+    r#"
+    def widget : I64 := 1
+    pub type Box2 { mk (x : I64) }
+    "#
+    .into(),
+  )
+  .unwrap();
+  let decls_a = type_check_module_decls(&path_a, parsed_a.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .unwrap();
+  let mut loaded = loaded;
+  loaded.add_module(module(
+    path_a.clone(),
+    ParsedModule {
+      decls: decls_a,
+      module_doc: None,
+    },
+  ));
+
+  let path_b = ModulePath::top("test_mk_b");
+  let a = path_a.as_str().unwrap().to_string();
+  let source = format!(
+    "struct S {{\n  x: I64,\n}}\n\n\
+     def get_x (s : S) : I64 := match s {{ mk x => x }}\n\
+     def use_widget : I64 := widget\n"
+  );
+  let parsed_b = parse_file(source.as_str().into()).unwrap();
+  let decls_b = type_check_module_decls(&path_b, parsed_b.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .expect("the flat scope resolves both `mk` and `widget`");
+  let mut loaded_b = loaded;
+  loaded_b.add_module(module(
+    path_b.clone(),
+    ParsedModule {
+      decls: decls_b,
+      module_doc: None,
+    },
+  ));
+
+  let diagnostics = unimported_name_diagnostics(&path_b, &source, &loaded_b, None);
+  assert_eq!(
+    diagnostics.len(),
+    1,
+    "`mk` is this file's own struct constructor, not `{a}`'s: {diagnostics:#?}"
+  );
+  assert!(
+    diagnostics[0].message.contains("`widget` is not imported"),
+    "{}",
+    diagnostics[0].message
+  );
+}
+
+#[test]
+fn test_use_glob_binds_bare_names() {
   let loaded = default_modules().unwrap();
 
   let path_a = ModulePath::top("test_glob_a");
@@ -1016,9 +1585,70 @@ fn test_use_glob_equivalent_to_bare() {
   let loaded_scopes = loaded.scopes();
   let global = loaded_scopes.global(&path_b).expect("scope should exist");
 
-  // `{*}` makes every name bare-accessible, same as old bare `use`.
+  // `{*}` makes every name bare-accessible. NOT the same as a brace-less
+  // `use M` / `use M {}`: those select every name QUALIFIED only, and the
+  // test below pins that difference.
   assert!(global.find_any_ref(&npt("foo"), &sort1()).is_ok());
   assert!(global.find_any_ref(&npt("bar"), &sort1()).is_ok());
+}
+
+/// The other half of the rule above, and the reason `{}` is not "nothing":
+/// a brace-less `use M` and an empty `use M {}` are synonyms, and both
+/// select the module's names for QUALIFIED access only. Nothing is bound
+/// bare — `M::foo` resolves, a bare `foo` does not.
+#[test]
+fn test_use_empty_braces_bind_nothing_bare() {
+  let loaded = default_modules().unwrap();
+
+  let path_a = ModulePath::top("test_empty_a");
+  let parsed_a = parse_file(
+    r#"
+    def foo : I64 := 1
+    "#
+    .into(),
+  )
+  .unwrap();
+  let decls_a = type_check_module_decls(&path_a, parsed_a.decls, &loaded)
+    .inspect_err(|e| eprintln!("{e}"))
+    .unwrap();
+  let mut loaded = loaded;
+  loaded.add_module(module(
+    path_a.clone(),
+    ParsedModule {
+      decls: decls_a,
+      module_doc: None,
+    },
+  ));
+
+  for (path_b, spelling) in [
+    (
+      ModulePath::top("test_empty_brace_b"),
+      format!("use {} {{}}", path_a.as_str().unwrap()),
+    ),
+    (
+      ModulePath::top("test_empty_bare_b"),
+      format!("use {}", path_a.as_str().unwrap()),
+    ),
+  ] {
+    let parsed_b = parse_file(spelling.as_str().into()).unwrap();
+    let decls_b = type_check_module_decls(&path_b, parsed_b.decls, &loaded)
+      .inspect_err(|e| eprintln!("{e}"))
+      .unwrap();
+    loaded.add_module(module(
+      path_b.clone(),
+      ParsedModule {
+        decls: decls_b,
+        module_doc: None,
+      },
+    ));
+
+    let loaded_scopes = loaded.scopes();
+    let global = loaded_scopes.global(&path_b).expect("scope should exist");
+    assert!(
+      global.find_any_ref(&npt("foo"), &sort1()).is_err(),
+      "`{spelling}` must not bind a bare `foo`"
+    );
+  }
 }
 
 #[test]

@@ -31,11 +31,15 @@
 /// not a silent one. A real fix means a socket read deadline, which the IO
 /// layer does not expose yet.
 
-use io {IO}
-use std::io {Socket, Listener}
 use std::concurrent::fiber {Fiber, await_fiber, forkIO}
-use http::types {Body, Headers, Request, Response}
-use http::wire {}
+use http::types {
+  Body, Headers, Request, Response, Status.bad_request,
+  Status.internal_server_error, Status.not_found, Status.ok, http1_0, http1_1,
+}
+use http::wire {
+  Wire.drop_bytes, Wire.format_response, Wire.frame_request, Wire.parse_request,
+  Wire.take_bytes,
+}
 
 // ── error responses ─────────────────────────────────────────────────────
 

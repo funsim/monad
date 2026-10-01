@@ -45,7 +45,7 @@
 
 use lang::scope {build_scope_from_decls}
 use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
-use lang::types {ModulePath, Scope, ScopeData, Term, level_const}
+use lang::types {ModulePath, Scope, ScopeData, Term, id, level_const}
 
 // A scope with the builtins only (`add_builtins` registers `Type`,
 // `Prop`, `Sort`, `Pred`), which is all a leaf-rule pin needs: none of

@@ -7,15 +7,14 @@
 /// tests still use the sequential interleaved TCP pattern of the server tests,
 /// one connection at a time, so every fork/await pair stays deterministic.
 
-
-use io {IO}
-use std::io {Socket}
-use std::concurrent::fiber {await_fiber}
-use lib::server {}
-use http::types {Request, Response}
-use http::wire {}
-use http::body {}
-use http::uri {Uri}
+use std::concurrent::fiber {Fiber, await_fiber}
+use moon::server {
+  Server.drain_fibers, Server.handle_connection_fiber, Server.read_message,
+}
+use http::types {GET, Request, Response, Status.ok, Uri, uri}
+use http::wire {Wire.format_request, Wire.frame_response, Wire.parse_response}
+use http::body {Body.to_bytes_pure}
+use http::uri {Uri.parse}
 
 // ── test infrastructure ─────────────────────────────────────────────────
 

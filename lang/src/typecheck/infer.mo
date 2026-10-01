@@ -1,35 +1,34 @@
-use lib::types {
-  Class, Con, DebugName, Identifier, Inductive, InductConstructor,
-  Literal, LocalScope, LocalVar, MatchCase, ModulePath, NamePath, NameRef, NumSuffix,
-  Native, Param, Scope, ScopeClassDef, ScopeDef, ScopeError, Similar,
-  StructLitField, Term, TypeConstraint, TypeError,
-  app, con, custom, field_access_chain, forall, hole, id, id_eq, id_member, if_, lam, list_rev_loop,
-  list_reverse, lit, many, match_, mc, mk, mp, name, named, nid, not_a_type,
-  ntv, num, pi, sentinel, show_identifier, show_name_path, str, term_peel,
-  unknown_constructor, unknown_type, unknown_var, unnamed, var,
+use std::map {HashMap.to_list}
+use lang::types {
+  Class, Con, DebugName, Def, FieldPattern, FieldPatternEntry, Identifier,
+  InductConstructor, Inductive, Literal, LocalScope, LocalVar, Location,
+  MatchCase, ModulePath, NamePath, NameRef, Native, NumSuffix, Param, Scope,
+  ScopeClassDef, ScopeData, ScopeDef, ScopeError, Similar, SortLevel,
+  StructLitField, Term, TypeConstraint, TypeError, concrete, field_access_chain,
+  id_eq, id_member, level_lt, level_of_type, list_rev_loop, list_reverse, many,
+  max, package_private, sentinel, show_identifier, show_name_path, sort_level_of,
+  succ, term_peel,
 }
-use lib::scope {
-  ClassMethodRef, DictBinding, build_dict_field_projection_checked, build_scope_def,
-  carrier_bindings, class_method_declared_type, class_method_ref, class_method_var_names,
-  class_param_names, dict_binding_class_of, dict_param_name, type_mentions_any,
-  find_constructor_in_inductive,
-  find_matching_instance, flatten_call_spine, inductive_has_constructor,
-  instance_wildcard_names, list_append,
-  instance_module_prefix, mangle_instance_dict_name, mangle_instance_method_name, mangled_to_identifier,
-  rebuild_call,
+use lang::scope {
+  ClassMethodRef, DictBinding, build_dict_field_projection_checked,
+  build_scope_def, carrier_bindings, class_method_declared_type, class_method_ref,
+  class_method_var_names, class_param_names, dict_binding_class_of,
+  dict_param_name, find_constructor_in_inductive, find_matching_instance,
+  flatten_call_spine, inductive_has_constructor, instance_module_prefix,
+  instance_wildcard_names, list_append, mangle_instance_dict_name,
+  mangle_instance_method_name, mangled_to_identifier, param_names, rebuild_call,
   resolve_dict_args, scope_data_add_inductive, scope_data_classes,
   scope_data_empty, scope_find_all_inductives_by_constructor, scope_find_class,
   scope_find_class_def_by_name, scope_find_def_params, scope_find_def_return_type,
-  scope_find_def_sig,
-  scope_find_inductive, scope_find_inductive_by_constructor,
+  scope_find_def_sig, scope_find_inductive, scope_find_inductive_by_constructor,
   scope_find_local, scope_globals, scope_instance_candidates, scope_push_local,
-  scope_resolve_name,
+  scope_resolve_name, type_mentions_any,
 }
 use lib::typecheck::name_subst {name_subst_term}
 use lib::typecheck::levels {is_level_binder_kind}
 use lib::typecheck::subst {term_permute, term_subst}
 use lib::typecheck::unify {unify, unify_structural}
-use std::list {length}
+use std::list {List.length}
 
 /// A type-checked term paired with its type.
 pub struct TypedTerm {

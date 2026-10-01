@@ -23,10 +23,8 @@
 /// following `test_closure_capture_e2e.mo`'s `compile_source_run_expect`
 /// convention (reused verbatim below) -- real parsing/typechecking/
 /// desugaring needs to run to reach the actual bug shape.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// The exact minimal repro from the plan doc: a recursive `if` whose
 /// `then` branch computes a String (`String.concat`) and whose `else`
@@ -42,13 +40,12 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 /// out of scope here, not introduced by this fix).
 #[test]
 def test_string_literal_if_phi_merge : IO Bool :=
-    let source := r#"use io {IO}
-def spaces (n : I64) : String :=
+    let source := r#"def spaces (n : I64) : String :=
     if I64.gt n 0
     then String.concat " " (spaces (n - 1))
     else ""
 def main (args : List String) : IO I64 :=
-    IO.io (String.length (spaces 3))
+    IO.pure (String.length (spaces 3))
 "# in
     compile_source_run_expect source "test_string_literal_if_phi_merge" 3
 
@@ -61,10 +58,9 @@ def main (args : List String) : IO I64 :=
 /// above.
 #[test]
 def test_string_literal_both_branches_phi_merge : IO Bool :=
-    let source := r#"use io {IO}
-def pick (b : Bool) : String := if b then "yes" else "no"
+    let source := r#"def pick (b : Bool) : String := if b then "yes" else "no"
 def main (args : List String) : IO I64 :=
-    IO.io (String.length (pick true))
+    IO.pure (String.length (pick true))
 "# in
     compile_source_run_expect source "test_string_literal_both_branches_phi_merge" 3
 
@@ -78,8 +74,7 @@ def main (args : List String) : IO I64 :=
 /// of 3) while building out this file's other tests.
 #[test]
 def test_string_length_native_wiring : IO Bool :=
-    let source := r#"use io {IO}
-def main (args : List String) : IO I64 :=
-    IO.io (String.length "abc")
+    let source := r#"def main (args : List String) : IO I64 :=
+    IO.pure (String.length "abc")
 "# in
     compile_source_run_expect source "test_string_length_native_wiring" 3

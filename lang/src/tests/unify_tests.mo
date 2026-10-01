@@ -1,6 +1,6 @@
-use lib::types {
-  LocalScope, ModulePath, Scope, Term, app, forall, hole, id, lit, named, pi,
-  result_is_ok, sentinel, str, unnamed, var,
+use lang::types {
+  LocalScope, ModulePath, Scope, Term, id, named, result_is_ok, sentinel, sort_n,
+  str, unnamed, var,
 }
 use lib::typecheck::unify {unify}
 use lib::scope {build_scope_from_decls}
@@ -145,7 +145,7 @@ def test_unify_app_different : Bool :=
 // mismatches purely on spelling.
 
 use lib::module {parse_all_decls}
-use lib::parser::core {fail, success}
+use lang::parser::core {fail, success}
 
 def conv_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "conv") List.empty)
 

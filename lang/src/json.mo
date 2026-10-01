@@ -1,15 +1,15 @@
 /// JSON parsing and serialization
 
-// TODO: see the matching TODO in lang/toml.mo — `BTreeMap`/`beq`/`empty`/
-// `map`/`to_list` are all used throughout this file but are deliberately
-// NOT listed here; the same pre-existing latent instance/dictionary-
-// resolution bug.
-use std::map {}
-use std::list {Show, intercalate, length}
-use init::string {beq, concat, drop, gt, is_empty, length, slice, to_list}
-use init::number {beq, gt, to_string}
-use lib::parser::core {
-  ParseError, ParseResult, custom, fail, is_empty, mk, parse_error_remaining, success, tag,
+// `BTreeMap`/`beq`/`empty`/`map`/`to_list` are all used throughout this
+// file and are listed here like any other import — see std/map_tests.mo's
+// note for the instance/dictionary-resolution claim that used to keep
+// `std::map`'s import empty.
+use std::map {BTreeMap, BTreeMap.to_list, empty}
+use std::list {List.intercalate, Show}
+use init::string {}
+use init::number {}
+use lang::parser::core {
+  ParseError, ParseResult, is_empty, mk, parse_error_remaining,
 }
 use lib::parser::char_preds {is_space}
 use lib::parser::combinators {

@@ -20,9 +20,9 @@
 /// BOUNDARY, so it is free by construction. There is no second index
 /// space, and `term_shift`/`term_subst`/`term_permute` need no change --
 /// they reach a sort through their existing catch-alls.
-use lib::types {
+use lang::types {
   DebugName, Identifier, Similar, SortLevel, Term, free_level_vars_of,
-  level_const, level_subst, sort_level_of, union_ids,
+  level_const, level_subst, sort_level_of, sort_n, union_ids,
 }
 use lib::typecheck::traverse {term_map_children}
 

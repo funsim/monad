@@ -22,11 +22,11 @@
 /// `check` stays completely silent about this, and so does `llc` --
 /// only RUNNING a compiled binary finds it, which is why this test
 /// compiles, links and executes rather than inspecting IR text.
-use io {IO}
+use lang::codegen::emit {compile_loaded_modules_to_ir}
+use lang::module {load_file_modules}
 open IO {println}
 use std::process {process_id}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// The safe form, and the one every site in `lang/` now uses: bind the
 /// literal to a local with an explicit type annotation first, then pass
@@ -38,8 +38,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 /// it was read at the wrong offset.
 #[test]
 def test_struct_literal_via_annotated_local_round_trips : IO Bool :=
-    let source := r#"use io {IO}
-struct Info { tag_ : I64, name : String, count : I64 }
+    let source := r#"struct Info { tag_ : I64, name : String, count : I64 }
 def build : IO (Option Info) :=
     let info : Info := { tag_ := 1, name := "examples/hello.mo", count := 3 } in
     return (Option.some info)
@@ -64,8 +63,7 @@ def main (args : List String) : IO I64 := do {
 /// what actually dereferenced the bad pointer and crashed.
 #[test]
 def test_struct_from_return_match_field_reaches_native : IO Bool :=
-    let source := r#"use io {IO}
-struct Rec { first : String, second : String }
+    let source := r#"struct Rec { first : String, second : String }
 def pick (which : Option I64) : IO (Option Rec) := do {
     let chosen : String := match which { Option.some _ => "chosen/path.mo", Option.none => "fallback.mo" };
     return match which {
@@ -110,8 +108,7 @@ def main (args : List String) : IO I64 := do {
 /// Exit code 7 means both levels round-tripped.
 #[test]
 def test_nested_struct_literals_via_annotated_locals_round_trip : IO Bool :=
-    let source := r#"use io {IO}
-struct Inner { path : String, diagnostics : List String }
+    let source := r#"struct Inner { path : String, diagnostics : List String }
 struct Outer { result : Inner, cache : I64 }
 def make (fp : String) (ds : List String) : IO Outer := do {
     let inner : Inner := { path := fp, diagnostics := ds };
@@ -145,8 +142,7 @@ def main (args : List String) : IO I64 := do {
 def test_bare_nested_struct_literal_fails_fast : IO Bool := do {
     let output_dir := "/tmp/monad_e2e_" ++ I64.to_string process_id;
     let src_path := output_dir ++ "/undesugared_struct_lit.mo";
-    let source := r#"use io {IO}
-struct Inner { path : String, diagnostics : List String }
+    let source := r#"struct Inner { path : String, diagnostics : List String }
 struct Outer { result : Inner, cache : I64 }
 def make (fp : String) (ds : List String) : IO Outer := do {
     return { result := { path := fp, diagnostics := ds }, cache := 7 }

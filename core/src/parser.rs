@@ -38,7 +38,7 @@ use nom::{
   },
   combinator::{eof, map, not, opt, peek, recognize, success, verify},
   error::context,
-  multi::{fold_many0, many0, many1},
+  multi::{fold_many0, many0, many1, separated_list1},
   sequence::{delimited, pair, preceded, separated_pair, terminated},
 };
 use string::{parse_raw_string_literal, parse_string_literal};
@@ -2440,11 +2440,51 @@ fn struct_or_update_parser<X: Clone>(input: Span<X>) -> Res<Term, X> {
   .parse(input)
 }
 
+/// The name position of a `use Module { ... }` item: an ordinary
+/// identifier, or a `.`-separated dotted *spelling* (`List.length`)
+/// naming a dotted declaration.
+///
+/// The segments are joined back into a SINGLE `Identifier` whose text
+/// still contains the dots, deliberately. A brace item's job is to match
+/// a declaration's own spelled name, and both implementations key their
+/// name tables by that rendering (the self-hosted `def_refs` is a
+/// `HashMap String ScopeDef`; the host compares against `NamePath`'s
+/// `Display`). Keeping the item as one opaque spelling means no AST
+/// change and no split/join mismatch — a consumer that needs a real
+/// `NamePath` splits it back on `.` (`spelling_segments`,
+/// `core/src/term/module.rs`).
+///
+/// Adjacency is strict: no whitespace is allowed around the `.`, so
+/// `{a, b}` and the sub-module forms are untouched and the parser never
+/// backtracks over whitespace it has already consumed.
+fn use_item_name<X: Clone>(input: Span<X>) -> Res<Identifier, X> {
+  map(
+    separated_list1(tag("."), identifier),
+    |segments: Vec<Identifier>| {
+      id(
+        &segments
+          .iter()
+          .map(|s| s.as_str())
+          .collect::<Vec<&str>>()
+          .join("."),
+      )
+    },
+  )
+  .parse(input)
+}
+
 /// A single item inside a `use Module { ... }` brace filter, e.g. `name`,
-/// `name as alias`, `*`, or a nested `name { items }` sub-module import.
+/// `List.length`, `name as alias`, `*`, or a nested `name { items }`
+/// sub-module import.
 /// Tried in this order: `*` first (unambiguous), then sub-module-with-rename
 /// before sub-module before rename before plain name, since each is a
 /// strict prefix of the previous.
+///
+/// The sub-module forms keep a PLAIN `identifier` for their name: a
+/// sub-module is a file, so it is always one segment and can never be
+/// dotted. That ordering is what makes `use M {Sub.x}` land on `Name`
+/// (the dotted spelling of a declaration) while `use M {Sub {x}}` lands
+/// on `SubModule`.
 fn use_brace_item(input: Span) -> Res<UseItem> {
   alt((
     map(char('*'), |_| UseItem::Glob),
@@ -2461,10 +2501,10 @@ fn use_brace_item(input: Span) -> Res<UseItem> {
       |(name, items)| UseItem::SubModule { name, items },
     ),
     map(
-      (identifier, preceded((ws1, tag("as"), ws1), identifier)),
+      (use_item_name, preceded((ws1, tag("as"), ws1), identifier)),
       |(name, alias)| UseItem::Rename(name, alias),
     ),
-    map(identifier, UseItem::Name),
+    map(use_item_name, UseItem::Name),
   ))
   .parse(input)
 }

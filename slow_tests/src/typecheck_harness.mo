@@ -9,7 +9,6 @@
 ///
 /// `empty_local_scope` had six copies across `slow_tests/` and
 /// `lang/tests/`, in two spellings of the same value.
-use io {IO}
 open IO {println}
 use lang::types {LocalScope}
 use lang::module {ElaboratedModules, elaborate_loaded_modules, typecheck_module_with_scope}

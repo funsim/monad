@@ -12,7 +12,7 @@
 /// like" diagnostic, which is what a parse failure actually needs.
 
 use lib::types {Location}
-use lib::parser::core {ParseError, parse_error_remaining}
+use lang::parser::core {ParseError, mk, parse_error_remaining}
 use lib::parser::position {location_of_remaining}
 
 /// A human-readable description of what went wrong — `tag` failures

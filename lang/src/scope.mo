@@ -1,12 +1,15 @@
-use lib::types {
-  Class, ClassDef, Con, Decl, Def, DebugName, FieldPattern, FieldPatternEntry,
-  Identifier, InductConstructor, Inductive,
-  Infix, Instance, InstanceKey, Literal, LocalScope, LocalVar, MatchCase, Module, ModuleRegistry,
-  ModulePath, NamePath, NameRef, Native, Operator, Param, QualifiedName, Scope, ScopeClassDef,
-  ScopeData, ScopeDef, ScopeError, ScopeInstance, Similar, SortLevel, Struct, StructField, StructLitField,
-  Term, class_d, class_not_found, def_d, hole, id, inductive_d, inductive_not_found, infix_d,
-  instance_d, instance_not_found, mk, mp, name, name_not_found, name_path_similar, nid, nnp, nop,
-  npath, nqn, open_d, scoped_open_d, show_name_path, struct_d, use_d,
+use lang::types {
+  Attribute, Class, ClassDef, Con, DebugName, Decl, DeclGroup, Def, FieldPattern,
+  FieldPatternEntry, Identifier, InductConstructor, Inductive, Infix, Instance,
+  InstanceKey, Literal, LocalScope, LocalVar, MatchCase, Module, ModulePath,
+  ModuleRegistry, NamePath, NameRef, Native, NumSuffix, OpenFilter, Operator,
+  Param, QualifiedName, Scope, ScopeClassDef, ScopeData, ScopeDef, ScopeError,
+  ScopeInstance, Similar, SortLevel, Struct, StructField, StructLitField, Term,
+  TypeConstraint, UseFilter, UseItem, Visibility, f32, f64, i16, i32, i64, i8,
+  id_member, many, mk, name_path_similar, open_all, open_only, package_private,
+  param_many, priv_, pub_, show_identifier, show_module_path, show_name_path,
+  show_operator, term_peel, u16, u32, u64, u8, union_ids, use_bare, use_glob,
+  use_items, use_name, use_rename, use_sub, use_sub_rename,
 }
 use lib::typecheck::traverse {con_map_children, native_map_children, term_map_children}
 // `collect_forall_names` has to tell a LEVEL binder from a type-variable
@@ -18,14 +21,17 @@ use lib::typecheck::levels {is_level_binder_kind}
 // uses -- see `registered_def_type`'s own doc comment for why.
 use lib::elaborate {elaborate_def, names_of_decls}
 // `ScopeData.def_refs` is a `std.map` `HashMap ModulePath ScopeDef` — see
-// `bench/scope_lookup.mo`. Empty import: naming any of `std.map`'s
-// `Map`-class-instance exports explicitly hits a pre-existing latent
-// instance/dictionary-resolution bug (same workaround `bench/scope_lookup.mo`
-// and `std/map_tests.mo` already use) — everything remains available
-// regardless via the same always-on mechanism that lets any top-level
-// type/def resolve without being explicitly `use`d.
-use std::map {}
-use std::list {filter, filter_map}
+// `bench/scope_lookup.mo` — so this module names what it reaches from
+// `std::map` like any other import. It used to be an empty import, to
+// stay clear of a suspected instance/dictionary-resolution bug in
+// naming `std.map`'s `Map`-class-instance exports; see
+// std/map_tests.mo's note for why that suspicion is gone.
+use std::map {
+  HashMap, HashMap.bucket_insert_str, HashMap.bucket_lookup_str,
+  HashMap.bucket_of, HashMap.empty_buckets, HashMap.get_bucket,
+  HashMap.set_bucket, HashMap.to_list, map,
+}
+use std::list {List.filter, List.filter_map, List.length}
 use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
 
 // --- NamePath-keyed HashMap ops, bypassing `Map`'s typeclass dispatch ---
@@ -1884,7 +1890,8 @@ def filter_valid_open_aliases (known_names : List String) (aliases : List OpenAl
 /// type-level annotations, never "compiled as a call" the way
 /// `compile_call_head`'s buggy fallback is, so they don't need this
 /// fix. Rewriting them anyway is actively WRONG: `IO` itself is
-/// routinely brought in bare (`use io {IO, println}`), and `emit_type_
+/// routinely used unqualified (it is ambient, re-exported by
+/// `init/src/lib.mo`, and written bare in an annotation), and `emit_type_
 /// head_is_io` (`lang.scope`, used by `compile_db_def_ir_body`'s own
 /// "does `main`'s `IO`-typed return value need unwrapping for the C
 /// runtime's `int main()`" check) matches the type head by EXACT STRING

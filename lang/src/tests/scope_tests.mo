@@ -1,20 +1,18 @@
-use lib::types {
-  Decl, Def, Identifier, InductConstructor, Inductive, Infix, Instance,
-  InstanceKey, LocalScope, LocalTypeBinding, LocalVar, Module, ModulePath, ModuleRegistry,
-  NamePath,
-  NameRef,
-  Param, Scope, ScopeData, ScopeDef, ScopeError, ScopeInstance, Similar, Term,
-  TypeConstraint, def_d, hole, id, inductive_d, many, mk, mp, name, nnp, npath,
-  param_many,
+use lang::types {
+  Attribute, Decl, Def, Identifier, InductConstructor, Inductive, Infix, Instance,
+  InstanceKey, LocalScope, LocalVar, Module, ModulePath, ModuleRegistry, NamePath,
+  NameRef, Param, QualifiedName, Scope, ScopeData, ScopeDef, ScopeError,
+  ScopeInstance, Similar, Term, TypeConstraint, Visibility, many, named,
+  package_private, param_many, priv_, pub_, sort_n, unnamed,
 }
-use lib::scope {
-  add_constraint_dict_params, build_scope_from_decls, build_scope_from_modules,
-  find_constraint_bound_carrier_any, infer_carrier_type, list_append,
-  placeholder_carrier, resolve_def_in_scope_by_name, term_to_slug,
-  scope_data_add_def,
-  npath_eq, scope_data_add_inductive, scope_data_add_instance, scope_data_empty,
-  scope_find_inductive, scope_find_inductive_by_constructor, scope_find_local,
-  scope_globals, scope_push_local, scope_resolve_instance, scope_resolve_name,
+use lang::scope {
+  LocalTypeBinding, add_constraint_dict_params, build_scope_from_decls,
+  build_scope_from_modules, find_constraint_bound_carrier_any, infer_carrier_type,
+  list_append, mk, npath_eq, placeholder_carrier, resolve_def_in_scope_by_name,
+  scope_data_add_def, scope_data_add_inductive, scope_data_add_instance,
+  scope_data_empty, scope_find_inductive, scope_find_inductive_by_constructor,
+  scope_find_local, scope_globals, scope_push_local, scope_resolve_instance,
+  scope_resolve_name, term_to_slug,
 }
 use llvm::strmap {str_map_empty, str_map_insert}
 

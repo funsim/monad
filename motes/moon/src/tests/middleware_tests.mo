@@ -4,9 +4,15 @@
 /// added, Content-Type is inferred, and auth checks reject unauthorized
 /// requests.
 
-use io {IO}
-use http::types {Request, Response}
-use lib::middleware {}
+use http::body {Body.to_bytes_pure}
+use http::types {
+  GET, Headers.empty, Headers.get, Headers.set, Request, Response,
+  Status.forbidden, Status.ok, Status.unauthorized, empty, http1_1, uri,
+}
+use moon::middleware {
+  Middleware.auth_basic, Middleware.auth_bearer, Middleware.content_type,
+  Middleware.cors, Middleware.recover,
+}
 use http::strings {}
 
 // ── test infrastructure ─────────────────────────────────────────────────

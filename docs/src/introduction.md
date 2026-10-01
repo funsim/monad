@@ -20,7 +20,6 @@ programming language that compiles through LLVM.
 Here is a simple example:
 
 ```monad
-use io {IO}
 open IO {println}
 
 def main (args : List String) : IO Unit := println "Hello, World!"
@@ -60,7 +59,6 @@ See [Linear Types](./linear-types.md).
 ## Quick Example
 
 ```monad
-use io {IO}
 open IO {println}
 
 #[terminating]

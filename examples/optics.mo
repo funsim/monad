@@ -5,7 +5,7 @@
 #![mote { name := "optics", deps := [init] }]
 
 
-use init::optics {Lens, Prism, lens, mkPrism, over, over_prism, preview, set, view}
+use init::optics {Lens, Prism, lens, over, over_prism, preview, set, view}
 open Prism {mkPrism}
 
 // --- Domain types ---

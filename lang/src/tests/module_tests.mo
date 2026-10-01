@@ -1,7 +1,7 @@
-use lib::types {
-  Decl, Def, Identifier, InductConstructor, Inductive, LocalScope, LocalVar,
-  ModulePath, NamePath, NameRef, Param, Scope, ScopeData, ScopeDef, ScopeError,
-  TypeConstraint, def_d, hole, id, inductive_d, mk, mp, nid,
+use lang::types {
+  Attribute, Decl, Def, Identifier, InductConstructor, Inductive, LocalScope,
+  LocalVar, ModulePath, NamePath, NameRef, Param, Scope, ScopeData, ScopeDef,
+  ScopeError, TypeConstraint, hole, package_private, sort_n,
 }
 use lib::scope {
   build_scope_from_decls, resolve_def_in_scope_by_name, scope_find_inductive,

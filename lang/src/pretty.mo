@@ -1,20 +1,12 @@
-use lib::types {
-  AttrArg, Attribute,
-  Class, ClassDef, Con, DebugName, Decl, Def, Identifier, InductConstructor,
-  char_to_string,
-  Inductive, Instance, Literal, MatchCase, ModulePath, Multiplicity, Native,
-  NamePath, NumSuffix, OpenFilter, Operator, Param, SortLevel, Struct,
-  StructField, Term,
-  UseFilter, UseItem, affine, app, class_d, con, def_d, f32, f64,
-  forall, hole, i16, i32, i64, i8, id, if_, inductive_d, infix_d, instance_d, lam,
-  level_const,
-  linear, lit, many, match_, mc, mk, mp, name, named, ntv, num, open_all, open_d,
-  open_only, operator, pi, scoped_open_d, show_identifier, show_module_path,
-  show_name_path, show_operator, str, struct_d, u16, u32, u64, u8, unnamed, use_bare,
-  use_d, use_glob, use_items, use_name, use_rename, use_sub, use_sub_rename, var,
-  zero,
+use lang::types {
+  AttrArg, Attribute, Class, ClassDef, Con, DebugName, Decl, Def, FieldPattern,
+  Identifier, InductConstructor, Inductive, Instance, Literal, MatchCase,
+  ModulePath, Multiplicity, NamePath, Native, NumSuffix, OpenFilter, Operator,
+  Param, SortLevel, Struct, StructField, StructLitField, Term, UseFilter, UseItem,
+  Visibility, char_to_string, level_const, package_private, priv_, pub_,
+  show_identifier, show_module_path, show_name_path, show_operator,
 }
-use std::list {intercalate}
+use std::list {List.intercalate}
 
 open Term {app, con, forall, hole, lam, lit, ntv, pi, var}
 open Literal {char, flt, if_, match_, num, str}
@@ -828,8 +820,8 @@ def test_show_decl_use : Bool :=
 
 #[test]
 def test_show_decl_use_pub : Bool :=
-    let d := Decl.use_d (ModulePath.mp (List.cons (Identifier.id "prelude") List.empty)) UseFilter.use_bare true in
-    show_decl d == "pub use prelude"
+    let d := Decl.use_d (ModulePath.mp (List.cons (Identifier.id "init") List.empty)) UseFilter.use_bare true in
+    show_decl d == "pub use init"
 
 #[test]
 def test_show_decl_open : Bool :=
@@ -839,8 +831,8 @@ def test_show_decl_open : Bool :=
 #[test]
 def test_show_decl_use_glob : Bool :=
     let items := List.cons UseItem.use_glob List.empty in
-    let d := Decl.use_d (ModulePath.mp (List.cons (Identifier.id "io") List.empty)) (UseFilter.use_items items) false in
-    show_decl d == "use io {*}"
+    let d := Decl.use_d (ModulePath.mp (List.cons (Identifier.id "init") (List.cons (Identifier.id "io") List.empty))) (UseFilter.use_items items) false in
+    show_decl d == "use init::io {*}"
 
 #[test]
 def test_show_decl_open_filtered : Bool :=

@@ -7,9 +7,9 @@
 // This file is where they get re-exported from, so a consumer -- today
 // only `cli/src/main.mo` -- sees one mote rather than six modules.
 
-pub use lib::hash {DigestTool, file_digest_with, probe_digest_tool, tree_digest, tree_digest_with}
-pub use lib::identity {compiler_digest, compiler_digest_with, compiler_exe_path}
-pub use lib::closure {artifact_key, closure_digest_with, input_hash, input_hash_with}
-pub use lib::store {Entry, artifact_ir_path, ensure_dir, ensure_entry_dir, entry_root_dir, resolve_target_dir, store_path, target_dir_at, target_dir_for, target_dir_of}
-pub use lib::check {CheckPlan, check_block, check_entry_dir, check_entry_leaf, check_entry_read, check_maybe_write, check_plan, check_plan_active, check_plan_all, check_plan_key, check_plan_reason, check_plan_root, check_worth_caching, mote_root_of}
-pub use lib::manage {clean_run, gc_run, store_ls, store_verify}
+pub use lib::hash {DigestTool}
+pub use lib::identity {}
+pub use lib::closure {}
+pub use lib::store {Entry}
+pub use lib::check {CheckPlan}
+pub use lib::manage {}

@@ -11,9 +11,12 @@
 ///
 /// Unmatched routes fall through to a 404 response.
 
-use io {IO}
-use http::types {Method, Request, Response, Uri}
-use http::strings {}
+use http::types {
+  Headers.empty, Method, Request, Response, Status.not_found, Uri, http1_1, text,
+}
+use http::strings {
+  Strings.list_drop_prefix, Strings.list_starts_with, Strings.split_on,
+}
 
 // ── Route type ──────────────────────────────────────────────────────────
 

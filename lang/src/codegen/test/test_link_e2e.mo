@@ -1,11 +1,10 @@
-use io {IO}
 open IO {println, write_file}
 use std::process {exec_cmd, process_id}
-use lib::types {Def, i64, id, lit, mk, num}
-use llvm::ir {emit_module, mk}
+use lang::types {Def, i64, id, lit, npath, num, package_private, sort_n}
+use llvm::ir {emit_module}
 use llvm::link {compile_ir_to_obj, compile_runtime_obj, link_objects}
 use runtime {}
-use lib::codegen::emit {compile_db_decls_ir, mk}
+use lib::codegen::emit {compile_db_decls_ir}
 use lib::module {resolve_runtime_src}
 
 open Term {lit}

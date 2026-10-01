@@ -7,11 +7,14 @@ type IO A {
  io A
 }
 
-/// IO construction wrapper — the public API for creating IO values.
-/// Call sites use `IO.pure` instead of `IO.io` directly, so the
-/// constructor can eventually be hidden without touching every use
-/// site. Currently just wraps `IO.io`; will become a native once the
-/// self-hosted codegen supports it.
+/// The public API for creating an `IO` value.
+///
+/// `io` -- the constructor -- is deliberately not ambient and must not be
+/// named anywhere but this file: build with `IO.pure`, and reach a value's
+/// contents with `Monad.bind` (`let x <- e;` in a `do` block), which is
+/// what the instance below does. Nothing outside this file needs either
+/// spelling, so the constructor stays free to become a native once the
+/// self-hosted codegen supports one.
 def IO.pure (a : A) : IO A :=
     IO.io a
 

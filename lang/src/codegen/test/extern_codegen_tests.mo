@@ -1,6 +1,9 @@
-use lib::types {mk}
-use lib::module {mk}
-use llvm::ir {mk, emit_module}
+use lang::types {
+  Term, TypeConstraint, group, hole, lam, named, npath, package_private, sort_n,
+  str, var,
+}
+use lib::module {}
+use llvm::ir {emit_module}
 use lib::codegen::emit {compile_db_decls_ir}
 
 open Def {mk}

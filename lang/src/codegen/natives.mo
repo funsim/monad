@@ -10,11 +10,15 @@
 ///
 /// `runtime_declarations` lives here too: it is the `declare` list for
 /// exactly the C functions these tables dispatch to.
-use lib::types {AttrArg, Attribute}
-use llvm::ir {LLVMDeclaration, NativeOp, mk}
-use lib::codegen::symbols {extract_base_name, replace_dots_with_underscores, unqualify_def_name}
-use lib::codegen::util {str_map_empty, str_map_insert, str_map_lookup}
-use std::map {}
+use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
+use lang::types {AttrArg, Attribute, id, id_eq}
+use llvm::ir {LLVMDeclaration, NativeOp}
+use lang::codegen::symbols {
+  extract_base_name, replace_dots_with_underscores, symbol_identifier,
+  unqualify_def_name,
+}
+use lib::codegen::util {}
+use std::map {HashMap}
 
 #[partial]
 def lookup_native (name : String) : Option NativeOp := str_map_lookup name native_op_table

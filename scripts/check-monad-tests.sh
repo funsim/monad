@@ -11,8 +11,8 @@
 # here is a failure of real compiled code.
 #
 # The binary has to be built in this job: actions/checkout runs git
-# clean -ffdx at the start of every job, wiping target/, .devenv/ and the
-# config, so neither the `test` nor `bootstrap` job can borrow the other's
+# clean -ffdx at the start of every job, wiping target-rust/, target-monad/,
+# .devenv/ and the config, so neither the `test` nor `bootstrap` job can borrow the other's
 # artifacts. The staleness check and build command live in
 # scripts/build-self-hosted.sh, shared with the other two CI scripts:
 # reuse an existing binary, but rebuild when any source compiled INTO
@@ -332,7 +332,18 @@ cd "$root"
 # the file stopped on the natives alone after that commit; both files were
 # then measured through the self-hosted runner with a binary rebuilt from
 # the change, and both report a clean run.
-out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
+# The scratch directory, private to this checkout. One definition, shared with
+# bootstrap-compile.sh, debug-oracle.sh and tools/debug_transparency_oracle.sh
+# -- see scripts/lib/bootstrap-dir.sh, including why TMPDIR is no longer
+# consulted for this path. Private is the point here: `/tmp` is shared by every
+# worktree on the machine, and this job's `$out/monad` is the compiler it is
+# grading.
+# shellcheck disable=SC2034  # read by the sourced helper, not here
+MONAD_REPO_ROOT="$root"
+# shellcheck source=scripts/lib/bootstrap-dir.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/bootstrap-dir.sh"
+out="$MONAD_BOOTSTRAP_DIR"
 mkdir -p "$out"
 # All four motes, not just lang/: cli/ holds the compile target, llvm/ and
 # runtime/ the backend. The staleness check and the build command live in
@@ -783,9 +794,11 @@ echo "rust runner: no files left -- the self-hosted runner covers the corpus alo
 # a second thing that can be stale. `$monad` is the one this job is testing:
 # under CI's `MONAD_BIN` it is the flake's compiler, and `$out/monad` would be
 # a path this job never wrote (`scripts/bootstrap-compile.sh` builds exactly
-# that path, on the same host and TMPDIR) -- i.e. the gate would grade another
-# job's binary, or whatever an earlier run left behind, or fail outright
-# because nothing is there.
+# that path, in the same checkout) -- i.e. the gate would grade another job's
+# binary, or whatever an earlier run left behind, or fail outright because
+# nothing is there. The bootstrap directory being per-checkout is what makes
+# that argument true: it was `/tmp/monad-bootstrap-ci` when this was written,
+# shared by every worktree on the machine.
 "$(dirname -- "$0")/check-external-mote.sh" "$monad"
 
 # Re-raise the captured self-hosted status: without this the `|| self_hosted_rc=$?`

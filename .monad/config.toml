@@ -1,0 +1,15 @@
+# Configuration for the `monad` tool itself -- settings that belong to the
+# build tool rather than to any mote it builds. Read by
+# `Mote.discover_config_target_dir` (lang/src/mote.mo), which walks up from a
+# source file's directory to the first `.monad/config.toml` it finds.
+#
+# Sub-table headers, not inline tables: the self-hosted reader
+# (lang/src/toml.mo) supports headers and not inline tables.
+
+# Where `monad build`, `check` and `test` write. This repository holds two
+# toolchains and names their output apart rather than letting them share
+# `target/`: cargo's is `target-rust/` (see .cargo/config.toml) and monad's is
+# `target-monad/`. A project with no Cargo.toml needs none of this and gets
+# the plain `target/` default.
+[build]
+target-dir = "target-monad"

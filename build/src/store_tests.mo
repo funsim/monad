@@ -7,35 +7,37 @@
 /// properties a cache key actually depends on: it is stable, and it is
 /// not the path.
 
-use io {IO}
-use lib::store {resolve_target_dir, store_path}
-use lib::identity {compiler_digest, compiler_exe_path}
+use build::store {
+  Build.artifact_ir_path, Build.resolve_target_dir, Build.store_path, artifact,
+  check, test,
+}
+use build::identity {Build.compiler_digest, Build.compiler_exe_path}
 
 // ─── target-dir precedence ───
 
 #[test]
 def test_target_dir_flag_wins_over_everything : Bool :=
     String.beq
-        (Build.resolve_target_dir "flagdir" (Option.some "envdir") (Option.some "manifestdir") "root")
+        (Build.resolve_target_dir "flagdir" (Option.some "envdir") (Option.some "configdir") "root")
         "flagdir"
 
 #[test]
-def test_target_dir_env_beats_manifest : Bool :=
+def test_target_dir_env_beats_config : Bool :=
     String.beq
-        (Build.resolve_target_dir "" (Option.some "envdir") (Option.some "manifestdir") "root")
+        (Build.resolve_target_dir "" (Option.some "envdir") (Option.some "configdir") "root")
         "envdir"
 
 #[test]
-def test_target_dir_manifest_beats_the_default : Bool :=
+def test_target_dir_config_beats_the_default : Bool :=
     String.beq
-        (Build.resolve_target_dir "" Option.none (Option.some "target/monad") "root")
-        "target/monad"
+        (Build.resolve_target_dir "" Option.none (Option.some "target-monad") "root")
+        "target-monad"
 
 #[test]
 def test_target_dir_falls_back_to_root_target : Bool :=
     String.beq (Build.resolve_target_dir "" Option.none Option.none "root") "root/target"
 
-/// An empty flag, an empty env value and an empty manifest value all mean
+/// An empty flag, an empty env value and an empty config value all mean
 /// "not set" rather than "set to the empty string" -- otherwise a
 /// `MONAD_TARGET_DIR=` in the environment would silently redirect every
 /// artifact to the filesystem root.

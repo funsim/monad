@@ -21,10 +21,8 @@
 /// off-by-length bug (`String.slice`'s third argument is a LENGTH, not
 /// an end index) that silently broke stripping a qualified name's own
 /// type prefix -- the map lookups here would all have failed without it.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// The exact `Item.present`/`Item.absent` repro from the filed gap doc:
 /// a user-defined, 2-constructor type, each with a field, referenced
@@ -34,8 +32,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 /// comparisons resolved to the same fallback value).
 #[test]
 def test_user_defined_multi_constructor_type : IO Bool :=
-    let source := r#"use io {IO}
-type Item {
+    let source := r#"type Item {
     present (val : I64),
     absent (unused : I64),
 }
@@ -58,8 +55,7 @@ def main (args : List String) : IO I64 := do {
 /// Before the fix: `llc: use of undefined value '@List_cons'`.
 #[test]
 def test_builtin_multi_arg_constructor_list_cons : IO Bool :=
-    let source := r#"use io {IO}
-def main (args : List String) : IO I64 := do {
+    let source := r#"def main (args : List String) : IO I64 := do {
     let xs := List.cons 10 (List.cons 20 List.empty);
     match xs {
         List.cons a rest => match rest {

@@ -1,3 +1,5 @@
+use std::list {List.length}
+use std::map {HashMap.to_list}
 use lib::core_eval {basic_native_table}
 use lib::core_ir {CoreIr, IrLit, MatchArm}
 use lib::core_value {GlobalDef, GlobalTable, NativeTable}
@@ -6,10 +8,10 @@ use lib::scope {
   scope_find_inductive,
   scope_find_inductive_by_constructor, scope_globals, scope_resolve_name,
 }
-use lib::types {
-  AttrArg, Attribute, Con, Decl, Def, DebugName, Identifier, Inductive,
-  InductConstructor, Literal, MatchCase, ModulePath, NamePath, Native, Scope, ScopeDef,
-  Term, id_eq, sentinel, show_name_path,
+use lang::types {
+  AttrArg, Attribute, Con, DebugName, Decl, Def, Identifier, InductConstructor,
+  Inductive, Literal, MatchCase, ModulePath, NamePath, Native, Scope, ScopeData,
+  ScopeDef, Term, i64, id_eq, nid, sentinel, show_name_path,
 }
 use lib::typecheck::infer {empty_locals, last_dotted_segment}
 

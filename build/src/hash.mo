@@ -9,9 +9,8 @@
 /// wants, so nothing is re-sorted in Monad, and the final combining hash
 /// IS Monad code, so it is unit-testable and identical on both runtimes.
 
-use io {IO}
-use std::process {capture, exec_cmd, shell_quote}
-use std::sha256 {}
+use std::process {exec_cmd}
+use std::sha256 {Sha256.hash}
 
 /// The digest tool this machine has.
 ///

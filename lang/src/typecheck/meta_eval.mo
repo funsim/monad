@@ -22,11 +22,17 @@
 /// `resolve_class_calls_decls` (the same "prepare for real execution"
 /// pipeline `lang/codegen/test_driver.mo` already runs before compiling
 /// a test driver) before ever calling `meta_eval_invoke`.
+use std::list {List.length}
 use lib::core_eval {CoreEvalError, apply, basic_native_table, eval}
 use lib::core_ir {CoreIr, IrLit}
-use lib::core_value {GlobalCache, GlobalTable, Value, global_cache_new, global_table_len}
+use lang::core_value {
+  GlobalCache, GlobalTable, Value, env_nil, global_cache_new, global_table_len,
+}
 use lib::lower_core_ir {LowerCtx, LowerError, lower_ctx_from_decls, lower_root}
-use lib::types {Decl, Identifier, ModulePath, NamePath, show_name_path}
+use lang::types {
+  DebugName, Decl, Identifier, ModulePath, NamePath, Term, app, hole, i64, lam,
+  lit, mk, named, ntv, num, package_private, show_name_path, var,
+}
 
 def show_lower_error_debug (e : LowerError) : String :=
     match e {

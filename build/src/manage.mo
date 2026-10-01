@@ -31,14 +31,20 @@
 /// to DELETE -- so the same failure has to stop it instead. That asymmetry
 /// is the whole of `Build.reach_of` below.
 
-use io {IO}
-use std::process {capture, exec_cmd, shell_quote}
+use std::list {List.contains_by, List.filter, List.intercalate, List.length}
+use std::process {exec_cmd}
 use lang::parser::number {parse_i64}
-use lib::hash {DigestTool, probe_digest_tool}
-use lib::identity {compiler_digest_with}
-use lib::closure {artifact_key, closure_digest_with}
-use lib::check {CheckPlan, check_entry_leaf, check_plan_active, check_plan_all, check_plan_key, check_plan_reason, mote_root_of}
-use lib::store {Entry, artifact_ir_path, entry_root_dir, store_path}
+use build::hash {Build.file_digest_with, Build.probe_digest_tool, DigestTool}
+use build::identity {Build.compiler_digest_with}
+use build::closure {Build.artifact_key, Build.closure_digest_with}
+use build::check {
+  Build.check_entry_leaf, Build.check_plan_active, Build.check_plan_all,
+  Build.check_plan_key, Build.check_plan_reason, Build.mote_root_of,
+  Build.root_find, CheckPlan,
+}
+use build::store {
+  Build.artifact_ir_path, Build.entry_root_dir, Build.store_path, Entry,
+}
 
 open Entry {artifact, check, test}
 
@@ -231,11 +237,16 @@ def Build.reach_digested (tool : DigestTool) (files : List String) (triple : Str
     match c {
         err m => Build.refuse m,
         ok compiler => do {
-            let roots <- Build.collect_roots files List.empty List.empty;
-            let arts <- Build.collect_artifacts tool compiler roots triple List.empty;
-            match arts {
+            let roots <- Build.collect_root_digests tool files List.empty List.empty;
+            match roots {
                 err m => Build.refuse m,
-                ok artifacts => return (Reach.known artifacts checks compiler)
+                ok memo => do {
+                    let arts <- Build.collect_artifacts tool compiler files memo triple List.empty;
+                    match arts {
+                        err m => Build.refuse m,
+                        ok artifacts => return (Reach.known artifacts checks compiler)
+                    }
+                }
             }
         }
     }
@@ -260,60 +271,84 @@ def Build.collect_check_keys (plan : CheckPlan) (files : List String) (acc : Lis
         }
     }
 
-/// The distinct mote roots the named files resolve to.
+/// The closure digest of every distinct mote root the named files resolve
+/// to, as a root -> digest memo.
 ///
 /// `Build.mote_root_of` is the same function `build_cached` calls, which
 /// is what makes the artifact keys derived from these roots the keys a
 /// build of these files would write -- including the normalization that
 /// gives a mote whose manifest sits in the working directory the root
 /// `"."`, rather than the `""` a consumer could not tell apart from
-/// "outside any mote". It answers a String for every input, so there is
-/// nothing here to fail: a file outside any mote roots at its own
-/// directory, and its closure digest is of that.
+/// "outside any mote".
+///
+/// One walk per root, not one per file: the roots are deduped by `seen`.
+/// A digest that cannot be taken is an error rather than a missing memo
+/// entry, because a file whose root has no digest would get no key and
+/// then look like an orphan to the `unreachable` filter -- which deletes.
 #[partial]
-def Build.collect_roots (files : List String) (seen : List String) (acc : List String) : IO (List String) :=
+def Build.collect_root_digests (tool : DigestTool) (files : List String) (seen : List String) (acc : List (Pair String String)) : IO (Result String (List (Pair String String))) :=
     match files {
-        List.empty => return acc,
+        List.empty => return (ok acc),
         List.cons f rest => do {
             let r <- Build.mote_root_of f;
             if List.contains_by String.beq r seen
-            then Build.collect_roots rest seen acc
-            else Build.collect_roots rest (List.append seen [r]) (List.append acc [r])
-        }
-    }
-
-/// The artifact keys for every root, under every profile.
-///
-/// The closure digest is taken ONCE per root and composed with the
-/// compiler digest once per profile -- see `Build.artifact_key` for why
-/// that split exists rather than calling `input_hash` per (root, profile)
-/// pair. The compiler's digest is the running binary (tens of megabytes),
-/// so calling it per pair would digest that binary twice per root.
-#[partial]
-def Build.collect_artifacts (tool : DigestTool) (compiler : String) (roots : List String) (triple : String) (acc : List String) : IO (Result String (List String)) :=
-    match roots {
-        List.empty => return (ok acc),
-        List.cons r rest => do {
-            let d <- Build.closure_digest_with tool r;
-            match d {
-                err m => return (err m),
-                ok c => Build.collect_artifacts tool compiler rest triple (List.append acc (Build.artifact_keys c compiler triple))
+            then Build.collect_root_digests tool rest seen acc
+            else do {
+                let d <- Build.closure_digest_with tool r;
+                match d {
+                    err m => return (err m),
+                    ok c => Build.collect_root_digests tool rest (List.append seen [r])
+                        (List.append acc [Pair.pair r c])
+                }
             }
         }
     }
 
-/// One root's artifact keys, one per profile. `profile_names` is the only
+/// The artifact keys for every named file, under every profile.
+///
+/// One key per FILE, not per root: the key carries the file's own bytes
+/// (`Build.artifact_key`), so two manifest-less files in one directory --
+/// same root, same closure digest -- are two artifacts. Taking the file
+/// digest here is what keeps this set complete, and completeness is the
+/// only thing standing between a `gc` and the store.
+///
+/// The closure digest is looked up in the memo rather than taken here, and
+/// the compiler digest is taken once by the caller; both are expensive (a
+/// fork per tree, and a digest of the running binary).
+#[partial]
+def Build.collect_artifacts (tool : DigestTool) (compiler : String) (files : List String) (roots : List (Pair String String)) (triple : String) (acc : List String) : IO (Result String (List String)) :=
+    match files {
+        List.empty => return (ok acc),
+        List.cons f rest => do {
+            let r <- Build.mote_root_of f;
+            match Build.root_find r roots {
+                // Unreachable while `collect_root_digests` walked the same
+                // file list -- which is why it is a refusal and not a skip.
+                Option.none => return (err ("no closure digest was derived for the root of " ++ f)),
+                Option.some c => do {
+                    let fd <- Build.file_digest_with tool f;
+                    match fd {
+                        err m => return (err m),
+                        ok fh => Build.collect_artifacts tool compiler rest roots triple
+                            (List.append acc (Build.artifact_keys fh c compiler triple))
+                    }
+                }
+            }
+        }
+    }
+
+/// One file's artifact keys, one per profile. `profile_names` is the only
 /// place that list is read.
-pub def Build.artifact_keys (closure : String) (compiler : String) (triple : String) : List String :=
-    Build.artifact_keys_for closure compiler triple Build.profile_names
+pub def Build.artifact_keys (file_digest : String) (closure : String) (compiler : String) (triple : String) : List String :=
+    Build.artifact_keys_for file_digest closure compiler triple Build.profile_names
 
 #[partial]
-def Build.artifact_keys_for (closure : String) (compiler : String) (triple : String) (profiles : List String) : List String :=
+def Build.artifact_keys_for (file_digest : String) (closure : String) (compiler : String) (triple : String) (profiles : List String) : List String :=
     match profiles {
         List.empty => List.empty,
         List.cons p rest =>
-            List.append [Build.artifact_key closure compiler p triple]
-                (Build.artifact_keys_for closure compiler triple rest)
+            List.append [Build.artifact_key file_digest closure compiler p triple]
+                (Build.artifact_keys_for file_digest closure compiler triple rest)
     }
 
 // --- the file system, a little ---

@@ -36,16 +36,16 @@
 ///      hypothesis, and it costs milliseconds rather than an overnight run.
 ///
 /// Run: `cargo run --release -- test bench/parser_located.mo`
-use io {IO}
+use lang::parser::whitespace {skip_spaces}
+use std::list {List.length}
 open IO {println, read_file}
-use std::bench {now, report_since}
-use lang::types {Decl}
+use std::bench {Bench.now, Bench.report_since}
+use lang::types {Decl, ParseDecl}
 use lang::parser::core {ParseResult}
 use lang::parser::position {is_ascending}
-use lang::parser::lower_parse {ParseDecl, collect_decl_rems}
-use lang::parser {decls_parser, decls_parser_located, decls_skip, rems_to_offsets, skip_docstrings, skip_spaces}
+use lang::parser::lower_parse {collect_decl_rems}
+use lang::parser {decls_parser, decls_parser_located, decls_skip, rems_to_offsets, skip_docstrings}
 use std::map {}
-
 
 /// How many decls a parse produced. Forces the result inside the span it
 /// is being timed in -- a benchmark that measures nothing is worse than
@@ -57,13 +57,11 @@ def parsed_count (r : ParseResult (List Decl)) : I64 :=
         ParseResult.fail _ => 0,
     }
 
-
 /// The `List ParseDecl` `build_loc_table` is handed, reached the same way
 /// `decls_parser_located` reaches it.
 #[partial]
 def parse_decls_only (input : String) : ParseResult (List ParseDecl) :=
     decls_skip (skip_docstrings (skip_spaces input)) List.empty
-
 
 #[partial]
 def pre_decls (r : ParseResult (List ParseDecl)) : List ParseDecl :=
@@ -72,7 +70,6 @@ def pre_decls (r : ParseResult (List ParseDecl)) : List ParseDecl :=
         ParseResult.fail _ => List.empty,
     }
 
-
 /// `build_loc_table`'s own first three lines, verbatim, so what this
 /// reports is what that function actually feeds `resolve_offsets_in_file`.
 #[partial]
@@ -80,7 +77,6 @@ def loc_table_offsets (whole_file : String) (ds : List ParseDecl) : List I64 :=
     let total : I64 := String.length whole_file in
     let rems : List I64 := List.reverse (collect_decl_rems ds List.empty) in
     rems_to_offsets total rems List.empty
-
 
 /// The first descending step, or -1 when the list is ascending. Named so a
 /// failure report can point at a concrete pair rather than just "false".
@@ -98,7 +94,6 @@ def first_inversion_from (prev : I64) (offsets : List I64) (idx : I64) : I64 :=
         List.cons b rest =>
             if I64.lt b prev then idx else first_inversion_from b rest (idx + 1),
     }
-
 
 #[partial]
 def run_located_bench (path : String) : IO Bool := do {
@@ -135,11 +130,9 @@ def run_located_bench (path : String) : IO Bool := do {
     return (I64.gt plain 0 && I64.beq plain located)
 }
 
-
 /// A small file, to establish the shape cheaply.
 #[test]
 def bench_located_parse_small : IO Bool := run_located_bench "init/src/id.mo"
-
 
 /// A mid-size real file. The ratio between this and the small case is what
 /// says whether the located parse is superlinear in file size -- AGENTS.md

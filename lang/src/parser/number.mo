@@ -1,7 +1,7 @@
 /// Number parsing functions for the self-hosted Monad parser.
 
-use lib::types {NumSuffix, Term}
-use lib::parser::core {ParseResult, custom, fail, is_empty, success}
+use lang::types {NumSuffix, ParseTerm, Term, flt, num, pt_lit}
+use lang::parser::core {ParseResult, custom, is_empty}
 use lib::parser::char_preds {is_digit, is_digit_byte, is_digit_or_underscore_byte, is_hex_digit_byte}
 use lib::parser::combinators {tag, take_while_byte}
 

@@ -1,8 +1,11 @@
 /// Phase 2 tests — URI parsing, percent-encoding, query (de)coding.
 
-use lib::strings {}
-use lib::types {}
-use lib::uri {}
+use http::strings {Strings.split_on}
+use http::types {Uri, uri}
+use http::uri {
+  Uri.effective_port, Uri.format, Uri.format_query, Uri.parse, Uri.parse_query,
+  Uri.percent_decode, Uri.percent_encode, Uri.resolve, Uri.same_origin,
+}
 
 def expect_ok (got : Result String String) (want : String) : Bool :=
   match got {

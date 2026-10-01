@@ -20,7 +20,7 @@ or `core/`:
 cargo build --release --package monad-cli
 ```
 
-This produces `target/release/monad-rs`, which `plugin.json`'s
+This produces `target-rust/release/monad-rs`, which `plugin.json`'s
 `mcpServers.monad.command` points at via `${CLAUDE_PLUGIN_ROOT}` (the
 plugin's own root — this repo's root, when loaded locally as below).
 
@@ -38,7 +38,7 @@ it installs straight from a local clone:
 Restart your Claude Code session after installing (or after `/plugin
 update`) — like any newly added MCP server, the tools don't appear in an
 already-running session. Verified end-to-end on 2026-08-08: `claude mcp
-list` reports `plugin:monad-tools:monad: .../target/release/monad-rs mcp
+list` reports `plugin:monad-tools:monad: .../target-rust/release/monad-rs mcp
 - ✔ Connected`, and because the marketplace source is this local
 directory (not a copied/cached snapshot), `${CLAUDE_PLUGIN_ROOT}`
 resolves to the live repo — a `cargo build --release` here takes effect

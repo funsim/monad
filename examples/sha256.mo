@@ -1,10 +1,8 @@
 /// Demonstrates std/sha256.mo's SHA-256 implementation.
 #![mote { name := "sha256", deps := [init, std] }]
 
-
-use io {}
 open IO {println}
-use std::sha256 {}
+use std::sha256 {Sha256.hash}
 
 #[test]
 def test_sha256_hello : Bool :=

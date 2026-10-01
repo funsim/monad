@@ -36,14 +36,15 @@
 /// `show_name_path` rather than duplicating its body here -- the
 /// old dotted-path copy predates the qualified-names split, when
 /// name paths and module paths shared one rendering and one type.
-use lib::types {
+use lang::types {
   Class, ClassDef, Con, DebugName, Decl, Def, DoStmt, Identifier,
   InductConstructor, Inductive, Instance, Literal, MatchCase, ModulePath,
-  NamePath, NameRef, Native, Param, ParseClass, ParseClassDef, ParseCon, ParseDecl,
-  ParseDeclKind, ParseDef, ParseDoStmt, ParseInductConstructor, ParseInductive,
+  NamePath, NameRef, Native, Param, ParseClass, ParseClassDef, ParseCon,
+  ParseDecl, ParseDeclKind, ParseDef, ParseInductConstructor, ParseInductive,
   ParseInstance, ParseLiteral, ParseMatchCase, ParseNative, ParseParam,
   ParseStruct, ParseStructField, ParseStructLitField, ParseTerm, ParseTermKind,
-  Struct, StructField, StructLitField, Term, sentinel,
+  QualifiedName, Struct, StructField, StructLitField, Term, sentinel,
+  show_identifier,
 }
 // Name resolution lives HERE now, moved out of `lang/parser.mo` for real
 // (an earlier revision copied it while claiming to have moved it, arming
@@ -55,7 +56,7 @@ use lib::types {Location, ParseSpan, field_access_chain, parse_span_is_unknown, 
 // whose generic dispatch can resolve to the wrong instance
 // (`lang/codegen/util.mo` documents the live bug).
 use llvm::strmap {str_map_lookup}
-use std::map {}
+use std::map {HashMap}
 
 
 /// What lowering carries down the tree.

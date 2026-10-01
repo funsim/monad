@@ -5,11 +5,10 @@
 /// plans/packaging/mote-build-deps-artifacts-targets.md), which keeps
 /// every naming rule here testable without touching a filesystem.
 
-use io {IO}
-use std::io {get_env}
-use std::process {capture, shell_quote}
+use std::io {}
+use std::process {}
 use lang::module {extract_directory}
-use lang::mote {discover_build_dir}
+use lang::mote {Mote.discover_config_target_dir}
 
 /// The three kinds of thing the store holds. One store rather than three
 /// so that `clean`, `gc` and `verify` are written once; the kind is a
@@ -47,28 +46,34 @@ def Build.entry_dir (e : Entry) : String :=
 ///
 ///   1. `--target-dir <dir>`      an explicit request wins outright
 ///   2. `MONAD_TARGET_DIR`        the environment
-///   3. `[build] target-dir`      the manifest
+///   3. `.monad/config.toml`      `[build] target-dir`, the TOOL's config
 ///   4. `<root>/target`           the default
 ///
-/// Four tiers rather than a bare default because **cargo already owns
-/// `target/debug` and `target/release` in this very repository**. Without
-/// an opt-out, `cargo clean` would delete monad's store and `monad clean`
-/// would delete cargo's artifacts. The manifest tier is what lets this
-/// repo say `target/monad` in its own root `mote.toml` while a user with
-/// no Cargo.toml still gets the obvious plain `target/`.
+/// Four tiers rather than a bare default because a repository can hold more
+/// than one toolchain. This one does, and its two outputs are named apart --
+/// cargo's `target-rust/` beside monad's `target-monad/` -- rather than both
+/// writing a shared `target/`, where `cargo clean` would delete monad's
+/// store and `monad clean` cargo's artifacts.
 ///
-/// Pure, and takes the env and manifest values as arguments rather than
+/// Tier 3 reads the tool's own config, not the built mote's manifest. Where
+/// output goes is not intrinsic to a mote: the same mote built by two
+/// toolchains has no opinion on it, and a script-mode file under no mote at
+/// all still needs an answer. So the repository states it once, in
+/// `.monad/config.toml`, while a user with neither that file nor a
+/// Cargo.toml gets the obvious plain `target/`.
+///
+/// Pure, and takes the env and config values as arguments rather than
 /// reading them, so every tier is testable without a process environment
-/// or a manifest on disk.
-pub def Build.resolve_target_dir (flag : String) (env : Option String) (manifest : Option String) (root : String) : String :=
+/// or a config file on disk.
+pub def Build.resolve_target_dir (flag : String) (env : Option String) (config : Option String) (root : String) : String :=
     if Bool.not (String.is_empty flag) then flag
     else match env {
-        Option.some e => if String.is_empty e then Build.target_dir_from_manifest manifest root else e,
-        Option.none => Build.target_dir_from_manifest manifest root
+        Option.some e => if String.is_empty e then Build.target_dir_from_config config root else e,
+        Option.none => Build.target_dir_from_config config root
     }
 
-def Build.target_dir_from_manifest (manifest : Option String) (root : String) : String :=
-    match manifest {
+def Build.target_dir_from_config (config : Option String) (root : String) : String :=
+    match config {
         Option.some m => if String.is_empty m then Build.default_target_dir root else m,
         Option.none => Build.default_target_dir root
     }
@@ -87,23 +92,24 @@ def Build.default_target_dir (root : String) : String :=
 /// The env tier, read once by a caller and passed into
 /// `Build.resolve_target_dir`.
 #[partial]
-pub def Build.target_dir_of (flag : String) (manifest : Option String) (root : String) : IO String := do {
+pub def Build.target_dir_of (flag : String) (config : Option String) (root : String) : IO String := do {
     let e <- IO.get_env "MONAD_TARGET_DIR";
-    return (Build.resolve_target_dir flag e manifest root)
+    return (Build.resolve_target_dir flag e config root)
 }
 
 /// `<dir>`'s target directory: all four tiers of `resolve_target_dir`,
 /// resolved from where `dir` sits in the tree.
 ///
-/// `Mote.discover_build_dir`, not `Mote.discover`: the latter stops at a
-/// virtual workspace root -- a root declares no `[mote]`, so a walk-up
-/// finds nothing there -- so a script-mode file under one (anything in
-/// `examples/`) would never see the workspace's `[build] target-dir` and
-/// would write to plain `target/`, straight into cargo's directory. That
-/// is the exact collision the setting exists to prevent.
+/// `Mote.discover_config_target_dir`, not `Mote.discover`: the config is the
+/// TOOL's, so the walk has no mote boundary to stop at -- and it must not,
+/// because a script-mode file under a virtual workspace root (a root
+/// declares no `[mote]`, so `Mote.discover` finds nothing there) would
+/// otherwise never see the repository's `[build] target-dir` and would write
+/// to plain `target/` instead of the directory it named. That is the exact
+/// collision the setting exists to prevent.
 #[partial]
 pub def Build.target_dir_at (dir : String) : IO String := do {
-    let d <- Mote.discover_build_dir dir;
+    let d <- Mote.discover_config_target_dir dir;
     Build.target_dir_of "" d ""
 }
 

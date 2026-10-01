@@ -1,7 +1,7 @@
 
 /// String functions
 
-use math {}
+use lib::math {}
 
 #[native string_eq]
 pub def String.beq (a b : String) : Bool

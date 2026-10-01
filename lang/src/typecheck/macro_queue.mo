@@ -30,10 +30,12 @@
 /// `reflect_type_info!` call and nothing nests inside it. Flagged
 /// here, not silently assumed sufficient forever — genuine fixpoint
 /// requeuing is a follow-up if a real template ever needs it.
-use lib::types {
-  AttrArg, Attribute, Class, ClassDef, Decl, Def, Identifier,
-  InductConstructor, Inductive, Instance, ModulePath, Param, Struct,
-  StructField, Term, TypeConstraint, id_eq, level_const, sentinel,
+use std::list {List.length}
+use lang::types {
+  AttrArg, Attribute, Class, ClassDef, Decl, Def, Identifier, InductConstructor,
+  Inductive, Instance, ModulePath, NamePath, Param, Struct, StructField, Term,
+  TypeConstraint, concrete, empty_attrs, id_eq, level_const, many, named, npath,
+  package_private, sentinel, show_identifier, unnamed,
 }
 use lib::typecheck::macro_apply {expand_decl_gen_call}
 use lib::typecheck::macro_expand {expand_term}

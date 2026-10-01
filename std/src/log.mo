@@ -30,14 +30,14 @@
 /// isatty check -- so piped CI job logs get colors too, which Forgejo
 /// and GitHub render in the run view.
 
-use io {IO}
+use lib::io {}
 open IO {println}
 // `Ansi.fail`/`Ansi.pass` are DOTTED names -- see std/ansi.mo's own doc
 // comment on `Ansi.fail` for why a bare `def fail` there poisoned the
 // whole loaded set (parser's bare ParseResult `fail` ctor got rewritten
 // to it by qualify's `resolve_owner` rule 3, which knows defs only).
-use lib::ansi {bold, colors_enabled, dim, fail, pass}
-use lib::bench {since}
+use std::ansi {Ansi.fail, Ansi.pass, bold, colors_enabled, dim}
+use std::bench {Bench.since}
 
 /// `wrap s` (a pure `String -> String` ANSI wrapper from `std.ansi`,
 /// e.g. `bold`/`dim`/`pass`/`fail`) applied only when colors are on.

@@ -6,7 +6,12 @@
 /// shape. References with no scheme are accepted too, whether they are paths
 /// or scheme-relative (`//host/path`), with the scheme left empty.
 
-use lib::strings {}
+use http::strings {
+  Strings.decode_hex_pair, Strings.drop_bytes, Strings.hex_char_of_nibble,
+  Strings.is_unreserved, Strings.is_valid_scheme, Strings.list_starts_with,
+  Strings.option_from, Strings.parse_u16_bounded, Strings.split_at_byte,
+  Strings.split_at_byte_opt, Strings.split_on,
+}
 use lib::types {Uri}
 
 // ── percent-encoding (RFC 3986) ─────────────────────────────────────────

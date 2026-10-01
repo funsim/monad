@@ -6,13 +6,19 @@
 /// The OS TCP buffer holds data between writes and reads, so each step
 /// completes before the next starts.
 
-use io {IO}
-use std::io {Socket}
-use lib::client {Connection}
-use http::types {Request, Response, Uri}
-use http::wire {}
-use http::body {}
-use http::uri {Uri}
+use moose::client {
+  Client.close, Client.connect, Client.get, Client.host_port,
+  Client.read_response, Client.redirect_request, Client.write_request, Connection,
+}
+use http::types {
+  Body.is_empty, GET, HEAD, Headers, Headers.empty, Headers.get, Headers.set,
+  POST, Request, Response, Status.found, Status.moved_permanently, Status.ok,
+  Status.permanent_redirect, Status.see_other, Status.temporary_redirect, Uri,
+  empty, http1_1, text,
+}
+use http::wire {Wire.format_response, Wire.parse_request}
+use http::body {Body.from_text, Body.to_bytes_pure}
+use http::uri {Uri.parse, Uri.resolve}
 
 // ── test infrastructure ─────────────────────────────────────────────────
 

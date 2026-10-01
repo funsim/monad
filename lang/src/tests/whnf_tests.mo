@@ -1,9 +1,9 @@
-use lib::types {
-  DebugName, Identifier, Literal, Location, LocalScope, LocalVar, MatchCase,
-  ModulePath, Scope, ScopeData, Similar, Term, id, mp, named, sentinel,
+use lang::types {
+  DebugName, Identifier, Literal, LocalScope, LocalVar, Location, MatchCase,
+  ModulePath, Scope, ScopeData, Similar, Term, many, sentinel, sort_n,
 }
 use lib::module {parse_all_decls}
-use lib::parser::core {fail, success}
+use lang::parser::core {fail, success}
 use lib::scope {build_scope_from_decls}
 use lib::typecheck::whnf {whnf}
 

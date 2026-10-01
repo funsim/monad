@@ -25,7 +25,16 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
+# The scratch directory, private to this checkout. One definition, shared with
+# check-monad-tests.sh, bootstrap-compile.sh and tools/debug_transparency_oracle.sh
+# -- see scripts/lib/bootstrap-dir.sh, including why TMPDIR is no longer
+# consulted for this path.
+# shellcheck disable=SC2034  # read by the sourced helper, not here
+MONAD_REPO_ROOT="$root"
+# shellcheck source=scripts/lib/bootstrap-dir.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/bootstrap-dir.sh"
+out="$MONAD_BOOTSTRAP_DIR"
 # Reuse the binary `bootstrap-compile.sh` just built -- in CI that is the step
 # immediately before this one, in the same job. The staleness check and build
 # command live in scripts/build-self-hosted.sh, shared with the other two CI

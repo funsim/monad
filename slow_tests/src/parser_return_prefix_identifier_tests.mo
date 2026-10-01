@@ -25,9 +25,7 @@
 /// end of input or a non-identifier character -- after the keyword tag
 /// succeeds) and using it at both `return`-recognition call sites instead
 /// of the bare `tag`.
-use io {IO}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// An ordinary, non-monadic def whose name starts with `return_`, called
 /// as a plain `let`-bound expression -- the exact shape that used to
@@ -50,8 +48,7 @@ def main (args : List String) : IO I64 := do {
 /// `IO.write_file path content;` bare-statement idiom).
 #[test]
 def test_return_prefixed_def_name_bare_statement : IO Bool :=
-    let source := r#"use io {IO}
-def return_marker (x : I64) : IO Unit := IO.println (I64.to_string x)
+    let source := r#"def return_marker (x : I64) : IO Unit := IO.println (I64.to_string x)
 
 def main (args : List String) : IO I64 := do {
     return_marker 0;

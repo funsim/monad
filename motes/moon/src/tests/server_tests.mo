@@ -6,14 +6,23 @@
 /// The OS TCP buffer holds data between writes and reads, so each step
 /// completes before the next starts.
 
-use io {IO}
-use std::io {Socket}
 use std::process {process_id}
-use lib::server {}
-use http::types {Request, Response, Uri}
-use http::wire {}
-use http::body {}
-use http::uri {Uri}
+use moon::server {
+  Server.handle_connection, Server.header_has_token, Server.keep_alive,
+  Server.read_message, Server.read_request, Server.serve_connection,
+  Server.static, Server.with_connection_header,
+}
+use http::types {
+  GET, Headers, Headers.empty, Headers.get, Headers.set, POST, Request, Response,
+  Status.bad_request, Status.not_found, Status.ok, Uri, empty, http1_0, http1_1,
+  text,
+}
+use http::wire {
+  Wire.drop_bytes, Wire.format_request, Wire.frame_response, Wire.parse_response,
+  Wire.take_bytes,
+}
+use http::body {Body.from_text, Body.to_bytes_pure}
+use http::uri {Uri.parse}
 
 // ── test infrastructure ─────────────────────────────────────────────────
 

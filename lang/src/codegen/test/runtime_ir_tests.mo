@@ -16,7 +16,7 @@
 /// `runtime/src/runtime.c` and calling each native from C -- see the
 /// module's own doc comment for the representation facts that makes
 /// possible.
-use llvm::ir {emit_module}
+use llvm::ir {emit_module, mk}
 use lib::codegen::emit {check_contains}
 use runtime::natives {runtime_native_functions}
 

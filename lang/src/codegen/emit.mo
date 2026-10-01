@@ -1,47 +1,37 @@
-use io {IO}
-use std::bench {now, report, report_since, since}
-// `str_map_*` below is a `std.map` `HashMap String V`. Empty import:
-// naming any of `std.map`'s `Map`-class-instance exports explicitly hits
-// a pre-existing latent instance/dictionary-resolution bug (same
-// workaround `lang/scope.mo`'s own `modpath_map_*`/`use std.map {}` doc
-// comment documents, and `std/map_tests.mo`/`bench/scope_lookup.mo`
-// already use) -- everything remains available regardless via the same
-// always-on mechanism that lets any top-level type/def resolve without
-// being explicitly `use`d.
-use std::map {}
-use std::list {intercalate}
-use lib::mote {toolchain_root}
-use lib::types {
-  Con, DebugName, Decl, Def, Identifier, InductConstructor, Inductive, Literal,
-  LoadedModules, LocalScope, Location, MatchCase, ModulePath, NamePath, Native,
-  Operator,
-  Multiplicity, Param, Scope, ScopeData, Struct, StructField, StructLitField,
-  Term, TypeConstraint, UseFilter, UseItem, Visibility, sentinel,
-  char_to_string, show_identifier, show_module_path, term_peel,
-  app, con, ctx, def_d, forall, hole, id, if_, inductive_d, lam,
-  lit, match_, mc, mk, mp, name, named, ntv, num, operator,
-  param_many, pi, str, unnamed, var,
+use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
+use std::bench {Bench.now, Bench.report_since}
+// `str_map_*` below is a `std.map` `HashMap String V`, so this module
+// names `HashMap` like any other import. It used to be an empty import,
+// to stay clear of a suspected instance/dictionary-resolution bug in
+// naming `std.map`'s exports — see `lang/scope.mo`'s comment on the same
+// line, and std/map_tests.mo's note for why the suspicion is gone.
+use std::map {HashMap}
+use std::list {List.any, List.intercalate, List.length}
+use lang::mote {Mote.toolchain_root}
+use lang::types {
+  AttrArg, Attribute, Con, DebugName, Decl, Def, Identifier, InductConstructor,
+  Inductive, Literal, LocalScope, Location, MatchCase, ModulePath, Multiplicity,
+  NamePath, Native, Operator, Param, Scope, ScopeData, Struct, StructField,
+  StructLitField, Term, TypeConstraint, UseFilter, UseItem, Visibility,
+  char_to_string, concrete, empty_attrs, group, i64, id_eq, ident, param_many,
+  sentinel, show_identifier, show_module_path, term_peel,
 }
 use llvm::ir {
-  DbgLoc, LLVMBasicBlock, LLVMDeclaration, LLVMFunction, LLVMGlobal, LLVMInstruction,
-  LLVMModule, LLVMType, LLVMValue, NativeOp, ParamPair, PhiPair, add, alloc_closure,
-  alloc_constructor, assign, bitcast, bool_, branch, call, comment, emit_module,
-  fn_, gep, global_, i64_, i8_, icmp_eq, icmp_ne, icmp_sgt, icmp_slt, int32_, int_,
-  jump, llvm_symbol_ref, load, mk, mul, native_op, op_add, op_eq,
-  op_file_exists, op_gt, op_lt,
-  op_mul, op_ne, op_print_str, op_read_file, op_sdiv, op_sub, op_write_file,
-  parm_, phi, ptr, ptrtoint, ret, sdiv, show_llvm_type, sub, trunc, var_, void_val, zext,
+  DbgLoc, LLVMBasicBlock, LLVMDeclaration, LLVMFunction, LLVMGlobal,
+  LLVMInstruction, LLVMModule, LLVMType, LLVMValue, NativeOp, ParamPair,
+  PhiPair, emit_module, llvm_symbol_ref, show_llvm_type
 }
 use runtime::natives {runtime_native_functions}
-use lib::codegen::validate {
+use lang::codegen::validate {
   build_defined_symbol_set, collect_call_targets, missing_call_targets,
-  validate_no_colliding_def_symbols, validate_no_undesugared_struct_lits,
-  validate_no_unwired_natives,
+  strip_db_lams, validate_no_colliding_def_symbols,
+  validate_no_undesugared_struct_lits, validate_no_unwired_natives,
 }
-use lib::codegen::ctors {
-  build_constructor_arity_map, build_constructor_arity_map_with_structs,
-  build_constructor_tag_map, constructor_arity,
-  constructor_tag, is_constructor_var,
+use lang::codegen::ctors {
+  bare_ctor_tag, build_constructor_arity_map,
+  build_constructor_arity_map_with_structs, build_constructor_tag_map,
+  builtin_ctor_arities, builtin_ctor_tags, constructor_arity, constructor_tag,
+  ctor_composite_key, is_constructor_var,
 }
 use lib::codegen::natives {
   NativeWrapKind, lookup_native, lookup_native_any, native_attr_target_name,
@@ -55,11 +45,11 @@ use lib::codegen::tco {apply_self_tco}
 use lib::codegen::qualify {qtest_def, qualified_def_name_str, qualify_modules}
 use lib::codegen::free_names {collect_referenced_names, free_names_of_term}
 use lib::codegen::ctx {
-  CodegenCtx, CtxInstrsVal, CtxInstrsVals, CtxStrPair, LocalBinding, build_arity_table,
-  collect_db_params, ctx_bind_local, ctx_lookup_arity, ctx_lookup_ctor_arity,
-  ctx_lookup_ctor_tag, ctx_lookup_local, ctx_reset_locals, ctx_restore_locals,
-  dbg_loc_of_location, empty_ctx, fresh_label, fresh_temp,
-  lookup_binding, mk, resolve_call_name,
+  CodegenCtx, CtxInstrsVal, CtxInstrsVals, CtxStrPair, LocalBinding,
+  build_arity_table, collect_db_params, ctx_bind_local, ctx_lookup_arity,
+  ctx_lookup_ctor_arity, ctx_lookup_ctor_tag, ctx_lookup_local,
+  ctx_reset_locals, ctx_restore_locals, dbg_loc_of_location, empty_ctx,
+  fresh_label, fresh_temp, lookup_binding, resolve_call_name
 }
 use lib::codegen::symbols {
   bare_modpath, def_symbol_name, ends_with_main, extract_base_name,
@@ -70,13 +60,13 @@ use lib::codegen::symbols {
 }
 use lib::codegen::util {
   dedup_idents, dedup_idents_go, dedup_strs, dedup_strs_go, drop_last_instr,
-  ident_in_list, identifier_eq, join_semicolon_msgs,
-  rev_vals, str_map_empty, str_map_insert, str_map_lookup,
+  ident_in_list, identifier_eq, join_semicolon_msgs, rev_vals
 }
 use lib::module {
-  LoadedModules, ModuleInfo, bench_step, best_effort_decls, best_effort_failed,
-  elaborate_module_decls_best_effort, elaborate_module_decls_reporting,
-  get_loaded_all, get_loaded_main, mk, resolve_open_aliases_in_modules,
+  LoadedModules, ModuleInfo, bench_step, best_effort_decls,
+  best_effort_failed, elaborate_module_decls_best_effort,
+  elaborate_module_decls_reporting, get_loaded_all, get_loaded_main,
+  resolve_open_aliases_in_modules
 }
 use lib::scope {
   add_constraint_dict_params_decls, alias_map_empty, alias_map_insert,

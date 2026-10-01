@@ -6,12 +6,16 @@
 /// when something did serves a stale answer, which is the failure a build
 /// cache must not have.
 
-use io {IO}
-use std::list {contains_by, intercalate}
-use std::sha256 {}
-use lang::mote {MoteManifest, discover, toolchain_root, workspace_members}
-use lib::hash {DigestTool, probe_digest_tool, tree_digest_with}
-use lib::identity {compiler_digest_with}
+use std::list {List.contains_by, List.intercalate, List.length}
+use std::sha256 {Sha256.hash}
+use lang::mote {
+  Mote.discover, Mote.toolchain_root, Mote.workspace_members, MoteManifest,
+}
+use build::hash {
+  Build.file_digest_with, Build.probe_digest_tool, Build.tree_digest_with,
+  DigestTool,
+}
+use build::identity {Build.compiler_digest_with}
 
 /// The declared dependency directories of the mote at `dir`, paired with
 /// its own name, or `none` when `dir` is not inside a mote.
@@ -232,8 +236,17 @@ def Build.closure_visit (tool : DigestTool) (d : String) (rest : List String) (s
     }
 }
 
-/// The full input hash for a build: the source closure, the compiler that
-/// would compile it, the profile, and the target triple.
+/// The full input hash for a build: the source file's own bytes, its
+/// mote's closure, the compiler that would compile it, the profile, and
+/// the target triple.
+///
+/// `src` is a FILE and `root` is the mote directory it resolves to, i.e.
+/// `Mote.mote_root_of src` -- the caller computes it because it needs it
+/// for other things too, and both are needed here for different digests.
+/// The file is not optional: a tree with no `mote.toml` anywhere above it
+/// roots at its own directory, so every script-mode file in one directory
+/// shares a root AND a closure digest, and a key without the file in it
+/// serves the sibling's binary.
 ///
 /// `profile` distinguishes a debug build from a release one; `triple` is
 /// here from the start even though only one value is reachable today
@@ -241,43 +254,49 @@ def Build.closure_visit (tool : DigestTool) (d : String) (rest : List String) (s
 /// entry written before it -- cheaper to include a constant now than to
 /// migrate a store.
 ///
-/// An `err` from either digest propagates, and the caller's contract is
-/// to DISABLE the cache on it rather than substitute a weaker key.
+/// An `err` from any digest propagates, and the caller's contract is to
+/// DISABLE the cache on it rather than substitute a weaker key.
 #[partial]
-pub def Build.input_hash (dir : String) (profile : String) (triple : String) : IO (Result String String) := do {
+pub def Build.input_hash (src : String) (root : String) (profile : String) (triple : String) : IO (Result String String) := do {
     let t <- Build.probe_digest_tool;
     match t {
         err m => return (err m),
-        ok tool => Build.input_hash_with tool dir profile triple
+        ok tool => Build.input_hash_with tool src root profile triple
     }
 }
 
-/// The artifact key, composed from the two digests it is made of.
+/// The artifact key, composed from the digests it is made of.
 ///
-/// Split out of `input_hash_with` so that a caller holding MANY roots and
-/// ONE compiler can take each digest once: `input_hash_with` takes the
-/// compiler's digest inside, and its digest is the running binary (tens of
-/// megabytes), so deriving keys for a root set by calling it per
-/// (root, profile) pair would digest that binary twice per root. `gc`
+/// Split out of `input_hash_with` so that a caller holding MANY files and
+/// ONE compiler can take the expensive digests once: `input_hash_with`
+/// takes the compiler's digest inside, and its digest is the running binary
+/// (tens of megabytes), so deriving keys for a file set by calling it per
+/// (file, profile) pair would digest that binary twice per file. `gc`
 /// derives exactly such a set -- see `Build.collect_artifacts` in
 /// `build/src/manage.mo`.
 ///
-/// One formula, one place: `input_hash_with` is this with both digests
+/// One formula, one place: `input_hash_with` is this with all three digests
 /// taken inside, so the key a `build` writes and the key a `gc` derives
 /// cannot drift apart.
-pub def Build.artifact_key (closure : String) (compiler : String) (profile : String) (triple : String) : String :=
-    Sha256.hash (List.intercalate "\n" [closure, compiler, profile, triple])
+pub def Build.artifact_key (file_digest : String) (closure : String) (compiler : String) (profile : String) (triple : String) : String :=
+    Sha256.hash (List.intercalate "\n" [file_digest, closure, compiler, profile, triple])
 
 #[partial]
-pub def Build.input_hash_with (tool : DigestTool) (dir : String) (profile : String) (triple : String) : IO (Result String String) := do {
-    let closure <- Build.closure_digest_with tool dir;
-    match closure {
+pub def Build.input_hash_with (tool : DigestTool) (src : String) (root : String) (profile : String) (triple : String) : IO (Result String String) := do {
+    let fd <- Build.file_digest_with tool src;
+    match fd {
         err m => return (err m),
-        ok c => do {
-            let comp <- Build.compiler_digest_with tool;
-            match comp {
+        ok f => do {
+            let closure <- Build.closure_digest_with tool root;
+            match closure {
                 err m => return (err m),
-                ok k => return (ok (Build.artifact_key c k profile triple))
+                ok c => do {
+                    let comp <- Build.compiler_digest_with tool;
+                    match comp {
+                        err m => return (err m),
+                        ok k => return (ok (Build.artifact_key f c k profile triple))
+                    }
+                }
             }
         }
     }

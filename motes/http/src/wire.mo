@@ -10,10 +10,13 @@
 /// framing one are separate questions -- a buffer may hold a message and a
 /// half, or two -- and only the caller knows which it is asking.
 
-use lib::strings {}
+use http::strings {
+  Strings.parse_i64, Strings.parse_u16_bounded, Strings.split_at_byte,
+  Strings.split_at_byte_opt,
+}
 use lib::types {Body, Framing, Headers, HttpVersion, Method, Request, Response, Uri}
-use lib::uri {Uri}
-use std::list {}
+use http::uri {Uri.format, Uri.format_query, Uri.parse}
+use std::list {List.length}
 
 // ── byte list builders ──────────────────────────────────────────────────
 

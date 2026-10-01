@@ -1,12 +1,9 @@
-use lib::types {
-  Class, ClassDef, Con, Decl, Def, Identifier, InductConstructor, Inductive,
-  Instance, Literal, MatchCase, ModulePath, NamePath, Native, Operator, Param,
-  Struct,
-  StructField, Term, TypeConstraint, affine, app, class_d, con, def_d, f64,
-  forall, hole, i32, i64, i8, id, if_, inductive_d, infix_d, lam, linear, lit,
-  many, match_, mc, mk, mp, name, named, ntv, num, open_all, open_d, operator, pi,
-  show_identifier, show_module_path, str, struct_d, u32, unnamed, use_bare,
-  use_d, var, zero,
+use lang::types {
+  Attribute, Class, ClassDef, Con, Decl, Def, Identifier, InductConstructor,
+  Inductive, Instance, Literal, MatchCase, ModulePath, NamePath, Native, Operator,
+  Param, Struct, StructField, Term, TypeConstraint, affine, f64, i32, i64, i8,
+  linear, many, named, open_all, package_private, show_identifier,
+  show_module_path, sort_n, u32, unnamed, use_bare, zero,
 }
 use lib::pretty {
   show_decl, show_instance, show_match_case, show_multiplicity, show_num_suffix,

@@ -50,7 +50,19 @@ cd "$HERE" || exit 1
 # and never a fallback to the interpreter: quietly gating a different
 # artifact than the one named is precisely the silence this oracle exists
 # to remove.
-MONAD_BIN="${MONAD_BIN:-${TMPDIR:-/tmp}/monad-bootstrap-ci/monad}"
+# Where the ladder's scratch compiler lives, by the same definition the four
+# scripts in scripts/ use -- see scripts/lib/bootstrap-dir.sh. This script had
+# its own copy of the path, spelled into /tmp, which is shared by every
+# worktree on the machine.
+# shellcheck disable=SC2034  # read by the sourced helper, not here
+MONAD_REPO_ROOT="$HERE"
+# shellcheck source=scripts/lib/bootstrap-dir.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$HERE/scripts/lib/bootstrap-dir.sh" || {
+  echo "cannot read $HERE/scripts/lib/bootstrap-dir.sh" >&2
+  exit 1
+}
+MONAD_BIN="${MONAD_BIN:-$MONAD_BOOTSTRAP_BIN}"
 if [ ! -x "$MONAD_BIN" ]; then
   echo "no self-hosted compiler at $MONAD_BIN"
   echo "build one:  cargo run --release -- run cli/src/main.mo build cli/src/main.mo -o \"$MONAD_BIN\" --release"

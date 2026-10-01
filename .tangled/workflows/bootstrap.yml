@@ -4,7 +4,8 @@
 #
 # These two steps MUST stay in one workflow file. `monad:debug-oracle` reuses
 # the binary `monad:bootstrap-compile` just wrote to
-# ${TMPDIR:-/tmp}/monad-bootstrap-ci/monad, and only steps *within* a workflow
+# <checkout>/target-monad/bootstrap-ci/monad (scripts/lib/bootstrap-dir.sh),
+# and only steps *within* a workflow
 # share a machine -- every workflow in a Spindle pipeline runs in its own
 # microVM. Splitting them into two files would leave the oracle to rebuild the
 # binary itself (its staleness check handles that case, by design) or, worse,

@@ -7,11 +7,13 @@
 /// every checkout, which is a slow cache rather than a wrong one -- but a
 /// key that misses everything is indistinguishable from having none.
 
-use io {IO}
-use std::list {contains_by}
-use std::process {capture, process_id, shell_quote}
-use lib::closure {closure_digest_with, closure_seed, input_hash, toolchain_seed_wanted}
-use lib::hash {probe_digest_tool}
+use std::list {List.contains_by}
+use std::process {process_id}
+use build::closure {
+  Build.closure_digest_with, Build.closure_seed, Build.input_hash,
+  Build.toolchain_seed_wanted,
+}
+use build::hash {Build.probe_digest_tool}
 def Build.fix_root (tag : String) : String :=
     String.concat "/tmp/monad_clo_"
         (String.concat (I64.to_string process_id) (String.concat "_" tag))
@@ -192,10 +194,27 @@ def test_toolchain_root_is_walked_only_without_a_local_pair : IO Bool := do {
 
 // ─── the full input hash ───
 
+def Build.fixture_src (d : String) : String := String.concat d "/a/src/lib.mo"
+def Build.fixture_root (d : String) : String := String.concat d "/a"
+
+/// Two files, ONE directory, and no `mote.toml` above either: the
+/// script-mode shape, where both files root at the directory they sit in
+/// and therefore share a closure digest.
+#[partial]
+def Build.script_pair_fixture (tag : String) : IO String := do {
+    let d : String := Build.fix_root tag;
+    let q : String := Proc.shell_quote d;
+    let script : String := "rm -rf " ++ q ++ " && mkdir -p " ++ q;
+    let _r <- Proc.capture "sh" ["-c", script];
+    let _o <- Build.put d "one.mo" "def one : I64 := 111\n";
+    let _t <- Build.put d "two.mo" "def two : I64 := 222\n";
+    return d
+}
+
 #[test]
 def test_input_hash_succeeds : IO Bool := do {
     let d <- Build.two_mote_fixture "ih";
-    let r <- Build.input_hash (String.concat d "/a") "debug" "x86_64-unknown-linux-gnu";
+    let r <- Build.input_hash (Build.fixture_src d) (Build.fixture_root d) "debug" "x86_64-unknown-linux-gnu";
     let _c <- Build.rm d;
     return (Bool.not (String.is_empty (Build.text r)))
 }
@@ -205,8 +224,8 @@ def test_input_hash_succeeds : IO Bool := do {
 #[test]
 def test_input_hash_separates_profiles : IO Bool := do {
     let d <- Build.two_mote_fixture "prof";
-    let a <- Build.input_hash (String.concat d "/a") "debug" "x86_64-unknown-linux-gnu";
-    let b <- Build.input_hash (String.concat d "/a") "release" "x86_64-unknown-linux-gnu";
+    let a <- Build.input_hash (Build.fixture_src d) (Build.fixture_root d) "debug" "x86_64-unknown-linux-gnu";
+    let b <- Build.input_hash (Build.fixture_src d) (Build.fixture_root d) "release" "x86_64-unknown-linux-gnu";
     let _c <- Build.rm d;
     return (Bool.not (String.beq (Build.text a) (Build.text b)))
 }
@@ -217,8 +236,28 @@ def test_input_hash_separates_profiles : IO Bool := do {
 #[test]
 def test_input_hash_separates_targets : IO Bool := do {
     let d <- Build.two_mote_fixture "tgt";
-    let a <- Build.input_hash (String.concat d "/a") "debug" "x86_64-unknown-linux-gnu";
-    let b <- Build.input_hash (String.concat d "/a") "debug" "aarch64-unknown-linux-gnu";
+    let a <- Build.input_hash (Build.fixture_src d) (Build.fixture_root d) "debug" "x86_64-unknown-linux-gnu";
+    let b <- Build.input_hash (Build.fixture_src d) (Build.fixture_root d) "debug" "aarch64-unknown-linux-gnu";
     let _c <- Build.rm d;
     return (Bool.not (String.beq (Build.text a) (Build.text b)))
+}
+
+/// Both calls below pass the SAME root string -- the directory the two
+/// files live in, which is also each file's mote root -- so the closure
+/// digest and every other ingredient agree and the file's own bytes are
+/// the only thing left that can separate them.
+///
+/// This is the shape that served `two.mo` the binary built from `one.mo`:
+/// before the file was an ingredient the two keys were equal by
+/// construction, and `monad build two.mo` printed `cached` and then ran
+/// `one`'s program.
+#[test]
+def test_input_hash_separates_sibling_scripts : IO Bool := do {
+    let d <- Build.script_pair_fixture "sib";
+    let a <- Build.input_hash (String.concat d "/one.mo") d "debug" "x86_64-unknown-linux-gnu";
+    let b <- Build.input_hash (String.concat d "/two.mo") d "debug" "x86_64-unknown-linux-gnu";
+    let _c <- Build.rm d;
+    return (Bool.not (String.is_empty (Build.text a))
+        && Bool.not (String.is_empty (Build.text b))
+        && Bool.not (String.beq (Build.text a) (Build.text b)))
 }

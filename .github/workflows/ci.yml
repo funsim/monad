@@ -132,6 +132,26 @@ jobs:
       - name: Run pre commit checks
         run: nix develop --no-pure-eval --accept-flake-config -c devenv tasks run devenv:git-hooks
 
+      # The `use`-completeness rule, ENFORCED. Every name a module reaches
+      # from another module has to be named in its own `use` line (unless
+      # ambient), and the same `check` invocation in the hook above reports
+      # a violation as a warning and carries on -- a migration can proceed
+      # file by file, which is how commit 9e948de3's corpus was fixed. This
+      # step is the flip to a hard failure, and it is a step of its own
+      # rather than an edit to devenv.nix's `monad-check` hook because the
+      # pre-commit config is generated per checkout but SHARED by every
+      # worktree on the machine: a hook that fails on an unimported name
+      # would break commits in a sibling worktree still on a branch whose
+      # corpus predates the migration.
+      #
+      # Same directory list as the hook, so the two can only disagree about
+      # severity.
+      - name: "`use` completeness (enforced)"
+        run: |
+          nix develop --no-pure-eval --accept-flake-config -c \
+            env MONAD_USE_COMPLETENESS=error cargo run --release -- \
+              check init std examples lang cli llvm runtime build motes
+
   test:
     runs-on: [self-hosted, linux]
     # Gated on the classifier: a change that touches no compiler input has
@@ -293,7 +313,8 @@ jobs:
       # --verbose per-module stage trace, and the oracle's per-file verdicts.
       #
       # The two steps must stay in one job: the oracle reuses the binary the
-      # compile wrote to ${TMPDIR:-/tmp}/monad-bootstrap-ci/monad.
+      # compile wrote to <checkout>/target-monad/bootstrap-ci/monad
+      # (scripts/lib/bootstrap-dir.sh).
       - name: Bootstrap compiler
         run: |
           nix develop --no-pure-eval --accept-flake-config -c \

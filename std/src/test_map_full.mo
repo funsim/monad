@@ -1,9 +1,8 @@
-// TODO: see the matching TODO in std/map_tests.mo — `BTreeMap`/`HashMap`/
-// `empty` are all used throughout this file but are deliberately NOT
-// listed here; explicitly naming any of `std.map`'s `Map`-class-instance-
-// related exports exposes the same pre-existing latent instance/
-// dictionary-resolution bug.
-use lib::map {}
+// The counterpart to std/map_tests.mo's own note: this is the probe for
+// the `HashMap` carrier, and it is why naming `std.map`'s exports is
+// considered safe — see that file's comment for the claim, the runtimes
+// it was checked against, and why the import used to be empty.
+use std::map {BTreeMap, HashMap}
 
 /// Verify Map.empty and Map.insert type-check and evaluate.
 #[test]

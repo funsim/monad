@@ -19,12 +19,17 @@
 ///
 /// No TLS — HTTPS URLs return an error.
 
-use io {IO}
-use std::io {Socket}
-use http::types {Body, Headers, Method, Request, Response, Uri}
-use http::wire {}
-use http::body {Body}
-use http::uri {Uri}
+use http::types {
+  Body, Headers, Method, Request, Response, Status.found,
+  Status.moved_permanently, Status.permanent_redirect, Status.see_other,
+  Status.temporary_redirect, Uri, http1_1,
+}
+use http::wire {
+  Wire.format_request, Wire.frame_response, Wire.parse_response_with_method,
+  Wire.take_bytes,
+}
+use http::body {}
+use http::uri {Uri.format, Uri.parse, Uri.resolve, Uri.same_origin}
 
 // ── Connection handle ───────────────────────────────────────────────────
 

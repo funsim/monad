@@ -1,4 +1,4 @@
-use lib::list {filter, length}
+use std::list {List.filter, List.length}
 
 
 // Append tests (continued)

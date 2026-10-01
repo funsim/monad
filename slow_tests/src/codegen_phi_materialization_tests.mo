@@ -16,10 +16,8 @@
 /// which never matched the table at all and silently miscompiled to a
 /// "return Unit" stub, both as a bare call and as an `if`'s own
 /// condition.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// `I64.beq` used directly as an `if`'s own condition and as an
 /// ordinary comparison -- exercises `lookup_native`'s fixed dispatch
@@ -30,8 +28,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 /// to what this test guards.
 #[test]
 def test_i64_beq_native_dispatch : IO Bool :=
-    let source := r#"use io {IO}
-def main (args : List String) : IO I64 := do {
+    let source := r#"def main (args : List String) : IO I64 := do {
     let r := if I64.beq 5 5 then 1 else 0;
     return r
 }
@@ -50,8 +47,7 @@ def main (args : List String) : IO I64 := do {
 /// `line_col_scan_direct` during the self-compile.
 #[test]
 def test_nested_if_in_else_branch_phi_arity : IO Bool :=
-    let source := r#"use io {IO}
-def classify (n : I64) (m : I64) : I64 :=
+    let source := r#"def classify (n : I64) (m : I64) : I64 :=
     if I64.beq n 0
     then 100
     else
@@ -75,8 +71,7 @@ def main (args : List String) : IO I64 := do {
 /// 'i64'" at the `ret` itself.
 #[test]
 def test_def_body_bare_native_comparison_return : IO Bool :=
-    let source := r#"use io {IO}
-def is_five (n : I64) : Bool := I64.beq n 5
+    let source := r#"def is_five (n : I64) : Bool := I64.beq n 5
 def main (args : List String) : IO I64 := do {
     let r := if is_five 5 then 1 else 0;
     return r
@@ -101,8 +96,7 @@ def main (args : List String) : IO I64 := do {
 /// correctness is the SEPARATE, still-open bug tracked in that doc.
 #[test]
 def test_let_body_void_struct_literal : IO Bool :=
-    let source := r#"use io {IO}
-struct Pair {
+    let source := r#"struct Pair {
     a : I64,
     b : I64,
 }

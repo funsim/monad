@@ -1510,21 +1510,85 @@ pub fn organize_imports_for_files(
       &mut master_loaded,
     ) {
       Ok(()) => {
+        // Two passes, in this order and not interleaved. The completeness
+        // pass ADDS names (a reached-but-unimported name goes into the
+        // brace list that should have held it); the organizer pass
+        // REMOVES what nothing uses and turns a bare `use M` into a list.
+        // Both rewrite whole `use` declarations, so they must not both
+        // fire on the same one: running completeness first leaves no bare
+        // `use M` with a missing name behind, and the organizer then only
+        // sees declarations it is the sole owner of. The second pass
+        // re-loads the rewritten text, so it works on the file as it will
+        // exist, not as it was read.
         let module = master_loaded
           .get_module(&path)
           .expect("just-loaded module must be present");
-        let edits =
-          crate::term::organize_imports::compute_organize_import_edits(module, &master_loaded);
-        let new_source = if edits.is_empty() {
-          None
-        } else {
-          Some(crate::term::organize_imports::apply_text_edits(
-            &text, edits,
-          ))
+        let completion = match crate::term::module::import_completion(
+          &path,
+          &text,
+          Some(file.clone()),
+          &master_loaded,
+        ) {
+          Ok(completion) => completion,
+          Err(e) => {
+            results.push(OrganizeImportsResult {
+              path: file.clone(),
+              new_source: None,
+              error: Some(e),
+            });
+            continue;
+          }
+        };
+        let completion_edits =
+          crate::term::organize_imports::compute_completeness_edits(module, &completion);
+        if completion_edits.is_empty() {
+          let edits =
+            crate::term::organize_imports::compute_organize_import_edits(module, &master_loaded);
+          let new_source = if edits.is_empty() {
+            None
+          } else {
+            Some(crate::term::organize_imports::apply_text_edits(
+              &text, edits,
+            ))
+          };
+          results.push(OrganizeImportsResult {
+            path: file.clone(),
+            new_source,
+            error: None,
+          });
+          continue;
+        }
+        let completed = crate::term::organize_imports::apply_text_edits(&text, completion_edits);
+        let mut scratch = master_loaded.clone();
+        let edits = match crate::term::module::load_module_from_text_typed_at(
+          &completed,
+          &path,
+          Some(file.clone()),
+          &mut scratch,
+        ) {
+          Ok(()) => match scratch.get_module(&path) {
+            Some(module) => {
+              crate::term::organize_imports::compute_organize_import_edits(module, &scratch)
+            }
+            None => Vec::new(),
+          },
+          // The completed text is what would be written, so it has to load
+          // on its own. Report the failure rather than hand back a file
+          // that does not compile.
+          Err(e) => {
+            results.push(OrganizeImportsResult {
+              path: file.clone(),
+              new_source: None,
+              error: Some(format!("after completing imports: {e}")),
+            });
+            continue;
+          }
         };
         results.push(OrganizeImportsResult {
           path: file.clone(),
-          new_source,
+          new_source: Some(crate::term::organize_imports::apply_text_edits(
+            &completed, edits,
+          )),
           error: None,
         });
       }
@@ -1673,10 +1737,20 @@ fn check_one_source(
     &mut loaded,
   ) {
     Ok(()) => {
-      let warnings = loaded
+      let mut warnings = loaded
         .get_module(module_path)
         .map(|module| module_warnings_with_loaded(module, &loaded, Some(path)))
         .unwrap_or_default();
+      // Needs the SOURCE, not the built `Module`: elaboration rewrites a
+      // bare reference into its defining module's own spelling, which is
+      // exactly the evidence the completeness rule is stated over. See
+      // `unimported_name_diagnostics`.
+      warnings.extend(crate::term::module::unimported_name_diagnostics(
+        module_path,
+        source,
+        &loaded,
+        Some(path),
+      ));
       (warnings, loaded)
     }
     Err(crate::term::module::LoadingError::Type(type_error)) => (

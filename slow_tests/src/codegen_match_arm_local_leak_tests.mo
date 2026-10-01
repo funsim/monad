@@ -22,9 +22,7 @@
 /// The reference interpreter is unaffected (it has no shared ctx to
 /// leak), and `check` says nothing -- only compiling and running finds
 /// it, hence the full compile/link/execute round trip here.
-use io {IO}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// `resolve_branch_merge_info`'s own shape, reduced: the `some` arm
 /// reads two fields off its bound value (binding locals `label` and
@@ -37,8 +35,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 /// the module), and any other exit code means it read the wrong value.
 #[test]
 def test_match_arm_bindings_do_not_leak_into_sibling_arm : IO Bool :=
-    let source := r#"use io {IO}
-struct Info { reaches : Bool, label : String, blocks : I64 }
+    let source := r#"struct Info { reaches : Bool, label : String, blocks : I64 }
 def find (b : Bool) : Option Info :=
     if b then
         let i : Info := { reaches := true, label := "found", blocks := 99 } in
@@ -64,8 +61,7 @@ def main (args : List String) : IO I64 := do {
 /// order these two arms favorably.
 #[test]
 def test_match_arm_bindings_restore_outer_scope : IO Bool :=
-    let source := r#"use io {IO}
-type Two { one (v : I64), two (v : I64) }
+    let source := r#"type Two { one (v : I64), two (v : I64) }
 def pick (t : Two) (v : I64) : I64 :=
     match t {
         Two.one v => v + 100,

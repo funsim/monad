@@ -1,12 +1,11 @@
 /// Parser combinator functions for the self-hosted Monad parser.
 
 use lib::parser::core {
-  ParseError, ParseResult, custom, fail, is_empty, parse_error_remaining,
-  success, tag,
+  ParseError, ParseResult, is_empty, parse_error_remaining
 }
 use lib::parser::char_preds {byte_at, is_ident_char, is_ident_char_byte, is_prefix, is_space, is_space_byte}
-use lib::types {custom, list_reverse}
-use std::list {length}
+use lib::types {list_reverse}
+use std::list {}
 
 open ParseResult {fail, success}
 

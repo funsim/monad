@@ -1,6 +1,10 @@
 /// Phase 1 tests for the `http` mote core types.
 
-use lib::types {BEq, Headers, Request, Response, Show, Uri}
+use http::types {
+  Body.is_empty, Body.is_text, DELETE, GET, Headers, PATCH, POST, Request,
+  Response, Status.internal_server_error, Status.not_found, Status.ok, Uri,
+  http1_0, http1_1,
+}
 
 #[test]
 def test_request_get_fields : Bool :=

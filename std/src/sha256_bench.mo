@@ -6,8 +6,8 @@
 /// (pack/rotr/sigma/ch/maj) x64 rounds x N blocks, so don't reach for
 /// NIST-scale stress inputs here.
 
-use lib::bench {now, report, since}
-use lib::sha256 {}
+use std::bench {Bench.now, Bench.report, Bench.since}
+use std::sha256 {Sha256.hash}
 
 #[test]
 def bench_sha256_short : IO Bool := do {

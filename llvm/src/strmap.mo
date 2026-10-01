@@ -29,7 +29,11 @@
 /// as a real, live bug for `ScopeData.def_refs`/`inductives`, not merely
 /// theoretical. `String.hash`/`String.beq` need no dispatch at all, so this
 /// sidesteps the whole class of risk rather than hoping it does not fire.
-use std::map {}
+use std::map {
+  HashMap, HashMap.bucket_insert_str, HashMap.bucket_lookup_str,
+  HashMap.bucket_of, HashMap.empty_buckets, HashMap.get_bucket,
+  HashMap.set_bucket, map,
+}
 
 #[partial]
 pub def str_map_empty {V : Type} : HashMap String V := HashMap.map HashMap.empty_buckets

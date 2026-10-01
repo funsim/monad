@@ -1,10 +1,8 @@
-use io {IO}
 use lib::typecheck_harness {typecheck_file}
 use lang::types {}
 use lang::module {}
 
 open IO {println}
-
 
 // --- std/ non-test files ---
 

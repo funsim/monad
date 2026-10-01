@@ -72,9 +72,10 @@
 /// own rule. `check_deps` stays `false` everywhere; see
 /// `plans/bootstrapping/check-deps-memory-blowup.md`.
 
-use lib::types {
-  AttrArg, Attribute, Decl, DebugName, Def, Identifier, MatchCase, Term,
-  attr_args, def_d, has_attr, show_identifier, show_name_path,
+use lang::types {
+  AttrArg, Attribute, DebugName, Decl, Def, Identifier, MatchCase, Term,
+  attr_args, has_attr, if_, match_, mk, npath, package_private, show_identifier,
+  show_name_path,
 }
 use lib::pretty {show_term}
 

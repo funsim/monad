@@ -9,8 +9,6 @@
 // Usage: monad test examples/raw_strings.mo
 #![mote { name := "raw_strings", deps := [init] }]
 
-
-use io {}
 open IO {println}
 
 /// A regex with backslashes and a literal `"` -- no doubling required. Uses

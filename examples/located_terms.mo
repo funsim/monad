@@ -53,9 +53,8 @@
 /// either way, and a skipped case proves nothing.
 #![mote { name := "located_terms", deps := [init, std] }]
 
-use io {IO}
 open IO {println}
-use std::list {sum}
+use std::list {List.sum}
 
 /// `++` with a computed left operand.
 def concat_computed (x : I64) (suffix : String) : String :=

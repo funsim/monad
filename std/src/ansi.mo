@@ -5,7 +5,7 @@
 // NO_COLOR is set. This is a deliberate scope cut (see
 // implementations/ansi-colors.md in the plans repo), not an oversight.
 
-use io {IO}
+use lib::io {}
 open IO {get_env}
 
 type Color {
@@ -138,7 +138,6 @@ pub def colored (s : String) (color : Color) : IO String := do {
 }
 
 // ---------- Tests ----------
-
 
 #[test]
 def test_escape_reset : Bool :=

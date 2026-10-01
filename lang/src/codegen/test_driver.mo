@@ -42,24 +42,27 @@
 /// files are `std/src/concurrent/fiber_test.mo` and
 /// `std/src/concurrent/combine_test.mo`; they stay deferred until a
 /// self-hosted async runtime exists.
-use lib::types {
-  Attribute, DebugName, Decl, Def, LoadedModules, LocalScope, ModulePath, NamePath,
-  Scope,
-  ScopeData, Term, has_attr, show_identifier,
+use lang::codegen::decls {
+  collect_all_decls_from_modules, filter_reachable_decls,
+}
+use lang::codegen::qualify {qualified_def_name_str, qualify_modules}
+use lang::types {
+  Attribute, DebugName, Decl, Def, LocalScope, ModulePath, NamePath, Scope,
+  ScopeData, Term, has_attr, i64, id, no_attrs, num, package_private,
+  show_identifier, use_bare,
 }
 use lib::codegen::emit {
-  bare_npath, collect_all_decls_from_modules, compile_db_module,
-  desugar_struct_lits_decls, emit_type_head_is_io, filter_reachable_decls,
-  module_path_to_str, name_path_to_str, qualified_def_name_str, qualify_modules,
+  compile_db_module, desugar_struct_lits_decls, emit_type_head_is_io
 }
-use lib::codegen::symbols {symbol_identifier}
+use lang::codegen::symbols {
+  bare_npath, module_path_to_str, name_path_to_str, symbol_identifier,
+}
 use lib::parser::number {parse_i64}
 use lib::codegen::validate {validate_no_unwired_natives}
 use llvm::ir {LLVMModule}
-use lib::module {
-  elaborate_module_decls_best_effort,
-  get_loaded_all, get_loaded_main, resolve_open_aliases_in_modules,
-  try_parse_decls,
+use lang::module {
+  LoadedModules, ModuleInfo, elaborate_module_decls_best_effort, get_loaded_all,
+  get_loaded_main, resolve_open_aliases_in_modules, try_parse_decls,
 }
 use lib::scope {
   add_constraint_dict_params_decls, build_scope_from_decls, collect_classes,
@@ -67,9 +70,8 @@ use lib::scope {
   resolve_infix_decls, strip_all_leading_binders,
   validate_no_unresolved_class_calls,
 }
-use std::list {intercalate}
+use std::list {List.intercalate, List.length}
 use std::log {fail_line}
-use io {IO}
 
 // ─── Discovery ──────────────────────────────────────────────────────
 
@@ -477,13 +479,13 @@ pub def synthesize_test_driver_source (specs : List TestSpec) (file_path : Strin
     let red : String := esc ++ "[31m" in
     let reset : String := esc ++ "[0m" in
     let tail : String := " tests passed in " ++ file_path in
-    // `use io {IO}` + `open IO {...}`: without it the driver's own bare
+    // `open IO {println}`: without it the driver's own bare
     // `println`/`current_time_nano` calls resolve for CODEGEN (which
     // finds natives independently of the checker's `Scope`) but NOT for
     // elaboration, which builds a real `Scope` and requires every name
     // to resolve -- and a `main` that fails to elaborate is silently
-    // discarded, taking the driver with it.
-    "use io {IO}\n" ++
+    // discarded, taking the driver with it. `IO` itself needs no import:
+    // it is ambient, re-exported by `init/src/lib.mo`.
     "open IO {println}\n" ++
     "\n" ++
     fmt_dur_source ++
@@ -907,9 +909,8 @@ def test_synthesize_test_driver_source_parses_and_names_main : Bool :=
     // The whole point of the string-templating architecture decision
     // (see this file's own top-of-file doc comment): the synthesized
     // source must round-trip through the REAL parser, producing exactly
-    // one `Decl.def_d` named "main" (plus the leading `use io {IO}`/
-    // `open IO {...}` decls and the `__pad2`/`__fmt_dur` helpers the
-    // driver source also declares).
+    // one `Decl.def_d` named "main" (plus the leading `open IO {...}` decl
+    // and the `__pad2`/`__fmt_dur` helpers the driver source also declares).
     let specs : List TestSpec := List.cons (bool_spec "test_a") (List.cons (bool_spec "test_b") List.empty) in
     let source : String := synthesize_test_driver_source specs "m.mo" test_result_path in
     match try_parse_decls source {

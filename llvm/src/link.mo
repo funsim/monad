@@ -12,10 +12,9 @@
 /// four call sites, each of which had to be found and fixed by hand when
 /// the file moved.
 
-use io {IO}
 open IO {println}
 use std::process {exec_cmd}
-use std::bench {now, report_since}
+use std::bench {Bench.now, Bench.report_since}
 use std::log {fail_line, ok_line, stage}
 
 /// `llc -filetype=obj`. Returns llc's exit code.

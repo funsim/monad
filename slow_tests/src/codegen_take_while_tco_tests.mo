@@ -32,18 +32,15 @@
 /// whose length makes the exit differ from 100 (the input length is
 /// deliberately NOT a multiple of 256 so `exit = 100 + rest` mod 256
 /// can't alias the success value).
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// The always-true whole-input scan: pre-fix this is exactly the
 /// per-char mutual-recursion + whole-remainder-copy loop, at ~3x the
 /// input size that SIGSEGV'd the pre-fix binary.
 #[test]
 def test_take_while_tco_large_scan : IO Bool :=
-    let source := r#"use io {IO}
-open IO {println}
+    let source := r#"open IO {println}
 use lang::parser::combinators {take_while}
 
 def always_true (s : String) : Bool := I64.beq (String.length s) (String.length s)

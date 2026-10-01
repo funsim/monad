@@ -1,4 +1,11 @@
+# Build output. This repository names the two toolchains' directories apart --
+# `target-rust/` is cargo's (.cargo/config.toml) and `target-monad/` is
+# monad's (.monad/config.toml) -- so all three are listed. `/target` is kept
+# because it is still the monad default for a project with no config, and an
+# edit here could restore it; dropping it would fail quietly.
 /target
+/target-rust
+/target-monad
 history.txt
 
 # Devenv

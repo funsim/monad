@@ -1,6 +1,6 @@
 use lib::types {
-  LocalScope, Scope, Similar, SortLevel, Term, TypeError, forall, hole, level_le,
-  mismatch, pi, sentinel, sort_level_of, term_peel,
+  LocalScope, Scope, Similar, SortLevel, Term, TypeError, level_le, sentinel,
+  sort_level_of, term_peel
 }
 use lib::typecheck::whnf {whnf}
 

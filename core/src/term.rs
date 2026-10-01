@@ -2724,10 +2724,16 @@ impl ModulePath {
   /// This is the only thing that makes `use lang::codegen::ir` find
   /// `llvm/src/ir.mo` after the repo became a mote workspace --
   /// `to_file_path` joins segments literally and knows nothing about motes.
-  /// The Rust host stays permissive: this is a resolution mapping only, with
-  /// no check that the importing file declared the mote (see
-  /// `plans/packaging/package-system.md` §5d -- enforcement is the
-  /// self-hosted compiler's job).
+  ///
+  /// This is a resolution MAPPING only. Which spellings are legal at all is
+  /// decided one level up, on the `Decl::Use` itself
+  /// (`validate_use_qualification`, core/src/term/module.rs): the first
+  /// segment must name a mote or `lib`, and the ambient `prelude` may not be
+  /// named. That rule REPLACES the permissiveness
+  /// `plans/packaging/package-system.md` §5d reserved for this host, because
+  /// a bare `use io` resolves to different files under the two compilers.
+  /// Whether the importing file DECLARED the mote it names is still
+  /// unchecked here, and still the self-hosted compiler's job.
   pub fn to_mote_file_path(&self) -> PathBuf {
     let mut p = PathBuf::new();
     let mut iter = self.0.iter().peekable();
@@ -2864,41 +2870,155 @@ pub enum UseItem {
   },
 }
 
-/// What bare names a given (sub)module contributes, after flattening a
-/// `UseFilter` against its base module path.
+/// Which names of a module a brace list selects, along ONE axis.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AllowedNames {
   All,
+  /// Exactly these SPELLINGS — a declaration's own dotted name
+  /// (`List.length`), not its last segment. `Only(Set::default())` is the
+  /// empty selection: nothing on this axis.
   Only(Set<Identifier>),
+}
+
+/// What one consumer's `use` lines select from ONE module. Two independent
+/// axes, because the import forms differ on both:
+///
+/// | form | `bare` | `qual` |
+/// |---|---|---|
+/// | `use M {a, b}` | `Only{a, b}` | `Only{a, b}` |
+/// | `use M {*}` | `All` | `All` |
+/// | `use M {}` / bare `use M` | `Only{}` | `All` |
+///
+/// A module absent from the map is unfiltered on both axes: the consumer
+/// itself, and the ambient modules (`prelude`/`init`/`std` and everything
+/// reachable from them through `pub use`), which every file sees whole.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+  pub bare: AllowedNames,
+  pub qual: AllowedNames,
+}
+
+impl Default for Selection {
+  /// Unfiltered — the shape an unlisted (consumer/ambient) module gets.
+  fn default() -> Self {
+    Selection {
+      bare: AllowedNames::All,
+      qual: AllowedNames::All,
+    }
+  }
+}
+
+impl Selection {
+  /// The shape every brace-less / explicit form of "no names bare, every
+  /// name qualified" shares: bare `use M`, `use M {}`, and the entry a
+  /// `use M {Sub {…}}` registers for the sub-module itself.
+  pub fn qualified_only() -> Self {
+    Selection {
+      bare: AllowedNames::Only(Set::default()),
+      qual: AllowedNames::All,
+    }
+  }
+
+  /// Union two selections of the same module (a file may `use M` more
+  /// than once). `All` absorbs `Only`, and two `Only`s union.
+  pub fn merge(&mut self, other: &Selection) {
+    self.bare = merge_allowed_names(&self.bare, &other.bare);
+    self.qual = merge_allowed_names(&self.qual, &other.qual);
+  }
+
+  /// Whether a declaration whose own spelled name is `full_path` may be
+  /// written BARE (`List.length`) in the consumer.
+  pub fn selects_bare(&self, full_path: &NamePath, is_constructor: bool) -> bool {
+    match &self.bare {
+      AllowedNames::All => true,
+      AllowedNames::Only(names) => spelling_selected(names, full_path, is_constructor),
+    }
+  }
+
+  /// Whether it may be written QUALIFIED (`std::list::List.length`).
+  pub fn selects_qual(&self, full_path: &NamePath, is_constructor: bool) -> bool {
+    match &self.qual {
+      AllowedNames::All => true,
+      AllowedNames::Only(names) => spelling_selected(names, full_path, is_constructor),
+    }
+  }
+}
+
+fn merge_allowed_names(a: &AllowedNames, b: &AllowedNames) -> AllowedNames {
+  match (a, b) {
+    (AllowedNames::All, _) | (_, AllowedNames::All) => AllowedNames::All,
+    (AllowedNames::Only(x), AllowedNames::Only(y)) => {
+      AllowedNames::Only(x.union(y).cloned().collect())
+    }
+  }
+}
+
+/// Whether a brace-list spelling selects a declaration whose own spelled
+/// name is `full_path`.
+///
+/// Three ways to match, and the differences between them are the whole
+/// point of the rule:
+///
+/// - **Exact spelling.** `{List.length}` selects `List.length`.
+/// - **Dotted prefix.** A listed spelling also selects anything it is a
+///   dotted prefix of, which is how `{List}` drags in `List.cons` and
+///   `List.length` — naming a namespace names its members. The boundary
+///   is a `.`, so `{length}` selects nothing of `List.length`: a partial
+///   spelling is only ever a suggestion in the error, never a match.
+/// - **A constructor's own bare name.** `{cons}` selects `List.cons`,
+///   because that is the name the SELF-HOSTED parser stores it under
+///   (single-segment — see `declared_names_of`'s note on keeping the two
+///   implementations in step). `{length}` still selects nothing, so this
+///   widening is confined to constructors.
+pub fn spelling_selected(
+  names: &Set<Identifier>,
+  full_path: &NamePath,
+  is_constructor: bool,
+) -> bool {
+  let spelling = full_path.to_string();
+  names.iter().any(|n| {
+    let n = n.as_str();
+    spelling == n
+      || (is_constructor && full_path.last().as_str() == n)
+      || (spelling.len() > n.len()
+        && spelling.starts_with(n)
+        && spelling.as_bytes().get(n.len()) == Some(&b'.'))
+  })
 }
 
 impl UseItem {
   /// Expand a (possibly nested) `UseItem` into a flat map from module path
-  /// to the names allowed as bare names from that (sub)module. Also
-  /// registers an entry for the (sub)module itself so qualified access
-  /// through it works even with no bare names selected (e.g. `sub {}`).
-  pub fn flatten(&self, base_path: &ModulePath) -> Map<ModulePath, AllowedNames> {
+  /// to what that (sub)module is selected to contribute. Also registers an
+  /// entry for the (sub)module itself so qualified access through it works
+  /// even with no bare names selected (e.g. `sub {}`).
+  pub fn flatten(&self, base_path: &ModulePath) -> Map<ModulePath, Selection> {
     let mut out = Map::new();
     self.flatten_into(base_path, &mut out);
     out
   }
 
-  fn flatten_into(&self, base_path: &ModulePath, out: &mut Map<ModulePath, AllowedNames>) {
+  fn flatten_into(&self, base_path: &ModulePath, out: &mut Map<ModulePath, Selection>) {
     match self {
+      // `n` is selected on both axes: bare `n`, and `M::n`.
       UseItem::Name(name) => {
         add_allowed(out, base_path.clone(), name.clone());
       }
-      UseItem::Rename(_from, to) => {
-        add_allowed(out, base_path.clone(), to.clone());
+      // `n as alias` binds `alias` bare, and still selects the
+      // declaration `n` — so `M::n` stays reachable.
+      UseItem::Rename(from, to) => {
+        add_allowed(out, base_path.clone(), from.clone());
+        add_bare_alias(out, base_path.clone(), to.clone());
       }
       UseItem::Glob => {
-        out.insert(base_path.clone(), AllowedNames::All);
+        out.insert(base_path.clone(), Selection::default());
       }
       UseItem::SubModule { name, items } => {
         let sub_path = base_path.append(vec![name.clone()]);
+        // The sub-module is imported: every name in it is reachable
+        // qualified (`M::Sub::x`), even if the brace list names none.
         out
           .entry(sub_path.clone())
-          .or_insert(AllowedNames::Only(Set::default()));
+          .or_insert_with(Selection::qualified_only);
         for item in items {
           item.flatten_into(&sub_path, out);
         }
@@ -2907,7 +3027,7 @@ impl UseItem {
         let sub_path = base_path.append(vec![name.clone()]);
         out
           .entry(sub_path.clone())
-          .or_insert(AllowedNames::Only(Set::default()));
+          .or_insert_with(Selection::qualified_only);
         for item in items {
           item.flatten_into(&sub_path, out);
         }
@@ -2916,14 +3036,31 @@ impl UseItem {
   }
 }
 
-fn add_allowed(out: &mut Map<ModulePath, AllowedNames>, path: ModulePath, name: Identifier) {
-  match out
-    .entry(path)
-    .or_insert(AllowedNames::Only(Set::default()))
-  {
+fn add_allowed(out: &mut Map<ModulePath, Selection>, path: ModulePath, name: Identifier) {
+  let entry = out.entry(path).or_insert_with(Selection::qualified_only);
+  match &mut entry.bare {
+    AllowedNames::All => {}
+    AllowedNames::Only(names) => {
+      names.insert(name.clone());
+    }
+  }
+  match &mut entry.qual {
     AllowedNames::All => {}
     AllowedNames::Only(names) => {
       names.insert(name);
+    }
+  }
+}
+
+/// The bare-only half of `add_allowed`, for a `use ... as` alias: the
+/// ALIAS is what a bare reference spells, but it is not a spelling the
+/// module declares, so it must not widen the qualified axis.
+fn add_bare_alias(out: &mut Map<ModulePath, Selection>, path: ModulePath, alias: Identifier) {
+  let entry = out.entry(path).or_insert_with(Selection::qualified_only);
+  match &mut entry.bare {
+    AllowedNames::All => {}
+    AllowedNames::Only(names) => {
+      names.insert(alias);
     }
   }
 }

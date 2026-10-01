@@ -25,17 +25,18 @@
 ///                a bigger tree.
 ///
 /// Run: `cargo run --release -- test bench/parser_locate_cost.mo`
-use io {IO}
+use lang::parser::whitespace {skip_spaces}
+use llvm::strmap {str_map_empty, str_map_lookup}
+use std::list {List.length}
 open IO {println, read_file}
-use std::bench {now, report_since}
-use lang::types {Decl, Location}
+use std::bench {Bench.now, Bench.report_since}
+use lang::types {Decl, Location, ParseDecl}
 use lang::parser::core {ParseResult}
-use lang::parser::lower_parse {ParseDecl, collect_decl_rems, lower_ctx_bare, lower_ctx_locating, lower_parse_decls}
-use lang::parser {build_loc_table, decls_skip, rekey_by_rem, rems_to_offsets, skip_docstrings, skip_spaces}
+use lang::parser::lower_parse {collect_decl_rems, lower_ctx_bare, lower_ctx_locating, lower_parse_decls}
+use lang::parser {build_loc_table, decls_skip, rekey_by_rem, rems_to_offsets, skip_docstrings}
 use lang::parser::position {resolve_offsets_in_file}
 use lang::typecheck::macro_queue {expand_decls}
-use std::map {}
-
+use std::map {HashMap}
 
 #[partial]
 def pre_decls (r : ParseResult (List ParseDecl)) : List ParseDecl :=
@@ -44,12 +45,10 @@ def pre_decls (r : ParseResult (List ParseDecl)) : List ParseDecl :=
         ParseResult.fail _ => List.empty,
     }
 
-
 /// Forces a lowered decl list. A benchmark that measures nothing is worse
 /// than one that measures the wrong thing (AGENTS.md item 25).
 #[partial]
 def decl_count (ds : List Decl) : I64 := List.length ds
-
 
 /// One-key probe, since a `HashMap` has no cheap size -- same trick
 /// `qualify_modules`' own sub-timing uses.
@@ -59,7 +58,6 @@ def table_probe (t : HashMap String Location) : I64 :=
         Option.some _ => 1,
         Option.none => 0,
     }
-
 
 #[partial]
 def run_locate_cost (path : String) : IO Bool := do {
@@ -126,7 +124,6 @@ def run_locate_cost (path : String) : IO Bool := do {
     // dropped some would look faster rather than look wrong.
     return (I64.gt n_pre 0 && I64.beq n_bare n_loc && I64.beq n_eb n_el)
 }
-
 
 /// A mid-size real file: 73 KB, ~1469 located spans.
 #[test]

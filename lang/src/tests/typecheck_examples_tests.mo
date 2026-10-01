@@ -1,11 +1,11 @@
-use lib::types {
+use lang::types {
   Decl, Def, InductConstructor, Inductive, LocalScope, ModulePath, Scope,
-  ScopeData, Term, def_d, hole, id, inductive_d, mk, mp,
+  ScopeData, Term, id,
 }
-use lib::module {elaborate_module_decls, locals_with_def_typevars, mk, parse_all_decls}
-use lib::parser::core {fail, mk, success}
+use lib::module {elaborate_module_decls, locals_with_def_typevars, parse_all_decls}
+use lang::parser::core {fail, success}
 use lib::scope {build_scope_from_decls}
-use lib::typecheck::infer {empty_local_types, empty_locals, mk, type_check}
+use lib::typecheck::infer {empty_local_types, empty_locals, type_check}
 
 def empty_local_scope : LocalScope := {
     vars := List.empty,

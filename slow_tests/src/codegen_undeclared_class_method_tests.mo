@@ -29,7 +29,6 @@
 /// The message is asserted to name the call AS WRITTEN (`Bag.zzz`) and not
 /// the other class's promoted def, which is what separates "reported to
 /// the user" from "silently rewired to a working symbol".
-use io {IO}
 use std::process {exec_cmd, process_id}
 use lang::module {load_file_modules}
 use lang::codegen::emit {compile_loaded_modules_to_ir}

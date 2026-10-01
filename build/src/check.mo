@@ -32,17 +32,15 @@
 ///     rendered output verbatim, so a replay is byte-exact -- see
 ///     `Build.check_block`.
 
-use io {IO}
-use std::process {}
-use std::list {contains_by, intercalate}
-use std::sha256 {}
-use lang::mote {discover}
+use std::list {List.contains_by, List.intercalate, List.length}
+use std::sha256 {Sha256.hash}
+use lang::mote {Mote.discover}
 use lang::module {extract_directory}
 use lang::parser::number {parse_i64}
-use lib::hash {DigestTool, file_digest_with, probe_digest_tool}
-use lib::identity {compiler_digest_with}
-use lib::closure {closure_digest_with}
-use lib::store {}
+use build::hash {Build.file_digest_with, Build.probe_digest_tool, DigestTool}
+use build::identity {Build.compiler_digest_with}
+use build::closure {Build.closure_digest_with}
+use build::store {Build.ensure_dir, Build.entry_root_dir, check}
 
 /// The working directory under ONE name.
 ///
@@ -317,11 +315,15 @@ def Build.plan_keys (tool : DigestTool) (compiler : String) (files : List String
 def Build.check_key (file_digest : String) (closure : String) (compiler : String) : String :=
     Sha256.hash (List.intercalate "\n" [file_digest, closure, compiler])
 
-/// The digest of `root`'s tree, from the memo `Build.plan_roots` built.
+/// The digest of `root`'s tree, from a memo of root -> closure digest.
 /// Absent means the digest failed (or the root was never walked), and a
 /// file with no closure digest gets no key -- checked normally, never
 /// served from the store.
-def Build.root_find (root : String) (roots : List (Pair String String)) : Option String :=
+///
+/// Shared with `gc`, which needs the same lookup over its own memo
+/// (`Build.collect_root_digests`, `build/src/manage.mo`); the two memos
+/// are built by different walks but have this shape.
+pub def Build.root_find (root : String) (roots : List (Pair String String)) : Option String :=
     match roots {
         List.empty => Option.none,
         List.cons e rest =>

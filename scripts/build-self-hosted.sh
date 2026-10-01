@@ -64,8 +64,8 @@ out="$1"; shift
 mkdir -p "$out"
 # ABSOLUTE, because `-o` is a NAME and only an absolute value wins outright:
 # a relative out dir nests the binary under the target dir, so `-o
-# target/selfhosted/monad` lands at `target/monad/debug/target/selfhosted/
-# monad` -- and then this script's own closing `test -x "$out/monad"` fails
+# target-monad/selfhosted/monad` lands at `target-monad/debug/target-monad/
+# selfhosted/monad` -- and then this script's own closing `test -x "$out/monad"` fails
 # with no message at all, which reads as a build that did nothing. Measured
 # 2026-09-30 on exactly that invocation. Every CI caller already passes an
 # absolute path ($TMPDIR-rooted, or `$root/dist`), so this only makes the

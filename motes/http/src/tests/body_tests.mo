@@ -1,7 +1,10 @@
 /// Phase 9 tests — body handling, content-type, multipart parsing.
 
-use lib::types {}
-use lib::body {}
+use http::types {Body.is_empty, bytes, empty, form, stream, text}
+use http::body {
+  Body.content_type, Body.from_bytes, Body.from_form, Body.from_text,
+  Body.is_close_delim, Body.length, Body.parse_multipart, Body.to_bytes_pure,
+}
 
 #[test]
 def test_content_type_text : Bool :=

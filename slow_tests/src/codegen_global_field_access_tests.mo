@@ -34,7 +34,6 @@
 /// with a struct field access takes the FIELD's LLVM type as its own return
 /// type and miscompiles. Every read lives in the compiled source string,
 /// behind an accessor.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
 
@@ -42,8 +41,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 /// two accessors reading its two fields.
 #[test]
 def test_global_field_read_through_a_def : IO Bool :=
-    let source := r#"use io {IO}
-struct Vec3 {
+    let source := r#"struct Vec3 {
     x : I64,
     y : I64,
 }
@@ -61,8 +59,7 @@ def main (args : List String) : IO I64 := do {
 /// second read is deliberate: reading `x` for `y` gives 80, not 42.
 #[test]
 def test_global_field_read_chains_through_two_structs : IO Bool :=
-    let source := r#"use io {IO}
-struct Vec3 {
+    let source := r#"struct Vec3 {
     x : I64,
     y : I64,
 }

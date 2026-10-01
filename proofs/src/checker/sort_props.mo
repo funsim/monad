@@ -17,6 +17,7 @@
 // "is this sort a valid inhabitant of that sort", a strictly lower
 // relation.
 
+use lang::src::types {concrete, forall, hole, id, named, pi, sort, succ}
 use lib::checker::harness {accepted, rejected, infers_sort_at}
 
 // --- The soundness pin ---

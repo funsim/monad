@@ -38,11 +38,11 @@
 /// macro param from a nested `macro_call_d`'s `args`, no nested
 /// binders of the same name) — flagged here rather than silently
 /// assumed correct.
-use lib::types {
+use lang::types {
   Attribute, Class, ClassDef, Con, Decl, Def, Identifier, InductConstructor,
   Inductive, Instance, Literal, MatchCase, ModulePath, Native, Param, Struct,
-  StructField, StructLitField, Term, TypeConstraint,
-  id_eq, level_const, sentinel,
+  StructField, StructLitField, Term, TypeConstraint, concrete, id_eq, level_const,
+  named, npath, package_private, sentinel, unnamed, use_bare,
 }
 use lib::typecheck::traverse {con_map_children, native_map_children, opt_term_map_children, opt_terms_map_children, term_map_children}
 

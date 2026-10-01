@@ -50,15 +50,14 @@
 // channel back from the fixture program -- `ffi_link_test.mo` in this
 // directory is where `sin`'s result, and the narrow-int round trips, are
 // asserted on directly, from plain `#[test]` defs.
-use io {IO}
 open IO {println}
 use std::process {exec_cmd, process_id}
-use lang::types {LoadedModules}
+use lang::types {}
 use lang::module {collect_link_libs, get_loaded_all, load_file_modules}
 use llvm::ir {emit_module}
 use lang::codegen::emit {compile_loaded_modules_to_ir}
 use llvm::link {compile_ir_to_obj, compile_runtime_obj, link_objects, map_dash_l}
-use runtime {}
+use runtime {Runtime.c_path}
 
 /// The fixture program: exercises all four extern shapes the wrapper
 /// has to adapt -- `puts` (`String` -> `I32`: `inttoptr` in, `sext`

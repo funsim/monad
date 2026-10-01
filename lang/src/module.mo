@@ -1,24 +1,28 @@
 /// Module loading infrastructure for the self-hosted compiler.
 /// Parses source text and builds scope data from declarations.
 
-use io {IO}
-use std::io {file_exists, is_dir, list_dir, println, read_file}
-use std::bench {now, report, report_since, since}
+use std::io {}
+use std::bench {Bench.now}
 use std::process {exec_cmd, process_id}
 use lib::elaborate {free_vars, names_of_decls, elaborate_def}
-use lib::types {
-  module_path_to_string_colon,
-  Class, ClassDef, Decl, DeclGroup, DebugName, Def, Identifier, Instance, InductConstructor, Inductive, Infix,
-  LoadedModules, LocalScope, LocalVar, ModulePath, NamePath, NameRef, Param, Scope,
-  ScopeData, ScopeInstance, Struct, StructField, Term, TypeError, def_d, hole, id, id_eq,
-  inductive_d, list_reverse, mk, mp, name, nid, show_identifier, show_module_path, show_name_path,
-  term_peel, to_name, union_ids,
-  use_d,
+use lang::types {
+  Attribute, Class, ClassDef, DebugName, Decl, DeclGroup, Def, Identifier,
+  InductConstructor, Inductive, Infix, Instance, LocalScope, LocalVar, ModulePath,
+  NamePath, NameRef, Param, Scope, ScopeData, ScopeInstance, Struct, StructField,
+  Term, TypeConstraint, TypeError, UseFilter, UseItem, concrete, id_eq,
+  list_reverse, many, module_path_to_string_colon, package_private, priv_,
+  show_identifier, show_module_path, show_name_path, term_peel, union_ids,
+  use_bare, use_glob, use_items, use_name, use_rename, use_sub, use_sub_rename,
+  visibility_beq,
 }
 use lib::parser {decls_parser, decls_parser_located, decls_parser_strict, module_path_to_string}
-use lib::parser::core {ParseResult, fail, mk, success}
+use lib::parser::core {ParseResult}
 use lib::parser::diagnostic {render_parse_error}
-use lib::mote {MoteManifest, Mote}
+use lang::mote {
+  Mote.discover, Mote.manifest_of_attr, Mote.mote_attr_unknown_keys,
+  Mote.parse_manifest, Mote.toolchain_candidates, Mote.toolchain_missing_hint,
+  Mote.toolchain_root, Mote.workspace_members, MoteManifest,
+}
 use lib::pretty {show_term}
 use lib::typecheck::macro_apply {expand_decl_gen_call}
 use lib::typecheck::macro_queue {DeclGenEntry, build_decl_gen_registry, derive_bridge_decls, expand_decls, lookup_decl_gen}
@@ -48,21 +52,21 @@ use lib::scope {
 use lib::termination {check_termination_all}
 use lib::typecheck::diagnostic {render_type_error}
 use lib::typecheck::levels {is_level_binder_kind}
-use lib::typecheck::infer {empty_local_types, empty_locals, mk, type_check}
+use lib::typecheck::infer {empty_local_types, empty_locals, type_check}
 // `--verbose` per-module/per-stage trace (see `std/src/log.mo`'s own header
 // for why the helpers gate themselves and why `bench_step` below prints
 // through `timing_line`).
 use std::log {module_line, timing_line}
-use std::list {Show, all, length}
+use std::list {List.any, List.contains_by, List.length, Show}
 use std::show {Show}
 // `ScopeData.def_refs` is a `std.map` `HashMap ModulePath ScopeDef` (see
 // `lang/scope.mo`'s own `use std.map {}` doc comment for why the import
 // is empty).
-use std::map {}
+use std::map {HashMap, HashMap.merge_buckets}
 // `Runtime.c_path` is the last tier of `resolve_runtime_src` below -- the
 // checkout-root-relative literal, kept in the mote that owns the C file
 // rather than repeated here.
-use runtime {}
+use runtime {Runtime.c_path}
 
 open IO {file_exists, is_dir, list_dir, println, read_file}
 open ParseResult {fail, success}
@@ -171,6 +175,115 @@ def extract_use_decls_go (decl_list : List Decl) (acc : List ModulePath) : List 
             }
     }
 
+/// `extract_use_decls`'s filter-preserving sibling: the same walk, but it
+/// keeps the `UseFilter` instead of discarding it (`Decl.use_d path _ _`).
+///
+/// The mote-dependency checks above only ever ask WHICH modules a file
+/// imports, so dropping the filter there is right. The name-resolution
+/// check below asks which NAMES it imports, and cannot see a brace entry
+/// through that extractor at all -- this is why it exists rather than a
+/// second projection of the same list.
+#[partial]
+def extract_use_filters (decl_list : List Decl) : List (Pair ModulePath UseFilter) :=
+    extract_use_filters_go decl_list List.empty
+
+#[partial]
+def extract_use_filters_go (decl_list : List Decl) (acc : List (Pair ModulePath UseFilter)) : List (Pair ModulePath UseFilter) :=
+    match decl_list {
+        List.empty => acc,
+        List.cons d rest =>
+            match d {
+                Decl.use_d path filter _ =>
+                    extract_use_filters_go rest (List.cons (Pair.pair path filter) acc),
+                _ => extract_use_filters_go rest acc
+            }
+    }
+
+/// The name a declaration binds, as SOURCE spells it, or `Option.none` for
+/// a declaration that binds none.
+///
+/// Every kind is covered, not just `def`s, because a brace list routinely
+/// names types and classes -- `use init::io {IO}`, `use std::show {Show}`,
+/// `use http::types {Request}` -- and a def-only walk would report every
+/// one of those as unresolvable. Constructors count too: they are ordinary
+/// scope entries (`add_constructors_as_defs`, `lang/scope.mo`), so
+/// `use mod {Nil}` really does bind.
+///
+/// The rendering is what the comparison is against, so a DOTTED def comes
+/// back as its dotted spelling (`List.intercalate`). That is the whole
+/// point: a brace item is compared against the declaration's own spelled
+/// name, and `use_brace_item_name_dotted` (`lang/parser.mo`) now parses a
+/// dotted item, so `use std::list {intercalate}` is rejected while
+/// `use std::list {List.intercalate}` binds.
+def decl_local_name (d : Decl) : Option String :=
+    match d {
+        Decl.def_d dd => match dd { Def.mk {name, ..} => Option.some (show_name_path name) },
+        Decl.def_macro_d dd => match dd { Def.mk {name, ..} => Option.some (show_name_path name) },
+        Decl.inductive_d ind => match ind {
+            Inductive.mk name _ _ constructors _ _ =>
+                Option.some (show_name_path name)
+        },
+        Decl.struct_d st => match st { Struct.mk nm _ _ _ => Option.some (show_identifier nm) },
+        Decl.class_d cls => match cls { Class.mk nm _ _ _ _ => Option.some (show_identifier nm) },
+        Decl.instance_d ins => match ins { Instance.mk nm _ _ _ _ _ _ => Option.some (show_identifier nm) },
+        Decl.decl_gen_d nm _ _ _ => Option.some (show_name_path nm),
+        _ => Option.none
+    }
+
+/// Every name a module declares, including its inductives' constructors.
+/// Order is declaration order, but nothing depends on it: the only
+/// consumer is a membership test.
+#[partial]
+def declared_names_of (decl_list : List Decl) (acc : List String) : List String :=
+    match decl_list {
+        List.empty => acc,
+        List.cons d rest =>
+            declared_names_of rest (List.append acc (decl_carried_names d))
+    }
+
+/// `decl_local_name` plus the constructor names an `inductive_d` carries.
+/// Split out so `declared_names_of` stays one flat walk over the decl list.
+def decl_carried_names (d : Decl) : List String :=
+    match decl_local_name d {
+        Option.none => List.empty,
+        Option.some nm =>
+            match d {
+                Decl.inductive_d ind => match ind {
+                    Inductive.mk _ _ _ constructors _ _ =>
+                        List.cons nm (constructor_names constructors)
+                },
+                _ => List.cons nm List.empty
+            }
+    }
+
+/// Constructor names, as DECLARED: bare (`cons`, `mk`).
+///
+/// This side's parser already stores them single-segment
+/// (`NamePath.npath [name]`, `lang/parser.mo`) and `build_scope_inductive`
+/// (`lang/scope.mo`) binds each one under that bare name, so
+/// `use M {cons}` really does bind `cons` here. The Rust host stores the
+/// same constructor as two segments (`List.cons`,
+/// `term::induct_constructor`) and its `declared_names_of` therefore takes
+/// the last segment to land on the same string -- if it did not,
+/// `use M {cons}` would pass this check and fail the host's, and CI runs
+/// both over the corpus. Keep the two in step.
+///
+/// Only an ordinary `type` reaches this function: `decl_carried_names`
+/// calls it for `Decl.inductive_d` alone, so a `struct`'s synthesized
+/// `mk` is deliberately NOT a declared name here -- and the host's
+/// `declared_names_of` restricts itself to `InductiveVariant::Generic` to
+/// match.
+#[partial]
+def constructor_names (cns : List InductConstructor) : List String :=
+    match cns {
+        List.empty => List.empty,
+        List.cons cn rest =>
+            match cn {
+                InductConstructor.mk nm _ _ =>
+                    List.cons (show_name_path nm) (constructor_names rest)
+            }
+    }
+
 /// Convert an Identifier to a String
 def identifier_to_string (id : Identifier) : String :=
     match id {
@@ -271,19 +384,20 @@ def path_join (a : String) (b : String) : String :=
 /// It exists so that ONE FILE HAS ONE SPELLING, because a resolved path is
 /// what `ModuleInfo.file_path` records and `qualify_modules`'s
 /// `dedup_modules_by_file` (`lang/codegen/qualify.mo`) collapses the same
-/// file registered under two module paths BY COMPARING THAT STRING.
-/// `init/src/number.mo` reaches the loader twice -- as the bare `number`
-/// that `init/src/lib.mo`'s `pub use number {*}` names relative to its own
-/// directory, and as the `init::number` a mote prefix reads off
-/// `mote_relative_file`. From the checkout root both spellings are the same
-/// literal, so the dedup catches them. From inside a mote only the manifest
-/// can answer one of them and `..` survives in the join, giving
-/// `../init/src/number.mo` and `../lang/../init/src/number.mo` for the SAME
-/// file: two strings, no dedup, so its declarations were owned by two
-/// modules at once and every reference to them read as `declared in
+/// file registered under two module paths BY COMPARING THAT STRING. From
+/// inside a mote the join legitimately carries `..`, so one file reached by
+/// two routes could be spelled `../init/src/number.mo` and
+/// `<root>/init/src/number.mo`: two strings, no dedup, declarations owned by
+/// two modules at once, and every reference to them reading as `declared in
 /// number, init.number`. That flood is a qualify failure -- and from inside
 /// `cli/` it did not terminate at all: measured, 177 s of 100% CPU with not
 /// one syscall after the last resolution.
+///
+/// The bare-`number` route that made the two-routes case routine
+/// (`init/src/lib.mo`'s old `pub use number {*}`, beside the `init::number`
+/// a mote prefix reads off `mote_relative_file`) is gone: a `use` must now
+/// name a mote or `lib`. The `..` case it exposed is inherent to
+/// mote-relative resolution, so this function stays.
 #[partial]
 def normalize_path (p : String) : String :=
     let joined : String := join_path_segments (normalize_segments_go (path_segments_go p 0 0 List.empty) List.empty) "" in
@@ -666,8 +780,15 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
             Option.none => do {
                 let in_motes_cands <- motes_src_paths mp;
                 // The scan above is the BARE-name convention: the stem is
-                // probed under every `motes/*/src/`, which is how `use greet`
-                // finds `motes/example/src/greet.mo` without naming its mote.
+                // probed under every `motes/*/src/`. A `use` can no longer
+                // reach it -- the qualification rule rejects a one-segment
+                // module path before resolution ever runs
+                // (`check_use_spellings` below, the Rust host's
+                // `validate_use_qualification`), so there is no spelling of
+                // `use greet` left to find `motes/example/src/greet.mo`.
+                // It stays because this cascade is shared: the dependency
+                // walk and the prelude/toolchain probes call it too, and
+                // dropping a tier would change how they resolve.
                 // A QUALIFIED path (`use example::greet`) needs the other
                 // half: the head names the mote, so the rest is read within
                 // it. `mote_relative_file` is exactly that reading, and
@@ -698,11 +819,16 @@ def resolve_module_file (base_dir : String) (mp : ModulePath) : IO (Option Strin
 ///
 /// Mirrors the Rust host's `build_default_search_paths` (`core/src/lib.rs`),
 /// which pushes `cwd/motes` AND every `cwd/motes/*/src` onto its search
-/// path -- that is the whole reason a bare `use greet` finds
-/// `motes/example/src/greet.mo` without naming its mote, and why the
-/// fixture in `examples/test_mote.mo` reads the way it does. Directory
-/// probing rather than manifest-driven member resolution, deliberately:
-/// the Rust host probes directories, so parity means probing them too.
+/// path. Directory probing rather than manifest-driven member resolution,
+/// deliberately: the Rust host probes directories, so parity means probing
+/// them too.
+///
+/// This is the tier a one-segment `use greet` would have needed, and that
+/// spelling is gone: a `use` must now name a mote or `lib`, so the fixture
+/// in `examples/test_mote.mo` reads `use example::greet {greet}` and is
+/// answered by the qualified candidate just above rather than here. The
+/// scan is kept because the cascade is shared, not because a `use` can
+/// reach it.
 ///
 /// `List.empty` outside a checkout with a `motes/` directory -- which is
 /// every deployment, so the walk costs one `is_dir` there.
@@ -912,7 +1038,6 @@ def load_module_decls_at (file_path : String) (mp : ModulePath) : IO (Option (Li
         }
     }
 }
-
 
 // --- No longer referenced: the ScopeData-per-module loading path ----
 //
@@ -1158,7 +1283,6 @@ def collect_dep_module_infos (to_visit : List PendingModule) (visiting : List Mo
             }
     }
 
-
 // --- No longer referenced: the shared dependency-fold and the
 //     ScopeData merge ------------------------------------------------
 //
@@ -1325,7 +1449,6 @@ def list_append_go (xs : List A) (ys : List A) : List A :=
     }
 
 // --- Module resolution for type checking ---
-
 
 /// Type check all declarations in a module with a given scope. A thin
 /// `Bool`-returning wrapper over `check_module_with_scope` (the richer,
@@ -1987,7 +2110,7 @@ def elaborate_module_decls_go (scope : Scope) (decl_list : List Decl) (locals : 
 // Self-reference is matched on the SPELLING the elaborator left in the
 // term, exactly as the reference matches it, and for a qualified occurrence
 // the module half is compared too. That half is not decoration: the same
-// source checked twice by `target/release/monad-rs` gets different verdicts
+// source checked twice by `target-rust/release/monad-rs` gets different verdicts
 // depending on the module the file is checked AS -- `check probe_qual.mo`
 // (module `probe_qual`) rejects `type Q { mkQ (f : probe_qual::Q -> I64) }`
 // while the identical file named by absolute path (module
@@ -3055,8 +3178,13 @@ def validate_declared_deps (infos : List ModuleInfo) : IO (List String) :=
         List.empty => do { return List.empty },
         List.cons info rest => do {
             let here : List String <- validate_module_deps info;
+            // Names before the mote half's own reports, for the same reason
+            // `validate_module_deps` puts spellings before declaredness: a
+            // brace entry that cannot bind is the more fundamental fix, and
+            // `gate_declared_deps` reports only the first error it is handed.
+            let names : List String := validate_use_names infos info;
             let later : List String <- validate_declared_deps rest;
-            return (List.append here later)
+            return (List.append names (List.append here later))
         }
     }
 
@@ -3156,13 +3284,23 @@ def validate_module_deps (info : ModuleInfo) : IO (List String) := do {
     match validate_mote_attr info {
         List.cons e _ => return [e],
         List.empty => do {
+            let uses : List ModulePath := extract_use_decls info.decl_list;
             let mote <- mote_of_module info;
+            // Checked for EVERY file, script mode included: a one-off has no
+            // manifest to declare a mote in, so a bare `use io` is both most
+            // likely there and least visible. `gate_declared_deps` reports
+            // only the first error, and a re-spelled `use` is the more
+            // fundamental fix, so the spellings come first.
+            let spellings <- check_use_spellings mote info uses;
             match mote {
                 // Script mode -- a file outside any mote and with no inline
                 // annotation (a one-off). Nothing declared anything, so
                 // nothing is undeclared.
-                Option.none => return List.empty,
-                Option.some m => check_uses_declared m info (extract_use_decls info.decl_list)
+                Option.none => return spellings,
+                Option.some m => do {
+                    let declared <- check_uses_declared m info uses;
+                    return (List.append spellings declared)
+                }
             }
         }
     }
@@ -3224,6 +3362,540 @@ def use_head_mote (u : ModulePath) : Option String :=
                     }
             }
     }
+
+// ─── A `use` brace list must name declarations that exist ────────────
+//
+// `use M {n}` binds `n` only when `M` declares a top-level name that IS
+// `n`, matched against the declaration's own SPELLED name. A dotted def is
+// declared as one identifier holding a dot (`pub def List.length`), so the
+// brace item names the same spelling (`{List.length}`, via
+// `use_brace_item_name_dotted`, `lang/parser.mo`) and the bare tail
+// `{length}` names nothing. Nothing used to say so: the entry was a silent
+// no-op whose failure surfaced later as `unknown variable` at the CALL
+// site, if at all.
+//
+// Checked at load, where the whole `List ModuleInfo` is already in hand:
+// the target module is parsed, so this needs no extra I/O and no second
+// parse. `{*}` and `{}` are deliberately unchanged -- this is a
+// resolution rule, not import-list minimalism.
+
+#[partial]
+def validate_use_names (infos : List ModuleInfo) (info : ModuleInfo) : List String :=
+    check_use_filters infos info (extract_use_filters info.decl_list)
+
+#[partial]
+def check_use_filters (infos : List ModuleInfo) (info : ModuleInfo) (uses : List (Pair ModulePath UseFilter)) : List String :=
+    match uses {
+        List.empty => List.empty,
+        List.cons u rest =>
+            match u {
+                Pair.pair path filter =>
+                    list_append (check_one_use_filter infos info path filter) (check_use_filters infos info rest)
+            }
+    }
+
+def check_one_use_filter (infos : List ModuleInfo) (info : ModuleInfo) (path : ModulePath) (filter : UseFilter) : List String :=
+    match filter {
+        // Bare `use M` (deprecated, and never named anything) and an
+        // explicit empty list both import no names.
+        UseFilter.use_bare => List.empty,
+        UseFilter.use_items items =>
+            match find_module_by_path infos path {
+                // A path that resolves to no LOADED module is an ordinary
+                // module-not-found (or a `lib::`-aliased path, which the
+                // alias pass rewrites later); the loader reports that, and
+                // guessing here would report it twice.
+                Option.none => List.empty,
+                Option.some target =>
+                    check_use_items infos info path (declared_names_of target.decl_list List.empty) items
+            }
+    }
+
+#[partial]
+def check_use_items (infos : List ModuleInfo) (info : ModuleInfo) (path : ModulePath) (names : List String) (items : List UseItem) : List String :=
+    match items {
+        List.empty => List.empty,
+        List.cons item rest =>
+            list_append (check_one_use_item infos info path names item) (check_use_items infos info path names rest)
+    }
+
+def check_one_use_item (infos : List ModuleInfo) (info : ModuleInfo) (path : ModulePath) (names : List String) (item : UseItem) : List String :=
+    match item {
+        UseItem.use_name n => check_one_use_name info path names n,
+        // The name half is what has to exist; the alias is the caller's
+        // own choice of spelling and is never checked against `M`.
+        UseItem.use_rename n _alias => check_one_use_name info path names n,
+        UseItem.use_glob => List.empty,
+        UseItem.use_sub n sub => check_use_sub infos info path n sub,
+        UseItem.use_sub_rename n _alias sub => check_use_sub infos info path n sub
+    }
+
+/// `use foo { bar { baz } }`: the sub-list is checked against the module
+/// at the EXTENDED path, not against `foo`.
+#[partial]
+def check_use_sub (infos : List ModuleInfo) (info : ModuleInfo) (path : ModulePath) (n : Identifier) (items : List UseItem) : List String :=
+    let sub_path : ModulePath := use_sub_path path n in
+    match find_module_by_path infos sub_path {
+        Option.none => List.empty,
+        Option.some target =>
+            check_use_items infos info sub_path (declared_names_of target.decl_list List.empty) items
+    }
+
+/// `lang/scope.mo`'s `path_extend`, which is not exported -- a
+/// `ModulePath` plus one segment, the path a `use_sub` item addresses.
+def use_sub_path (path : ModulePath) (n : Identifier) : ModulePath :=
+    match path {
+        ModulePath.mp ids => ModulePath.mp (list_append ids (List.cons n List.empty))
+    }
+
+def check_one_use_name (info : ModuleInfo) (path : ModulePath) (names : List String) (n : Identifier) : List String :=
+    let name : String := identifier_to_string n in
+    if List.contains_by String.beq name names
+    then List.empty
+    else List.cons (unknown_use_name_error info path name (dotted_spelling_of names name)) List.empty
+
+/// The declared name `n` is the TAIL of, if the module declares one --
+/// `length` is the tail of `List.length`. This is what turns the error
+/// every dotted import produces into one that names the spelling the user
+/// actually wanted, rather than only saying that what they wrote is wrong.
+#[partial]
+def dotted_spelling_of (names : List String) (n : String) : Option String :=
+    match names {
+        List.empty => Option.none,
+        List.cons x rest =>
+            if String.beq (tail_after_last_dot x) n then Option.some x else dotted_spelling_of rest n
+    }
+
+/// Everything after the LAST `.`, or `""` when there is none.
+/// `init::string` exports no `split`/`index_of`, so this scans with
+/// `String.slice`; identifiers and def names are short, and this only runs
+/// on the error path.
+#[partial]
+def tail_after_last_dot_go (s : String) (len : I64) (i : I64) (last : I64) : I64 :=
+    if I64.lt len i
+    then last
+    else tail_after_last_dot_go s len (I64.add i 1)
+        (if String.beq (String.slice s i 1) "." then i else last)
+
+def tail_after_last_dot (s : String) : String :=
+    let len : I64 := String.length s in
+    let last : I64 := tail_after_last_dot_go s len 0 (-1) in
+    if I64.lt last 0 then "" else String.drop (I64.add last 1) s
+
+def unknown_use_name_error (info : ModuleInfo) (path : ModulePath) (n : String) (dotted : Option String) : String :=
+    let p : String := module_path_to_string path in
+    String.concat_all [
+        "error: `", p, "` declares no `", n, "`\n",
+        "  `use ", p, " {", n, "}` in ", info.file_path, "\n",
+        use_name_hint p n dotted
+    ]
+
+/// The advice half of the message above. A brace item is matched against a
+/// declaration's full spelled name, so the fix for a bare tail is to write
+/// the dotted spelling (`List.length`), and the fix for a name the module
+/// declares nowhere is to keep the module loaded with `{}` and reach the
+/// name qualified. `use_name_hint`'s Rust twin in
+/// `core/src/term/module.rs` says the same thing in the same words -- CI
+/// runs both over the corpus.
+def use_name_hint (p : String) (n : String) (dotted : Option String) : String :=
+    match dotted {
+        Option.some d => String.concat_all [
+            "  hint: `", d, "` is declared there — a brace item is matched against a declaration's full spelled name, not its last segment\n",
+            "  hint: write `use ", p, " {", d, "}`\n"
+        ],
+        Option.none => String.concat_all [
+            "  hint: a brace item names a top-level declaration exactly; nothing in `", p, "` is declared as `", n, "`\n",
+            "  hint: if the module is needed only for its qualified names, write `use ", p, " {}`\n"
+        ]
+    }
+
+// ─── A `use` must name a mote, or `lib` ──────────────────────────────
+//
+// A `use` path's first segment names a MOTE -- `init`, `std`, `runtime`,
+// any `motes/*` -- or the reserved alias `lib`, which is the importing
+// mote's own. Nothing else. A bare `use io` is a path relative to the
+// importing FILE, so which module it names depends on where that file
+// sits: `init/src/io.mo` and `std/src/io.mo` are spelled the same bare
+// way, and a file in `std/src/` resolves the second while the Rust host
+// resolves the first. Outside this checkout the bare form resolves
+// nothing at all, every candidate tier being a working-directory literal.
+
+/// The segments of a `use` path, as plain strings.
+def use_segment_names (u : ModulePath) : List String :=
+    match u { ModulePath.mp ids => List.map identifier_to_string ids }
+
+/// Whether a `use` path names the ambient prelude -- bare `prelude`, or
+/// `init::prelude`, its one other spelling.
+///
+/// The prelude is seeded into EVERY file's closure by the loader, so an
+/// import of it is redundant by construction. It is also the one module
+/// whose NAME is not its FILE name, so an explicit path to it is a second
+/// way to name `init/src/prelude.mo`.
+def use_names_ambient_prelude (u : ModulePath) : Bool :=
+    match use_segment_names u {
+        List.empty => false,
+        List.cons hd rest =>
+            match rest {
+                List.empty => String.beq hd "prelude",
+                List.cons hd2 rest2 =>
+                    match rest2 {
+                        List.empty => String.beq hd "init" && String.beq hd2 "prelude",
+                        List.cons _ _ => false
+                    }
+            }
+    }
+
+/// Whether a bare name is a MOTE -- the only thing a one-segment `use` may
+/// name, besides `lib`.
+///
+/// Probed, not looked up: no side keeps a registry of mote names, and
+/// neither needs one. `MoteManifest.declares` answers for the file's own
+/// mote and its declared dependencies; `mote_named_at` and
+/// `is_installed_mote` ask the filesystem the way resolution itself does.
+/// The Rust host asks the manifest half of the same question
+/// (`validate_use_qualification`, core/src/term/module.rs) so the two
+/// compilers cannot drift on what a source means.
+#[partial]
+def head_names_mote (m : Option MoteManifest) (head : String) : IO Bool := do {
+    if head_names_mote_declared m head then return true
+    else do {
+        let installed <- is_installed_mote head;
+        if installed then return true
+        else do {
+            let found <- mote_named_at head;
+            match found { Option.none => return false, Option.some _ => return true }
+        }
+    }
+}
+
+/// The manifest half of `head_names_mote`, split out because `#[test]` defs
+/// are pure and cannot touch the filesystem -- the same split, for the same
+/// reason, as `installed_mote_at` / `is_installed_mote`.
+def head_names_mote_declared (m : Option MoteManifest) (head : String) : Bool :=
+    if is_ambient_mote head then true
+    else match m {
+        Option.none => false,
+        Option.some man => MoteManifest.declares man head
+    }
+
+#[partial]
+def check_use_spellings (m : Option MoteManifest) (info : ModuleInfo) (uses : List ModulePath) : IO (List String) :=
+    match uses {
+        List.empty => do { return List.empty },
+        List.cons u rest => do {
+            let here <- check_one_use_spelling m info u;
+            let later <- check_use_spellings m info rest;
+            return (List.append here later)
+        }
+    }
+
+#[partial]
+def check_one_use_spelling (m : Option MoteManifest) (info : ModuleInfo) (u : ModulePath) : IO (List String) := do {
+    if use_names_ambient_prelude u then return [prelude_import_error info u]
+    else match use_segment_names u {
+        List.empty => return List.empty,
+        List.cons head rest =>
+            match rest {
+                // More than one segment: the head is a mote reference, which
+                // `check_one_use_declared` already validates.
+                List.cons _ _ => return List.empty,
+                List.empty => do {
+                    if String.beq head "lib" then return List.empty
+                    else do {
+                        let known <- head_names_mote m head;
+                        if known then return List.empty
+                        else do {
+                            let owner <- bare_use_owner info.file_path head;
+                            return [bare_use_error info u owner]
+                        }
+                    }
+                }
+            }
+    }
+}
+
+/// The mote that owns the module a bare name resolves to, so the hint can
+/// name the line to write rather than describe the rule.
+///
+/// Probed with resolution's own precedence: the importing file's directory
+/// first (`resolve_module_file`'s `relative_path` tier), then the working
+/// directory's `init`/`std`/`lang`. `none` when no candidate exists at all
+/// -- the bare name resolves nowhere, and a generic hint is better than an
+/// invented owner.
+#[partial]
+def bare_use_owner (importer : String) (head : String) : IO (Option String) := do {
+    let beside : String := raw_path_join (extract_directory importer) (String.concat head ".mo");
+    let here <- IO.file_exists (Path.path beside);
+    if here then owning_mote_name beside
+    else bare_use_owner_cwd head
+}
+
+#[partial]
+def bare_use_owner_cwd (head : String) : IO (Option String) := do {
+    let f : String := String.concat head ".mo";
+    let i <- IO.file_exists (Path.path (raw_path_join "init/src" f));
+    if i then return (Option.some "init")
+    else do {
+        let s <- IO.file_exists (Path.path (raw_path_join "std/src" f));
+        if s then return (Option.some "std")
+        else do {
+            let l <- IO.file_exists (Path.path (raw_path_join "lang/src" f));
+            if l then return (Option.some "lang")
+            else return Option.none
+        }
+    }
+}
+
+#[partial]
+def owning_mote_name (file : String) : IO (Option String) := do {
+    let m <- Mote.discover (extract_directory file);
+    match m {
+        Option.none => return Option.none,
+        Option.some man => return (Option.some man.name)
+    }
+}
+
+/// The message for a one-segment `use` that names a module rather than a
+/// mote.
+def bare_use_error (info : ModuleInfo) (u : ModulePath) (owner : Option String) : String :=
+    String.concat_all [
+        "error: `use ", module_path_to_string u, "` does not name a mote\n",
+        "  `use ", module_path_to_string u, "` in ", info.file_path,
+        " is a module path relative to the importing file, so which module it names depends on where that file sits\n",
+        "  hint: ", bare_use_hint (module_path_to_string u) owner,
+    ]
+
+def bare_use_hint (head : String) (owner : Option String) : String :=
+    match owner {
+        Option.some o =>
+            String.concat_all [
+                "write `use ", o, "::", head, "` for that module, or `use lib::", head,
+                "` for this mote's own"
+            ],
+        Option.none =>
+            String.concat_all [
+                "name the mote that owns it (`use <mote>::", head,
+                "`), or write `use lib::", head, "` for this mote's own"
+            ]
+    }
+
+// ─── The rule's own tests ───────────────────────────────────────────
+//
+// The Rust host carries the same six cases (core/src/term/module/test.rs).
+// Both runtimes enforce the rule, so a divergence here would mean a source
+// means one thing under `cargo run` and another under the compiler this
+// project ships. The legal half matters as much as the illegal one: a rule
+// that rejected everything would pass a rejection test.
+
+/// A `ModuleInfo` for a source string, in script mode -- no file is read
+/// and no mote is discovered, so `validate_module_deps` reports the `use`
+/// spellings and nothing else.
+def probe_module_info (source : String) : ModuleInfo :=
+    match try_parse_decls source {
+        Option.some decls => ModuleInfo.mk (ModulePath.mp [Identifier.id "probe"]) "probe.mo" decls,
+        Option.none => ModuleInfo.mk (ModulePath.mp [Identifier.id "probe"]) "probe.mo" List.empty
+    }
+
+#[test]
+def test_use_head_mote_of_a_qualified_path_is_the_mote : Bool :=
+    match use_head_mote (ModulePath.mp [Identifier.id "init", Identifier.id "io"]) {
+        Option.some h => String.beq h "init",
+        Option.none => false
+    }
+
+#[test]
+def test_use_head_mote_of_a_bare_name_is_none : Bool :=
+    match use_head_mote (ModulePath.mp [Identifier.id "io"]) {
+        Option.none => true,
+        Option.some _ => false
+    }
+
+#[test]
+def test_use_names_the_ambient_prelude_in_both_spellings : Bool :=
+    use_names_ambient_prelude (ModulePath.mp [Identifier.id "prelude"]) &&
+    use_names_ambient_prelude (ModulePath.mp [Identifier.id "init", Identifier.id "prelude"]) &&
+    Bool.not (use_names_ambient_prelude (ModulePath.mp [Identifier.id "init", Identifier.id "io"]))
+
+#[test]
+def test_bare_use_hint_names_the_owning_mote : Bool :=
+    String.beq (bare_use_hint "io" (Option.some "init"))
+        "write `use init::io` for that module, or `use lib::io` for this mote's own"
+
+#[test]
+def test_bare_use_of_a_module_is_rejected : IO Bool := do {
+    let errs <- validate_module_deps (probe_module_info "use io {IO}");
+    return (Bool.not (List.is_empty errs))
+}
+
+#[test]
+def test_use_of_the_prelude_is_rejected_in_both_spellings : IO Bool := do {
+    let bare <- validate_module_deps (probe_module_info "use prelude");
+    let qualified <- validate_module_deps (probe_module_info "use init::prelude");
+    return (Bool.not (List.is_empty bare) && Bool.not (List.is_empty qualified))
+}
+
+#[test]
+def test_use_of_a_mote_and_lib_is_accepted : IO Bool := do {
+    let cross <- validate_module_deps (probe_module_info "use init::io {IO}");
+    let sibling <- validate_module_deps (probe_module_info "use std::io {IO}");
+    let own <- validate_module_deps (probe_module_info "use lib {List}");
+    return (List.is_empty cross && List.is_empty sibling && List.is_empty own)
+}
+
+// ─── The `use` brace-name check (validate_use_names) ─────────────────
+//
+// `use M {n}` binds `n` only when `M` declares a top-level name that IS
+// `n`, checked on the DECLARATION. These drive `validate_use_names`
+// through a two-module world parsed from text, which is what the loader
+// hands it: `validate_declared_deps` gives it every loaded module and the
+// one being validated.
+
+/// Every declaration kind a brace list can name, at `probe::list`, plus
+/// the pair that keeps the comparison honest: a bare `length` sits
+/// ALONGSIDE the dotted `List.length`, so a check that compared tails
+/// instead of full names would accept both.
+def use_names_target : String := String.concat_all [
+    "def List.length : I64 := 1\n",
+    "def length : I64 := 2\n",
+    "def f : I64 := 3\n",
+    "type T {\n  mk (u : Unit)\n}\n",
+    "struct S { x : I64 }\n",
+    "class C A { def c (a : A) : A }\n",
+    "instance MyInst : C String {\n  def c (a : String) : String := a\n}\n",
+    "defmacro dm T := decls { }\n"
+]
+
+/// Parse each `(path, source)` target into a `ModuleInfo`, or `none` if
+/// any of them fails -- so a typo in a probe's own source is reported by
+/// the helper rather than silently contributing no names (which would let
+/// every rejection test below pass on a parse failure instead of on the
+/// rule).
+#[partial]
+def probe_targets (targets : List (Pair ModulePath String)) (acc : List ModuleInfo) : Option (List ModuleInfo) :=
+    match targets {
+        List.empty => Option.some acc,
+        List.cons t rest =>
+            match t {
+                Pair.pair path src =>
+                    match try_parse_decls src {
+                        Option.some decls => probe_targets rest (List.cons (ModuleInfo.mk path "target.mo" decls) acc),
+                        Option.none => Option.none
+                    }
+            }
+    }
+
+/// The error messages `validate_use_names` produces for a world holding
+/// `targets` plus `importing_src` as the file that imports one of them.
+/// Empty means the check passed.
+def probe_use_names (targets : List (Pair ModulePath String)) (importing_src : String) : List String :=
+    match probe_targets targets List.empty {
+        Option.none => [ "the probe target did not parse" ],
+        Option.some targets =>
+            let importing : ModuleInfo := probe_module_info importing_src in
+            validate_use_names (List.cons importing targets) importing
+    }
+
+/// The one-target shorthands. Spelled with `Pair.pair`/`List.cons` rather
+/// than `[(p, s)]`: a literal in argument position is exactly the shape
+/// AGENTS.md's bare-struct-literal trap covers, and there is nothing to
+/// gain here by testing it.
+def probe_list_names (target_src : String) (importing_src : String) : List String :=
+    let path : ModulePath := ModulePath.mp [Identifier.id "probe", Identifier.id "list"] in
+    let target : Pair ModulePath String := Pair.pair path target_src in
+    probe_use_names (List.cons target List.empty) importing_src
+
+/// The headline case, and the one the corpus was full of. `length` is not
+/// a declaration of `probe::list` -- `List.length` is -- so the entry
+/// binds nothing, and is now an error at the `use` line instead of a
+/// silent no-op whose failure surfaced later as `unknown variable` at the
+/// call site.
+#[test]
+def test_a_dotted_def_cannot_be_imported_by_name : Bool :=
+    match probe_list_names "def List.length : I64 := 1" "use probe::list {length}" {
+        List.cons msg rest =>
+            Bool.and (List.is_empty rest)
+                (String.starts_with "error: `probe::list` declares no `length`" msg),
+        List.empty => false
+    }
+
+/// A typo has no dotted sibling to point at, so the hint has to fall back
+/// to the module-load spelling rather than claim a dotted name exists.
+#[test]
+def test_a_use_name_declared_nowhere_is_rejected : Bool :=
+    match probe_list_names "def length : I64 := 1" "use probe::list {lenght}" {
+        List.cons msg rest =>
+            Bool.and (List.is_empty rest)
+                (String.starts_with "error: `probe::list` declares no `lenght`" msg),
+        List.empty => false
+    }
+
+/// The half a rule that rejected everything would pass without: every
+/// declaration kind a brace list names -- def, type, a constructor,
+/// struct, class, instance, defmacro -- plus the bare `length` that sits
+/// next to `List.length` and would be accepted by a tail comparison.
+#[test]
+def test_every_declaration_kind_can_be_imported_by_its_own_name : Bool :=
+    List.is_empty (probe_list_names use_names_target "use probe::list {f, T, mk, S, C, MyInst, dm, length}")
+
+/// ...and its mirror, which is the subtle half: `mk` here comes from a
+/// `STRUCT`, whose synthesized constructor is not a declared name on
+/// either compiler (`struct` is its own decl kind, and only a `type`
+/// names constructors). A rule that walked every inductive's constructors
+/// would accept this.
+#[test]
+def test_a_structs_synthesized_constructor_is_not_importable : Bool :=
+    Bool.not (List.is_empty (probe_list_names "struct S { x : I64 }" "use probe::list {mk}"))
+
+/// `{*}` and `{}` are deliberately unchanged: this is a resolution rule,
+/// not import-list minimalism. A bare `use` names nothing either.
+#[test]
+def test_a_glob_an_empty_list_and_a_bare_use_are_accepted : Bool :=
+    List.is_empty (probe_list_names use_names_target "use probe::list {*}") &&
+    List.is_empty (probe_list_names use_names_target "use probe::list {}") &&
+    List.is_empty (probe_list_names use_names_target "use probe::list")
+
+/// A rename is checked against the name it renames FROM. The alias is the
+/// importer's own choice of spelling and is never looked up in the target.
+#[test]
+def test_a_rename_checks_the_name_not_the_alias : Bool :=
+    List.is_empty (probe_list_names use_names_target "use probe::list {f as g}") &&
+    Bool.not (List.is_empty (probe_list_names use_names_target "use probe::list {g as f}"))
+
+/// A sub-list is checked against the module at the EXTENDED path, not the
+/// module that holds it. The two modules carry DIFFERENT names (`g` on
+/// `probe::outer`, `f` on `probe::outer::inner`) so a check that used the
+/// outer path would accept `inner {g}` and fail here.
+#[test]
+def test_a_sub_list_is_checked_against_the_extended_path : Bool :=
+    let outer_path : ModulePath := ModulePath.mp [Identifier.id "probe", Identifier.id "outer"] in
+    let inner_path : ModulePath := ModulePath.mp [Identifier.id "probe", Identifier.id "outer", Identifier.id "inner"] in
+    let outer : Pair ModulePath String := Pair.pair outer_path "def g : I64 := 1" in
+    let inner : Pair ModulePath String := Pair.pair inner_path "def f : I64 := 1" in
+    let world : List (Pair ModulePath String) := [outer, inner] in
+    List.is_empty (probe_use_names world "use probe::outer {inner {f}}") &&
+    Bool.not (List.is_empty (probe_use_names world "use probe::outer {inner {g}}"))
+
+/// A path that resolves to no LOADED module is left alone: that is an
+/// ordinary module-not-found (or a `lib::`-aliased path, rewritten
+/// later), which the loader reports where it happens. Reporting it here
+/// would say it twice, and with the wrong reason.
+#[test]
+def test_a_use_of_an_unloaded_module_is_left_alone : Bool :=
+    List.is_empty (probe_list_names use_names_target "use probe::absent {whatever}")
+
+/// The message for an explicit import of the prelude, which is ambient.
+///
+/// The check sits on the DECLARATION and never on resolution: the loader
+/// seeds `prelude` into every file's closure, and that alias is
+/// load-bearing -- `MoteManifest.dep_dir_of`'s self arm (lang/src/mote.mo)
+/// is what makes the prelude of the mote `init` reachable from inside
+/// `init/` at all.
+def prelude_import_error (info : ModuleInfo) (u : ModulePath) : String :=
+    String.concat_all [
+        "error: `use ", module_path_to_string u, "` names the prelude, which is ambient\n",
+        "  every file already sees `prelude` -- the loader seeds it into each module's closure, ", info.file_path, " included\n",
+        "  hint: delete the `use ", module_path_to_string u, "` line",
+    ]
 
 /// The `[dependencies.<head>] path` value to suggest, written relative to
 /// the directory the MANIFEST lives in (`mote_dir`) -- which is what a
@@ -4406,7 +5078,7 @@ def diags_lack (needle : String) (diags : List String) : Bool :=
 
 /// The rule's own case: a constructor field whose type is a function FROM
 /// the type being declared. Rejected by the reference
-/// (`target/release/monad-rs check` on exactly this source, 2026-09-23).
+/// (`target-rust/release/monad-rs check` on exactly this source, 2026-09-23).
 /// Asserting the message, not just non-emptiness, is what makes this fail if
 /// the diagnostic's wording drifts away from `TypeError::Generic`'s.
 #[test]
@@ -4494,7 +5166,7 @@ def test_check_module_strict_pos_skips_structs : IO Bool := do {
 // literal lambda; s1, because a declared `_` behaves exactly like an absent
 // annotation; r1/r3, because the reference accepts both).
 //
-// Every row is measured against `target/release/monad-rs check` on this same
+// Every row is measured against `target-rust/release/monad-rs check` on this same
 // source, and against the compiled self-hosted binary. `T` is declared EMPTY
 // (`type T {}`) so the rows need no constructor and no `open` -- each row's
 // value is a lambda -- and `T` doubles as row r2's non-arrow type. That is
@@ -5096,23 +5768,30 @@ def test_hole_lam_arg_enforces_the_domain : IO Bool := do {
 }
 
 #[test]
-def test_check_file_reports_missing_file : Bool :=
-    let empty_cache : ModuleInfoCache := module_info_cache_empty in
-    match check_file_cached empty_cache "definitely/does/not/exist.mo" false {
-        IO.io result =>
-            match result {
-                FileCheckAndCache.mk fc_result _cache =>
-                    match fc_result {
-                        FileCheckResult.mk _path diags =>
-                            match diags {
-                                List.cons msg rest =>
-                                    String.contains msg "file not found" &&
-                                    match rest {
-                                        List.empty => true,
-                                        List.cons _ _ => false
-                                    },
-                                List.empty => false
-                            }
+def test_check_file_reports_missing_file : IO Bool := do {
+    let empty_cache : ModuleInfoCache := module_info_cache_empty;
+    let result <- check_file_cached empty_cache "definitely/does/not/exist.mo" false;
+    return (reports_missing_file result)
+}
+
+/// The pure half of `test_check_file_reports_missing_file`: does `result`
+/// carry exactly one diagnostic, and does it say the file is missing?
+///
+/// The checked value arrives as a plain argument -- through `Monad.bind`,
+/// not by matching its `io` constructor, which is deliberately not ambient.
+def reports_missing_file (result : FileCheckAndCache) : Bool :=
+    match result {
+        FileCheckAndCache.mk fc_result _cache =>
+            match fc_result {
+                FileCheckResult.mk _path diags =>
+                    match diags {
+                        List.cons msg rest =>
+                            String.contains msg "file not found" &&
+                            match rest {
+                                List.empty => true,
+                                List.cons _ _ => false
+                            },
+                        List.empty => false
                     }
             }
     }
@@ -5859,4 +6538,3 @@ def test_normalize_path_keeps_an_absolute_root : Bool :=
 #[test]
 def test_normalize_path_is_idempotent : Bool :=
     String.beq (normalize_path (normalize_path "../lang/../init/src/number.mo")) "../init/src/number.mo"
-

@@ -1,17 +1,14 @@
 use lib::typecheck::levels {free_level_vars, is_level_binder_kind}
-use lib::types {
-  Attribute, Class, ClassDef, Decl, Def, DebugName, Identifier, InductConstructor,
-  Inductive, Instance, MatchCase, ModulePath, Param, Similar, SortLevel, Struct,
-  Term, TypeConstraint,
-  app, class_d, con, def_d, forall, hole, id, id_eq, id_member, if_, inductive_d,
-  infix_d, instance_d, lam, lit, match_, mc, mk, mp, name, named, ntv, num, open_d,
-  pi, scoped_open_d, sentinel, show_identifier, str, struct_d, union_ids, unnamed,
-  use_d, var,
+use lang::types {
+  Attribute, Class, ClassDef, DebugName, Decl, Def, Identifier, InductConstructor,
+  Inductive, Instance, MatchCase, ModulePath, NamePath, Param, Similar, SortLevel,
+  Struct, StructLitField, Term, TypeConstraint, char, flt, id_eq, id_member, if_,
+  match_, npath, num, package_private, sentinel, show_identifier, str, struct_lit,
+  struct_update, union_ids,
 }
-// `HashMap` stays available via the same always-on mechanism scope.mo's
-// own `use std.map {}` relies on (see the comment there for why the
-// `Map`-class-instance exports must not be named explicitly).
-use std::map {}
+// `HashMap` is what this file reaches from `std.map`, named like any
+// other import — see scope.mo's comment on the same line for the history.
+use std::map {HashMap}
 use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
 
 

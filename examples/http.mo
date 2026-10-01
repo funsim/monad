@@ -9,10 +9,20 @@
 // both compilers.
 #![mote { name := "http_example", deps := [http] }]
 
-use http::types {Body, Request, Response, Uri}
-use http::body {}
-use http::uri {}
-use http::wire {}
+use http::types {
+  Body, HEAD, Headers.empty, Headers.set, POST, Request, Response, Status.ok, Uri,
+  http1_1,
+}
+use http::body {Body.content_type, Body.parse_multipart, Body.to_bytes_pure}
+use http::uri {
+  Uri.format, Uri.parse, Uri.percent_decode, Uri.percent_encode, Uri.resolve,
+  Uri.same_origin,
+}
+use http::wire {
+  Wire.drop_bytes, Wire.format_request, Wire.format_response, Wire.frame_request,
+  Wire.frame_response, Wire.parse_request, Wire.parse_response,
+  Wire.request_target,
+}
 
 // ── helpers ─────────────────────────────────────────────────────────────
 

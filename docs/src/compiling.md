@@ -79,7 +79,6 @@ compiler) and `monad-src-x86_64-linux.tar.gz` (the sources above).
 ## Your First Program
 
 ```monad
-use io {}
 open IO {println}
 
 def main (args : List String) : IO Unit := println "Hello, World!"
@@ -177,17 +176,20 @@ there is no need to run it from the workspace root.
 ### Where the binary lands
 
 `build` resolves the output name against the **target directory**: the nearest
-`[build] target-dir` above the source, else `target/` beside the manifest, else
-plain `target/` in the working directory for a file in no workspace at all.
-`MONAD_TARGET_DIR` overrides that, and `--target-dir` overrides both. This
-repository sets `target-dir = "target/monad"`, so cargo's `target/` and monad's
-do not eat each other — a `cargo clean` must not delete a monad binary.
+`[build] target-dir` in a `.monad/config.toml` above the source, else plain
+`target/`. `MONAD_TARGET_DIR` overrides that, and `--target-dir` overrides
+both. The setting lives in the **tool's** config rather than in a mote's
+`mote.toml`: where output goes is not a property of the thing being built, and
+a script-mode file in no mote at all still needs an answer. This repository
+holds two toolchains, so it names their output apart: cargo's is `target-rust/`
+and monad's is `target-monad/` — they must not eat each other, because a
+`cargo clean` must not delete a monad binary.
 
 Debug info is on by default, so a plain build is a `debug` build:
 
 ```bash
-monad build hello.mo -o hello            # -> target/monad/debug/hello
-monad build hello.mo -o hello --release  # -> target/monad/release/hello
+monad build hello.mo -o hello            # -> target-monad/debug/hello
+monad build hello.mo -o hello --release  # -> target-monad/release/hello
 monad build hello.mo -o "$PWD/hello"     # -> ./hello
 ```
 
@@ -197,7 +199,7 @@ not a path. A relative name that looks like a path is nested rather than
 rejected:
 
 ```bash
-monad build hello.mo -o sub/hello        # -> target/monad/debug/sub/hello
+monad build hello.mo -o sub/hello        # -> target-monad/debug/sub/hello
 ```
 
 This surprises everyone once. When you want the binary somewhere specific, say
@@ -208,11 +210,19 @@ being there so parallel invocations cannot collide.
 
 ### The build cache
 
-Artifacts are **input-addressed**. `build` hashes the mote's whole declared
-closure, the compiler binary itself, the profile and the target triple, and if
-the store already holds a binary under that hash it copies it out instead of
-compiling — so rebuilding an unchanged tree is a file copy, not a build, and
-`cached: <dest> (<hash>)` is what a hit prints.
+Artifacts are **input-addressed**. `build` hashes the source file's own bytes,
+its mote's whole declared closure, the compiler binary itself, the profile and
+the target triple, and if the store already holds a binary under that hash it
+copies it out instead of compiling — so rebuilding an unchanged tree is a file
+copy, not a build, and `cached: <dest> (<hash>)` is what a hit prints.
+
+The file's bytes are in the key because the closure alone does not name the
+file. A `.mo` with no `mote.toml` above it roots at the directory it sits in, so
+`one.mo` and `two.mo` side by side share a root and a closure digest — keyed on
+that alone they shared an entry, and building `two.mo` after `one.mo` printed
+`cached:` and handed back `one`'s binary. The directory is still hashed as well,
+since a file's siblings are reachable from it and its `#![mote {…}]` dependency
+list is a property of the file, not of the tree above it.
 
 The key is the whole name: nothing you type with `-o` is part of it. Keeping that
 true took a fix upstream of the cache. The intermediate `.ll` used to be named

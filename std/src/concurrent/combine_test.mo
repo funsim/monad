@@ -8,7 +8,7 @@
 
 use lib::concurrent::fiber {Fiber, await_fiber, cancel_fiber, forkIO}
 use lib::concurrent::combine {Scope, scope_fork, scoped, sleepIO}
-use lib::io {current_time_nano}
+use lib::io {}
 open IO {current_time_nano}
 
 // Helper thunks

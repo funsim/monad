@@ -7,12 +7,12 @@ use std::show {Show}
 // dispatch on, unlike `Map.insert`/`Map.lookup`) fails at runtime with
 // `unresolved global: Map.empty` unless `std.map`'s `Map` instances are
 // also in scope in the module that DECLARES the struct field's type,
-// even when every call site already imports `std.map` itself. Empty
-// import: naming any of `std.map`'s `Map`-class-instance exports
-// explicitly hits a separate, pre-existing latent instance/dictionary-
-// resolution bug (`std/map_tests.mo`'s own documented workaround).
-use std::map {}
-use std::list {intercalate}
+// even when every call site already imports `std.map` itself. Listing
+// the names is what puts them in scope here; it used to be left empty
+// out of caution about naming `std.map`'s exports — see
+// std/map_tests.mo's note for why that caution is gone.
+use std::map {HashMap, HashMap.empty_buckets, map}
+use std::list {List.intercalate, List.length}
 
 pub type Identifier {
     id String

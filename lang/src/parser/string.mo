@@ -1,8 +1,8 @@
 /// String literal parser for the self-hosted parser
 /// Extracted from parser.mo as part of Phase C
 
-use lib::types {ParseLiteral, ParseTerm, Term, lit, pt_lit, str}
-use lib::parser::core {ParseResult, custom, fail, is_empty, success, tag}
+use lib::types {ParseLiteral, ParseTerm, Term, pt_lit}
+use lang::parser::core {ParseResult, custom, is_empty}
 use lib::parser::combinators {tag, take_while, utf8_char_width}
 use lib::parser::char_preds {is_hex_digit, is_space}
 use lib::parser::number {char_to_hex_digit}

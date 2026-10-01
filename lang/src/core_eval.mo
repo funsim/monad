@@ -5,8 +5,8 @@ use lib::core_value {
   global_cache_new, global_cache_store, global_table_get, native_table_arity,
   native_table_name,
 }
-use lib::types {Identifier, ModulePath}
-use std::list {length}
+use lang::types {Identifier, ModulePath, i64}
+use std::list {List.length}
 
 /// The evaluator core loop, mirroring `core/src/core_eval.rs` (Rust).
 ///

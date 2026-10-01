@@ -35,7 +35,8 @@ jobs:
       # lookup for a host that is already built, in place of the cold
       # `cargo run --release --` this job used to pay for on every merge to
       # main -- and it is cold every time, because actions/checkout cleans
-      # target/ at the start of every job and this job runs once per merge.
+      # the target directories at the start of every job and this job runs
+      # once per merge.
       #
       # MONAD_HOST_BIN is the knob scripts/build-self-hosted.sh already takes
       # for exactly this; scripts/nightly-release.sh routes its build through

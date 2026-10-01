@@ -33,18 +33,15 @@
 /// These compile through the self-hosted backend and RUN the binary, so
 /// a regression reproduces as the real miscompile (the callee's body
 /// never executing) rather than an IR-shape mismatch.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// The exact failing shape: first parameter typed `String`. Pre-fix the
 /// callee never ran and the program exited 1; the fix makes it a real
 /// saturated call returning 7.
 #[test]
 def test_named_call_string_first_param : IO Bool :=
-    let source := r#"use io {IO}
-open IO {println}
+    let source := r#"open IO {println}
 def getv (file_path : String) (b : I64) : IO I64 := do {
     println file_path;
     return b
@@ -65,8 +62,7 @@ def main (args : List String) : IO I64 := do {
 /// running the callee.
 #[test]
 def test_named_call_struct_first_param : IO Bool :=
-    let source := r#"use io {IO}
-struct Inner {
+    let source := r#"struct Inner {
     q : I64,
     z : I64,
 }
@@ -87,8 +83,7 @@ def main (args : List String) : IO I64 := do {
 /// guard didn't change the path that already worked.
 #[test]
 def test_named_call_plain_params_unchanged : IO Bool :=
-    let source := r#"use io {IO}
-def add3 (a : I64) (b : I64) (c : I64) : I64 := I64.add (I64.add a b) c
+    let source := r#"def add3 (a : I64) (b : I64) (c : I64) : I64 := I64.add (I64.add a b) c
 def main (args : List String) : IO I64 := do {
     let r : I64 := add3 { a := 1, b := 2, c := 3 };
     return r

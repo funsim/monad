@@ -15,7 +15,7 @@ including every piece of editor tooling. Nothing in here is a language feature.
 ## Getting it
 
 ```bash
-cargo build --release        # produces target/release/monad-rs
+cargo build --release        # produces target-rust/release/monad-rs
 cargo install --path cli     # or install it
 ```
 

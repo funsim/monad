@@ -11,11 +11,14 @@
 /// pattern: own types, own glue over `Toml.parse`, no shared
 /// serialize/deserialize class machinery.
 
-use lib::toml {}
-use lib::types {AttrArg, Attribute, show_identifier}
-use std::io {file_exists, get_env, is_dir, read_file}
-use std::map {}
-use io {IO}
+use std::list {List.filter_map}
+use lang::toml {
+  Toml.Value, Toml.parse, Toml.table_get, array, integer, string, table,
+}
+use lang::types {AttrArg, Attribute, id, show_identifier}
+use std::io {}
+use std::map {BTreeMap, BTreeMap.to_list}
+use std::process {exec_cmd, process_id}
 
 /// What resolution needs from a `mote.toml`: who this mote is, where it
 /// lives, and what it declared. `[dependencies]` and `[dev-dependencies]`
@@ -57,18 +60,6 @@ pub struct MoteManifest {
     /// `none` when the manifest declares a `[bin] path` without a name;
     /// the caller then falls back to the source file's own stem.
     bin_name : Option String,
-    /// Where build output goes, from `[build] target-dir = "..."`, joined
-    /// onto `dir` the way `bin_path` is so the value is usable as stored.
-    ///
-    /// It exists for one concrete collision: **cargo already owns
-    /// `target/debug` and `target/release` in this repository**. Without
-    /// an opt-out, `cargo clean` would delete monad's build store and
-    /// `monad clean` would delete cargo's artifacts. This repo's root
-    /// manifest therefore says `target/monad`, while a user with no
-    /// `Cargo.toml` gets the plain `target/` default and never has to
-    /// think about it. `build/src/store.mo`'s `resolve_target_dir` is
-    /// where this sits in the precedence order.
-    build_target_dir : Option String,
 }
 
 /// The mote's source root -- `<dir>/src`, always.
@@ -136,69 +127,101 @@ def list_contains_string (needle : String) (xs : List String) : Bool :=
             if String.beq x needle then true else list_contains_string needle rest
     }
 
-/// Walk up from `dir` for a `[build] target-dir`, virtual workspace roots
-/// INCLUDED.
+/// Walk up from `dir` for the monad tool's own config, `.monad/config.toml`,
+/// and answer the `[build] target-dir` it names, joined onto the config's
+/// directory so the value is usable as stored.
 ///
-/// Deliberately not `Mote.discover`, which stops at a virtual root because
-/// nothing above one is part of the mote. That rule is right for module
-/// resolution and wrong here: `[build] target-dir` is a property of the
-/// WORKSPACE, and a script-mode file under it (anything in `examples/`,
-/// say) must land in the same place as everything else. Without this,
-/// `monad build examples/hello.mo` in this repository wrote to `target/`
-/// and collided with cargo, which is the exact collision the setting
-/// exists to avoid.
+/// A TOOL setting, not a mote's. Where output goes is a property of the tool
+/// that writes it, so it is read from the tool's config rather than from the
+/// `mote.toml` of whichever mote is being built -- which also means this walk
+/// has no mote boundary to stop at. That is what makes it the right lookup
+/// for a script-mode file: `monad build examples/hello.mo` must land where
+/// the rest of the tree does, and `examples/` sits under no `[mote]` for
+/// `Mote.discover` to find.
+///
+/// A config that names no target dir does not stop the walk, so a nested
+/// `.monad/config.toml` inherits from the one above it -- the same rule a
+/// manifest used to follow for its workspace.
 #[partial]
-pub def Mote.discover_build_dir (dir : String) : IO (Option String) :=
-    Mote.discover_build_dir_go dir 32
+pub def Mote.discover_config_target_dir (dir : String) : IO (Option String) :=
+    Mote.discover_config_target_dir_go dir 32
 
 #[partial]
-def Mote.discover_build_dir_go (dir : String) (depth : I64) : IO (Option String) := do {
+def Mote.discover_config_target_dir_go (dir : String) (depth : I64) : IO (Option String) := do {
     if I64.lt depth 1
     then return Option.none
     else do {
-        let candidate := mote_toml_in dir;
+        let candidate := tool_config_in dir;
         let exists <- IO.file_exists (Path.path candidate);
         if exists
         then do {
             let text <- IO.read_file (Path.path candidate);
-            match Mote.build_dir_of_text dir text {
+            match Mote.config_target_dir_of_text dir text {
                 Option.some d => return (Option.some d),
-                // A manifest with no `[build] target-dir` does not stop the
-                // walk: a mote inside a workspace inherits the workspace's
-                // setting unless it states its own.
-                Option.none => Mote.discover_build_dir_above dir (depth - 1)
+                Option.none => Mote.discover_config_target_dir_above dir (depth - 1)
             }
         }
-        else Mote.discover_build_dir_above dir (depth - 1)
+        else Mote.discover_config_target_dir_above dir (depth - 1)
     }
 }
 
 #[partial]
-def Mote.discover_build_dir_above (dir : String) (depth : I64) : IO (Option String) :=
-    if String.beq dir "" || String.beq dir "/"
+def Mote.discover_config_target_dir_above (dir : String) (depth : I64) : IO (Option String) :=
+    if String.beq dir "/"
     then return Option.none
-    else Mote.discover_build_dir_go (parent_of dir) depth
+    else Mote.discover_config_target_dir_go (config_dir_above dir) depth
 
-def Mote.build_dir_of_text (dir : String) (text : String) : Option String :=
+/// One step up from a directory this walk is standing in.
+///
+/// Not `parent_of`, because `""` is BOTH "the working directory" (see
+/// `tool_config_in`) and "no directory component" -- so `parent_of ""` is
+/// `""`, and a walk that stopped there never left the working directory.
+/// Same tree, two answers:
+///
+///   `monad build examples/hello.mo` (cwd = root) probes `examples/`, then
+///   `""` -- the cwd -- and finds the root config. `cd examples && monad
+///   build hello.mo` starts AT `""`, so `parent_of ""` is `""` and the walk
+///   stops after one probe: it silently falls back to `target/`.
+///
+/// A bare filename has genuinely no directory component (`raw_parent_dir
+/// "hello.mo"` is `""`), so the empty result cannot be reinterpreted at the
+/// call site -- `""` is a legitimate argument meaning CWD. An empty ascent
+/// therefore continues by `..`, the one spelling a path string has for
+/// "the directory above the working directory", and a path already made of
+/// `..` segments keeps going rather than bouncing (`raw_parent_dir ".."`
+/// is `.`, which would otherwise re-probe the cwd forever, bounded only by
+/// `depth`). Absolute paths still bottom out at `/`.
+///
+/// `Mote.discover`'s walk has the same shape and the same wart; it is left
+/// alone deliberately. Its consequence is a script module -- a documented,
+/// legitimate mode -- while this one quietly writes the binary somewhere
+/// other than where the tree says.
+def config_dir_above (dir : String) : String :=
+    if String.beq dir "" || String.beq dir "."
+    then ".."
+    else if String.starts_with ".." dir
+    then String.concat dir "/.."
+    else parent_of dir
+
+def Mote.config_target_dir_of_text (dir : String) (text : String) : Option String :=
     match Toml.parse text {
         err _ => Option.none,
         ok root => Mote.joined_table_string dir (Toml.table_get "build" root) "target-dir"
     }
 
-/// Walk up from `dir` looking for a `mote.toml`, parse the first one found.
-/// `Option.none` for a file outside any mote (script mode -- `examples/`,
-/// a one-off file) or under a virtual workspace root, which declares
-/// `[workspace]` and no `[mote]`.
-///
-/// Bounded by `depth` as well as by the root, because the walk is string
-/// surgery on a path: a relative path bottoms out at `""`, an absolute one
-/// at `"/"`, and `depth` is the argument that holds for both.
 /// The `mote.toml` inside `dir`, with `""` meaning the working directory
 /// and `"/"` the filesystem root.
 def mote_toml_in (dir : String) : String :=
     if String.beq dir "" then "mote.toml"
     else if String.beq dir "/" then "/mote.toml"
     else String.concat dir "/mote.toml"
+
+/// The monad tool's config inside `dir` -- `.monad/config.toml`, with `""`
+/// meaning the working directory and `"/"` the filesystem root.
+def tool_config_in (dir : String) : String :=
+    if String.beq dir "" then ".monad/config.toml"
+    else if String.beq dir "/" then "/.monad/config.toml"
+    else String.concat dir "/.monad/config.toml"
 
 /// The parent of `dir`, keeping an absolute path absolute.
 ///
@@ -221,6 +244,13 @@ def parent_of (dir : String) : String :=
 /// warning did not catch those because it only inspects names listed in a
 /// `use` filter and `Mote.discover` is called qualified; that is a hole in
 /// the warning, not permission.
+///
+/// Walks up from `dir` for the first `mote.toml` and parses it; `Option.none`
+/// for a file outside any mote (script mode -- `examples/`, a one-off file)
+/// or under a virtual workspace root, which declares `[workspace]` and no
+/// `[mote]`. Bounded by `depth` as well as by the root, because the walk is
+/// string surgery on a path: a relative path bottoms out at `""`, an
+/// absolute one at `"/"`, and `depth` is the argument that holds for both.
 pub def Mote.discover (dir : String) : IO (Option MoteManifest) :=
     Mote.discover_go dir 32
 
@@ -388,7 +418,6 @@ def Mote.manifest_of_table (dir : String) (root : BTreeMap String Toml.Value) : 
             let bin := Toml.table_get "bin" root in
             let bin_path := Mote.bin_target_path dir bin in
             let bin_name := Mote.table_string bin "name" in
-            let build_target_dir := Mote.joined_table_string dir (Toml.table_get "build" root) "target-dir" in
             let m : MoteManifest := {
                 name := name,
                 dir := dir,
@@ -397,7 +426,6 @@ def Mote.manifest_of_table (dir : String) (root : BTreeMap String Toml.Value) : 
                 link_libs := libs,
                 bin_path := bin_path,
                 bin_name := bin_name,
-                build_target_dir := build_target_dir,
             } in
             Option.some m
     }
@@ -447,8 +475,9 @@ def Mote.bin_target_path (dir : String) (bin : Option Toml.Value) : Option Strin
 
 /// A table's string field, joined onto the mote's own directory so the
 /// value is a path usable exactly as stored -- `raw_path_join`'s rules
-/// for an empty `dir` and an absolute value included. Shared by
-/// `[bin] path` and `[build] target-dir`, which want it identically.
+/// for an empty `dir` and an absolute value included. Shared by the
+/// manifest's `[bin] path` and the tool config's `[build] target-dir`,
+/// which want it identically.
 def Mote.joined_table_string (dir : String) (table : Option Toml.Value) (key : String) : Option String :=
     match Mote.table_string table key {
         Option.none => Option.none,
@@ -946,9 +975,6 @@ def Mote.manifest_of_attr (dir : String) (attr : Attribute) : Option MoteManifes
                 // file IS the binary, and `compile` already takes a file.
                 bin_path := Option.none,
                 bin_name := Option.none,
-                // An inline mote has no `[build]` table either, so it takes
-                // the default target dir like any other.
-                build_target_dir := Option.none,
             } in
             Option.some m
     }
@@ -1158,6 +1184,119 @@ def test_mote_toml_in_names_the_root_and_the_cwd : Bool :=
         then String.beq (mote_toml_in "lang") "lang/mote.toml"
         else false
     else false
+
+/// The walk had no test of its own, and this is the step the bug was in:
+/// `""` is both "the working directory" and "no directory component", so a
+/// walk that ascended with `parent_of` stopped where it started. Same tree,
+/// two answers -- a bare filename in a subdirectory found no config above
+/// it, while the same file spelled `<sub>/file.mo` did.
+///
+/// The empty branch is pinned HERE, on the pure helper, rather than in the
+/// IO row below, because reaching it needs the process's working directory
+/// to be a directory that has no config of its own with one above it -- and
+/// the test runner's is this checkout's root, which has one. There is no
+/// `chdir` native to arrange otherwise, and a row that started anywhere
+/// else would pass on the old code too.
+#[test]
+def test_config_dir_above_leaves_the_working_directory : Bool :=
+    if String.beq (config_dir_above "") ".."
+    then String.beq (config_dir_above ".") ".."
+    else false
+
+/// ...and keeps going once it is out, rather than bouncing back to the
+/// working directory: `raw_parent_dir ".."` is `"."`, which would re-probe
+/// the cwd forever, bounded only by the depth argument.
+#[test]
+def test_config_dir_above_keeps_going_above_the_working_directory : Bool :=
+    if String.beq (config_dir_above "..") "../.."
+    then String.beq (config_dir_above "../..") "../../.."
+    else false
+
+/// The ordinary case is undisturbed: a named directory still ascends by
+/// `parent_of`, absolute paths included.
+#[test]
+def test_config_dir_above_still_steps_one_directory : Bool :=
+    if String.beq (config_dir_above "examples") ""
+    then if String.beq (config_dir_above "lang/src") "lang"
+        then String.beq (config_dir_above "/home") "/"
+        else false
+    else false
+
+/// What the ascent is FOR, read through the probe it feeds: the second
+/// thing the walk looks at when it starts in the working directory is the
+/// working directory's parent -- not the working directory again.
+#[test]
+def test_the_walk_probes_above_the_working_directory : Bool :=
+    String.beq (tool_config_in (config_dir_above "")) "../.monad/config.toml"
+
+/// The walk itself, over a tree this row writes: a file in a subdirectory
+/// finds the config in the tree's root, and the answer is joined onto the
+/// directory the config was FOUND in rather than onto the file's.
+///
+/// The tree's name carries the pid, like every other file a test writes
+/// here: a fixed `/tmp/monad_cfgwalk` is one name shared by every
+/// concurrent `monad test` on the machine, so a sibling run's leftover
+/// config would satisfy this row even if its own write never happened -- and
+/// the row would pass without having walked anything. The `rm` is the other
+/// half of that: the tree is built from scratch, not merged into whatever a
+/// previous run left at this pid.
+///
+/// `IO.write_file` does NOT create the directory it writes into (it is
+/// `write_file_native`, which opens and fails), so `.monad/` is made
+/// explicitly beside `sub/deeper`. The first version of this row made only
+/// `sub/deeper`, the write silently failed, and the walk was left with no
+/// config to find -- which reads exactly like the walk being broken.
+#[test]
+def test_discover_config_target_dir_walks_up_a_real_tree : IO Bool := do {
+    let root := "/tmp/monad_cfgwalk_" ++ I64.to_string process_id;
+    exec_cmd "rm" ["-rf", root];
+    exec_cmd "mkdir" ["-p", root ++ "/sub/deeper", root ++ "/.monad"];
+    IO.write_file (Path.path (root ++ "/.monad/config.toml")) "[build]\ntarget-dir = \"out\"\n";
+    let found <- Mote.discover_config_target_dir (root ++ "/sub/deeper");
+    return (match found {
+        Option.none => false,
+        Option.some d => String.beq d (root ++ "/out")
+    })
+}
+
+#[test]
+def test_tool_config_in_names_the_root_and_the_cwd : Bool :=
+    if String.beq (tool_config_in "") ".monad/config.toml"
+    then if String.beq (tool_config_in "/") "/.monad/config.toml"
+        then String.beq (tool_config_in "lang") "lang/.monad/config.toml"
+        else false
+    else false
+
+/// The config's one setting, joined onto the config's own directory so the
+/// answer is usable as stored -- the `raw_path_join` rule the manifest's
+/// `[bin] path` follows. A relative value is relative to the `.monad/`
+/// directory the config was found in, not to the CWD, which is what makes an
+/// absolute invocation of a file inside the tree give an absolute directory.
+#[test]
+def test_config_target_dir_is_joined_onto_the_configs_directory : Bool :=
+    match Mote.config_target_dir_of_text "lang" "[build]\ntarget-dir = \"target-monad\"\n" {
+        Option.none => false,
+        Option.some d => String.beq d "lang/target-monad"
+    }
+
+/// The empty-directory case: the config found in the working directory
+/// itself, where the join must drop the empty component rather than produce
+/// the ABSOLUTE `/target-monad`.
+#[test]
+def test_config_target_dir_of_the_working_directory_is_relative : Bool :=
+    match Mote.config_target_dir_of_text "" "[build]\ntarget-dir = \"target-monad\"\n" {
+        Option.none => false,
+        Option.some d => String.beq d "target-monad"
+    }
+
+/// A config that names no directory answers `none`, which is what lets the
+/// walk continue to the config above it rather than stopping at this one.
+#[test]
+def test_config_without_a_build_table_names_nothing : Bool :=
+    match Mote.config_target_dir_of_text "" "# nothing but a comment\n" {
+        Option.none => true,
+        Option.some _ => false
+    }
 
 /// A virtual workspace root has `[workspace]` and no `[mote]` -- it is not
 /// itself a mote, and nothing belongs to it.

@@ -137,9 +137,10 @@ instance Monad IO {
 }
 ```
 
-`IO.pure` is the wrapper call sites are meant to use; `IO.io` is the raw
-constructor, kept so `bind` can match on it and intended to become an
-implementation detail.
+`IO.pure` is the constructor call sites are meant to use and `Monad.bind` the
+way to reach a value's contents; the raw `io` constructor is kept for those two
+(`bind` matches on it) and is not named anywhere else, which leaves it free to
+become an implementation detail.
 
 ## Instance Resolution
 

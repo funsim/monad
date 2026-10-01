@@ -126,7 +126,6 @@ Note the asymmetry: in a *pattern*, constructors are bare (`not_found`), but to
 ## Combining with the IO Monad
 
 ```monad
-use io {}
 open IO {println}
 
 def print_result (r : Result String I64) : IO Unit :=

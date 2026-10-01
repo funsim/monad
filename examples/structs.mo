@@ -4,7 +4,6 @@
 // here breaks implicit `Monad IO` instance lookup at runtime.
 #![mote { name := "structs", deps := [init] }]
 
-use io {}
 open IO {println}
 
 // Basic struct definition

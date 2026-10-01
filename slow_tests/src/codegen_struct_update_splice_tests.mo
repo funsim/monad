@@ -27,10 +27,8 @@
 /// through the self-hosted backend and run the native binary, so a
 /// regression reproduces the miscompile (wrong exit code) rather than
 /// just an IR-shape mismatch.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// The minimal repro shape: `{ c with b := c.b + 1 }` -- the `+ 1`'s
 /// literal operand directly follows the `b`-projection's branching
@@ -39,8 +37,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 /// segfaulted on `monad_get_tag(1)`.
 #[test]
 def test_struct_update_field_plus_one : IO Bool :=
-    let source := r#"use io {IO}
-struct C {
+    let source := r#"struct C {
     a : I64,
     b : I64,
 }
@@ -59,8 +56,7 @@ def main (args : List String) : IO I64 := do {
 /// `hits + 1` fragment).
 #[test]
 def test_struct_update_middle_field_neighbors_preserved : IO Bool :=
-    let source := r#"use io {IO}
-struct D {
+    let source := r#"struct D {
     x : I64,
     hits : I64,
     y : I64,
@@ -82,8 +78,7 @@ def main (args : List String) : IO I64 := do {
 /// corruption -- the desugar emits arguments in struct-field order.)
 #[test]
 def test_struct_update_literal_field_value : IO Bool :=
-    let source := r#"use io {IO}
-struct D {
+    let source := r#"struct D {
     x : I64,
     hits : I64,
     y : I64,
@@ -103,8 +98,7 @@ def main (args : List String) : IO I64 := do {
 /// field, one arithmetic-valued field).
 #[test]
 def test_struct_update_two_fields_at_once : IO Bool :=
-    let source := r#"use io {IO}
-struct D {
+    let source := r#"struct D {
     x : I64,
     hits : I64,
     y : I64,

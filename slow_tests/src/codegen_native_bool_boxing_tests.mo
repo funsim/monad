@@ -28,18 +28,15 @@
 /// `zext i1 true to i64` at compile time, which is valid IR regardless
 /// of whether the fix is present; only a REAL `icmp`-produced register
 /// exercises the bug this test guards.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// `Bool.not (I64.lt a b)` where `a > b`: `I64.lt` is false, `Bool.not`
 /// flips it to true. Passing a real runtime comparison as `Bool.not`'s
 /// own argument is exactly the boxing site this fix covers.
 #[test]
 def test_native_comparison_as_ordinary_bool_arg_true : IO Bool :=
-    let source := r#"use io {IO}
-def check (a : I64) (b : I64) : I64 :=
+    let source := r#"def check (a : I64) (b : I64) : I64 :=
     if Bool.not (I64.lt a b) then 1 else 0
 def main (args : List String) : IO I64 := do {
     let r := check 5 3;
@@ -53,8 +50,7 @@ def main (args : List String) : IO I64 := do {
 /// `zext`/`2 - raw` tag mapping.
 #[test]
 def test_native_comparison_as_ordinary_bool_arg_false : IO Bool :=
-    let source := r#"use io {IO}
-def check (a : I64) (b : I64) : I64 :=
+    let source := r#"def check (a : I64) (b : I64) : I64 :=
     if Bool.not (I64.lt a b) then 1 else 0
 def main (args : List String) : IO I64 := do {
     let r := check 3 5;
@@ -78,8 +74,7 @@ def main (args : List String) : IO I64 := do {
 /// `r2` picks 10 => 11.
 #[test]
 def test_let_bound_native_comparison_reused_true : IO Bool :=
-    let source := r#"use io {IO}
-def check (a : I64) (b : I64) : I64 :=
+    let source := r#"def check (a : I64) (b : I64) : I64 :=
     let too_small := I64.lt a b in
     let r1 := if too_small then 1 else 0 in
     let r2 := if too_small then 10 else 20 in
@@ -95,8 +90,7 @@ def main (args : List String) : IO I64 := do {
 /// => 20.
 #[test]
 def test_let_bound_native_comparison_reused_false : IO Bool :=
-    let source := r#"use io {IO}
-def check (a : I64) (b : I64) : I64 :=
+    let source := r#"def check (a : I64) (b : I64) : I64 :=
     let too_small := I64.lt a b in
     let r1 := if too_small then 1 else 0 in
     let r2 := if too_small then 10 else 20 in

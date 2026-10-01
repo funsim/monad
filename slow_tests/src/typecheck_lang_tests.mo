@@ -1,9 +1,8 @@
-use io {IO}
 use lib::typecheck_harness {typecheck_file}
-use lang::types {Decl, Def, Identifier, InductConstructor, Inductive, ModulePath, Scope, ScopeData, Term, def_d, hole, id, inductive_d, mk, mp}
-use lang::module {mk}
-use lang::parser::core {mk}
-use lang::typecheck::infer {empty_local_types, empty_locals, mk, type_check}
+use lang::types {Decl, Def, Identifier, InductConstructor, Inductive, ModulePath, Scope, ScopeData, Term}
+use lang::module {}
+use lang::parser::core {}
+use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
 
 open IO {println}
 
@@ -76,9 +75,7 @@ def typecheck_constructor (c : InductConstructor) (scope : Scope) : Bool :=
             }
     }
 
-
 // --- lang/ non-test files ---
-
 
 #[test]
 def test_typecheck_lang_main : IO Bool := typecheck_file "cli/src/main.mo"
@@ -91,4 +88,3 @@ def test_typecheck_lang_main : IO Bool := typecheck_file "cli/src/main.mo"
 /// `known_broken_typecheck_std_derive_tests`, `typecheck_std_tests.mo`).
 #[test]
 def test_typecheck_lang_cli_derive_self_hosted : IO Bool := typecheck_file "cli/src/tests/cli_derive_self_hosted_tests.mo"
-

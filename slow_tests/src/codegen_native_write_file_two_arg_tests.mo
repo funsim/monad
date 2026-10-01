@@ -38,10 +38,8 @@
 /// merely binding-and-ignoring such a result does not. This is a separate,
 /// newly-found, not-yet-filed bug, unrelated to `write_file`'s own arity-2
 /// dispatch gap -- out of scope here.
-use io {IO}
 use std::process {process_id}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// `IO.write_file path content;` as a bare do-block statement (exactly
 /// `link_ir`'s own shape) with non-literal `path`/`content`. Guards the
@@ -51,8 +49,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 def test_write_file_two_arg_native_dispatch_roundtrip : IO Bool := do {
     let write_path := "/tmp/monad_e2e_" ++ I64.to_string process_id ++ "/write_file_roundtrip_out.txt";
     let content := "hello from the native write_file fast path";
-    let source := r#"use io {IO}
-def main (args : List String) : IO I64 := do {
+    let source := r#"def main (args : List String) : IO I64 := do {
     let path := ""# ++ write_path ++ r#"";
     let content := "hello from the native write_file fast path";
     IO.write_file_native path content;

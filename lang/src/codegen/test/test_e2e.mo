@@ -1,8 +1,9 @@
-use lib::types {
-  Def, Identifier, TypeConstraint, i64, id, lam, lit, mk, named, num,
+use lang::types {
+  Def, Identifier, TypeConstraint, app, empty_attrs, i64, lam, lit, named, npath,
+  num, package_private, sort_n, var,
 }
-use llvm::ir {emit_module, mk}
-use lib::codegen::emit {check_contains, compile_db_decls_ir, empty_attrs, mk}
+use llvm::ir {emit_module}
+use lib::codegen::emit {check_contains, compile_db_decls_ir}
 
 open Term {lam, lit}
 open Literal {num}

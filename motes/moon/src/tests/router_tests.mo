@@ -3,10 +3,14 @@
 /// All tests are pure (no TCP). They call `Router.route` with a request
 /// and check the response status and body.
 
-use io {IO}
-use http::types {Request, Response}
-use lib::router {}
-use http::body {}
+use http::types {
+  GET, Headers.empty, Method, POST, Request, Response, Status.not_found,
+  Status.ok, empty, http1_1, uri,
+}
+use moon::router {
+  Router.get, Router.mount, Router.param, Router.post, Router.route,
+}
+use http::body {Body.to_bytes_pure}
 use http::strings {}
 
 // ── test infrastructure ─────────────────────────────────────────────────

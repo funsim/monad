@@ -23,7 +23,6 @@ Before getting started, ensure you have:
 Let's start with the classic "Hello, World!" program:
 
 ```monad
-use io {IO}
 open IO {println}
 
 def main (args : List String) : IO Unit := println "Hello, World!"

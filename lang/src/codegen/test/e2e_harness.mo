@@ -17,10 +17,11 @@
 /// both directories consume it and this is codegen test infrastructure;
 /// cross-directory `use` resolves fine (search paths are anchored at the
 /// repo root).
-use io {IO}
 open IO {println}
 use std::process {exec_cmd, process_id}
-use lib::module {LoadedModules, load_file_modules, resolve_runtime_src}
+use lang::module {
+  LoadedModules, extract_directory, load_file_modules, resolve_runtime_src,
+}
 use llvm::ir {emit_module}
 use llvm::link {compile_ir_to_obj, compile_runtime_obj, link_objects}
 use runtime {}

@@ -1,8 +1,15 @@
+use std::list {List.length}
 use lib::core_eval {basic_native_table, eval}
 use lib::core_ir {CoreIr, IrLit}
-use lib::core_value {GlobalTable, Value, global_cache_new, global_table_len}
+use lang::core_value {
+  GlobalTable, Value, env_nil, global_cache_new, global_table_len,
+}
 use lib::lower_core_ir {LowerCtx, lower_ctx_from_decls, lower_root}
-use lib::types {Attribute, DebugName, ModulePath, NamePath, Term}
+use lang::types {
+  Attribute, DebugName, Decl, InductConstructor, ModulePath, NamePath, Param,
+  Term, def_d, i64, id, ident, if_, inductive_d, many, match_, mc, mk, num,
+  open_d, open_only, package_private,
+}
 
 /// End-to-end tests: real checked `Term` -> `LowerCtx` (built via
 /// `lang.lower_core_ir.lower_ctx_from_decls`, which itself calls

@@ -1,10 +1,8 @@
 /// Integration tests for parsing Monad files
 /// Tests that the self hosted parser can parse all Monad source files
 
-use io {io}
-open IO {io}
 use lang::parser {decls_parser}
-use lang::parser::core {fail, success}
+use lang::parser::core {}
 
 open ParseResult {fail, success}
 
@@ -83,25 +81,27 @@ def lang_files_utf8 : List String :=
      "lang/src/types.mo",
      "lang/src/codegen/emit.mo"]
 
-/// Parse a single file and return success status
+/// Parse a single file and return success status.
+///
+/// `IO.read_file`'s contents are reached through `Monad.bind` -- the `do`
+/// block below -- rather than by matching the `IO` value's own `io`
+/// constructor, which is deliberately not ambient.
 #[partial]
-def parse_file (path : String) : Bool :=
-    match IO.read_file (Path.path path) {
-        io content =>
-            match decls_parser content {
-                success _ _ => true,
-                fail _ => false
-            },
-        _ => false
+def parse_file (path : String) : IO Bool := do {
+    let content <- IO.read_file (Path.path path);
+    match decls_parser content {
+        success _ _ => return true,
+        fail _ => return false
     }
+}
 
 /// Parse multiple files
 #[partial]
-def parse_all (files : List String) : Bool :=
+def parse_all (files : List String) : IO Bool :=
     match files {
-        List.empty => true,
+        List.empty => IO.pure true,
         List.cons f rest =>
-            if parse_file f then parse_all rest else false
+            Monad.bind (parse_file f) (fn ok => if ok then parse_all rest else IO.pure false)
     }
 
 // ================ Aggregate parse tests ================
@@ -113,28 +113,28 @@ def parse_all (files : List String) : Bool :=
 // parse), so they were pure redundant surface area, not extra coverage.
 
 #[test]
-def test_parse_init_all_safe : Bool := parse_all init_files_safe
+def test_parse_init_all_safe : IO Bool := parse_all init_files_safe
 
 #[test]
-def test_parse_std_all : Bool := parse_all std_files
+def test_parse_std_all : IO Bool := parse_all std_files
 
 #[test]
-def test_parse_examples_all_safe : Bool := parse_all example_files_safe
+def test_parse_examples_all_safe : IO Bool := parse_all example_files_safe
 
 #[test]
-def test_parse_lang_all_safe : Bool := parse_all lang_files_safe
+def test_parse_lang_all_safe : IO Bool := parse_all lang_files_safe
 
 #[test]
-def test_parse_init_all_utf8 : Bool := parse_all init_files_utf8
+def test_parse_init_all_utf8 : IO Bool := parse_all init_files_utf8
 
 #[test]
-def test_parse_std_all_utf8 : Bool := parse_all std_files_utf8
+def test_parse_std_all_utf8 : IO Bool := parse_all std_files_utf8
 
 #[test]
-def test_parse_examples_all_utf8 : Bool := parse_all example_files_utf8
+def test_parse_examples_all_utf8 : IO Bool := parse_all example_files_utf8
 
 #[test]
-def test_parse_lang_all_utf8 : Bool := parse_all lang_files_utf8
+def test_parse_lang_all_utf8 : IO Bool := parse_all lang_files_utf8
 
 // test_parse_all_utf8_files removed: parsed the exact union of the four
 // category lists above via parse_all (which short-circuits on the first
@@ -158,26 +158,24 @@ def test_parse_lang_all_utf8 : Bool := parse_all lang_files_utf8
 /// nothing is left over in `success`'s own `remaining` field. A `fail` or
 /// a non-empty remainder both count as "didn't fully parse."
 #[partial]
-def file_fully_parses (path : String) : Bool :=
-    match IO.read_file (Path.path path) {
-        io content =>
-            match decls_parser content {
-                success rem _ => String.is_empty rem,
-                fail _ => false
-            },
-        _ => false
+def file_fully_parses (path : String) : IO Bool := do {
+    let content <- IO.read_file (Path.path path);
+    match decls_parser content {
+        success rem _ => return (String.is_empty rem),
+        fail _ => return false
     }
+}
 
 #[test]
-def test_hello_fully_parses : Bool :=
+def test_hello_fully_parses : IO Bool :=
     file_fully_parses "examples/hello.mo"
 
 #[test]
-def test_string_fully_parses : Bool :=
+def test_string_fully_parses : IO Bool :=
     file_fully_parses "init/src/string.mo"
 
 #[test]
-def test_scope_fully_parses : Bool :=
+def test_scope_fully_parses : IO Bool :=
     file_fully_parses "lang/src/scope.mo"
 
 // `lang/json.mo`/`lang/toml.mo`/`std/map.mo` all open with a `//`/`///`
@@ -194,13 +192,13 @@ def test_scope_fully_parses : Bool :=
 // that all three now parse to completion with zero bytes remaining, so
 // these tests assert that directly instead of a conservative floor.
 #[test]
-def test_json_fully_parses : Bool :=
+def test_json_fully_parses : IO Bool :=
     file_fully_parses "lang/src/json.mo"
 
 #[test]
-def test_toml_fully_parses : Bool :=
+def test_toml_fully_parses : IO Bool :=
     file_fully_parses "lang/src/toml.mo"
 
 #[test]
-def test_map_fully_parses : Bool :=
+def test_map_fully_parses : IO Bool :=
     file_fully_parses "std/src/map.mo"

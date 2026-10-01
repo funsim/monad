@@ -33,7 +33,7 @@
 /// write (`Arc::make_mut`) where `monad_set_field` writes the real
 /// object. Both are CORRECT; only the cost differs. Under the
 /// interpreter, prefer `Array.from_list`/`set` folds.
-use lib::list {List}
+use std::list {List.length}
 
 /// The backing constructor. `mk` takes no declared fields: its arity is
 /// whatever `array_new`/`array_freeze` allocated it with, which is the

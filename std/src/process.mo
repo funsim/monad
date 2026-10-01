@@ -1,6 +1,6 @@
 // IO is ambient (init/io.mo, always a loaded root) -- no `use` needed.
 
-use lib::io {current_time_nano, file_exists_native, read_file_native}
+use lib::io {}
 open IO {current_time_nano, file_exists_native, read_file_native}
 
 #[native "exec_cmd"]

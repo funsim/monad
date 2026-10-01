@@ -6,7 +6,9 @@
 /// positive ones: a credential that is not valid base64 must be
 /// rejected, not decoded as far as it can be.
 
-use lib::strings {}
+use http::strings {
+  Strings.base64_decode, Strings.parse_i64, Strings.parse_u16_bounded,
+}
 
 /// True when the decode succeeded and yields exactly `want`.
 def decoded_is (got : Result String (List U8)) (want : String) : Bool :=

@@ -5,9 +5,8 @@
 /// hand back a stale answer the first time the compiler changes, and
 /// "the compiler changed" is the normal state of this repository.
 
-use io {IO}
-use std::process {capture, process_id}
-use lib::hash {DigestTool, file_digest_with, probe_digest_tool}
+use std::process {process_id}
+use build::hash {Build.file_digest_with, Build.probe_digest_tool, DigestTool}
 
 /// `/proc/<our pid>/exe` -- the path of the binary currently executing.
 ///

@@ -1,14 +1,14 @@
-use lib::types {
+use std::list {List.length}
+use lang::types {
   Attribute, DebugName, Decl, FieldPattern, FieldPatternEntry, Identifier,
-  InductConstructor, Inductive, MatchCase, ModulePath, NamePath, Param,
-  Scope, ScopeClassDef, ScopeData, Similar, Term, TypeError,
-  app, forall, hole, id, if_, inductive_d, lam, lit, match_, mc, mk, mp, named,
-  not_a_type, pi, unknown_var, unnamed, var,
+  InductConstructor, Inductive, MatchCase, ModulePath, NamePath, Param, Scope,
+  ScopeClassDef, ScopeData, Similar, Term, TypeError, char, if_, many, match_,
+  package_private, sentinel, sort_n,
 }
 use lib::scope {build_scope_from_decls, scope_find_inductive}
 use lib::typecheck::infer {
-  CalleeDomain, TypedTerm, empty_local_types, empty_locals, lam_binder_hint, mk,
-  sentinel, type_check, type_check_match_case,
+  CalleeDomain, TypedTerm, empty_local_types, empty_locals, lam_binder_hint,
+  type_check, type_check_match_case
 }
 
 open Term {app, forall, hole, lam, lit, pi, var}

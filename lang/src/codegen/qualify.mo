@@ -12,23 +12,25 @@
 /// `inductive_bare_name`, `-> String` in one module and `-> Identifier`
 /// in another -- put a raw `char*` into a `DebugName.named` slot and
 /// crashed the self-compiled compiler. See AGENTS.md items 18/19.
-use lib::types {
-  Decl, Def, Identifier, ModulePath, NamePath, StructField, TypeConstraint,
-  sentinel, show_identifier, show_module_path, show_name_path,
+use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
+use std::bench {Bench.now}
+use lang::types {
+  Attribute, Decl, Def, Identifier, ModulePath, NamePath, StructField,
+  TypeConstraint, hole, many, mk, named, package_private, sentinel,
+  show_identifier, show_module_path, show_name_path, use_items, use_name, var,
 }
-use lib::module {ModuleInfo, bench_step, mk}
+use lib::module {ModuleInfo, bench_step}
 use lib::scope {
   OpenAlias, alias_map_empty, alias_map_insert, alias_map_lookup,
   collect_open_aliases, modpath_eq, modpath_of, resolve_open_alias_decls,
 }
-use lib::codegen::free_names {free_names_of_term}
+use lang::codegen::free_names {collect_referenced_names, free_names_of_term}
 use lib::codegen::symbols {bare_modpath, bare_npath, symbol_identifier, unqualify_def_name}
 use lib::codegen::util {
-  join_semicolon_msgs, list_contains_str, str_map_empty, str_map_insert,
-  str_map_lookup,
+  join_semicolon_msgs, list_contains_str
 }
-use std::map {}
-use std::list {intercalate}
+use std::map {HashMap}
+use std::list {List.intercalate, List.length}
 
 /// A decl's own declared def name, if it is a `Decl.def_d`. The name may
 /// itself contain dots (`def String.beq` parses as a SINGLE-segment
@@ -589,9 +591,9 @@ def qualify_modules (verbose : Bool) (all_modules : List ModuleInfo) : IO (Resul
 /// One `ModuleInfo` per source FILE.
 ///
 /// The loader can register the same file under more than one module
-/// path -- `init/string.mo` arrives as both `string` and `init.string`,
-/// because `init/lib.mo`'s `pub use string {*}` names it relative to
-/// its own directory. Under the old flat namespace that was invisible:
+/// path -- `init/string.mo` arrived as both `string` and `init.string`
+/// while `init/lib.mo` re-exported it bare, which `use` qualification
+/// has since removed. Under the old flat namespace that was invisible:
 /// both copies declared the same bare `String.beq`, and
 /// `build_def_name_map`/`dedup_funcs_by_name` silently collapsed them.
 /// Qualification makes it visible and, left alone, wrong twice over --

@@ -13,7 +13,10 @@
 /// real spans through `Term` construction across the whole grammar
 /// would be a much larger project and isn't attempted here.
 
-use lib::types {NameRef, TypeError, show_identifier, show_name_path, show_operator, show_qualified_name}
+use lang::types {
+  Identifier, NameRef, TypeError, concrete, id, show_identifier, show_name_path,
+  show_operator, show_qualified_name, sort,
+}
 use lib::pretty {show_term}
 
 /// `NameRef` (`lang/types.mo`) has no `Show`/to-string helper of its

@@ -95,8 +95,8 @@ See [Macros and Derive](./macros.md).
 ### `io`
 
 `type IO A`, `def IO.pure`, and `instance Monad IO`. Nothing else — deliberately.
-Construct with `IO.pure`; `IO.io` is the bare constructor and is meant to become
-an implementation detail.
+Construct with `IO.pure`, unwrap with `Monad.bind`; the `io` constructor itself
+is not for call sites and is meant to become an implementation detail.
 
 ## `std/` — OS-specific
 

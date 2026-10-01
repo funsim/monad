@@ -71,6 +71,16 @@
           "monad-cli"
         ];
 
+        # Cargo writes to `target-rust/` (see ./.cargo/config.toml, which IS in
+        # the fileset above), but nixpkgs' cargo-install-hook looks in a literal
+        # `target/@targetSubdirectory@/$cargoBuildType` and never reads
+        # CARGO_TARGET_DIR -- so without this the build would succeed and the
+        # install would find nothing. The env var overrides the config file, and
+        # nothing here clobbers it: the build hook's own CARGO_TARGET_DIR
+        # assignment is inside its `buildAndTestSubdir` branch, which this
+        # package does not set.
+        CARGO_TARGET_DIR = "target";
+
         # The workspace's own `cargo test` pulls in the wasm member, which
         # needs a target this derivation does not provide; CI runs the Rust
         # suite from the dev shell, which does.

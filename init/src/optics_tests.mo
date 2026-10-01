@@ -1,5 +1,5 @@
 use std::test {}
-use lib::optics {Lens, Prism, lens, mkPrism, over, over_prism, preview, review, set, set_prism, view}
+use lib::optics {Lens, Prism, lens, over, over_prism, preview, review, set, set_prism, view}
 open Prism {mkPrism}
 
 // Test structures

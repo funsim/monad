@@ -10,16 +10,17 @@
 /// Extracted from `lang/codegen/emit.mo` as the cleanest seam in that
 /// file: 40 of its 41 defs are private to the rewrite, and the whole
 /// pass has exactly ONE entry point, `apply_self_tco`.
+use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
+use std::list {List.length}
 use lib::types {Identifier}
 use llvm::ir {
   LLVMBasicBlock, LLVMInstruction, LLVMType, LLVMValue, PhiPair,
 }
 use lib::codegen::ctx {CodegenCtx, CtxStrPair, fresh_label, fresh_temp}
 use lib::codegen::util {
-  drop_last_instr,
-  str_map_empty, str_map_insert, str_map_lookup,
+  drop_last_instr
 }
-use std::map {}
+use std::map {HashMap}
 
 /// One detected self-recursive tail-call site: `site_block` is the label
 /// of the block containing the `assign ret_temp (call <this Def's own

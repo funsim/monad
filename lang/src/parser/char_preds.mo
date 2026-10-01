@@ -1,7 +1,7 @@
 /// Character predicate functions for the self-hosted Monad parser.
 
 use lib::parser::core {kw_list, kw_member}
-use std::list {length}
+use std::list {}
 
 // --- Char predicates ---
 

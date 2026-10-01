@@ -12,7 +12,10 @@
 /// `lang.codegen.qualify` for where the `module::name` form comes from,
 /// and `def_symbol_name` for why nothing is mangled into underscores
 /// any more.
-use lib::types {Identifier, ModulePath, NamePath, show_module_path}
+use std::list {List.intercalate}
+use lang::types {
+  Identifier, ModulePath, NamePath, show_module_path, show_name_path,
+}
 use std::map {}
 
 /// A genuine, previously-undiscovered bug lived here (and in

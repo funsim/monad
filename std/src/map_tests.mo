@@ -1,16 +1,23 @@
-// TODO: `BTreeMap`/`empty`/`fold`/`to_list` are all used throughout this
-// file (bare type annotations and `Map`-class method calls) but are
-// deliberately NOT listed here. Explicitly naming ANY of `std.map`'s
-// `Map`-class-instance-related exports here exposes a pre-existing latent
-// bug in instance/dictionary resolution for `instance [BOrd K] Map
-// BTreeMap {...}` (methods resolve to the wrong dictionary at runtime —
-// "expected function found: K -> V -> M K V -> M K V" — even though
-// type-checking succeeds); everything below remains available regardless
-// via the same always-on mechanism that lets any top-level type/def
-// resolve without being explicitly `use`d. Fix properly and restore an
-// explicit name list once the underlying bug is fixed.
-use lib::map {}
-use lib::list {all, length}
+// `BTreeMap`/`empty`/`fold`/`to_list` are all used throughout this file
+// (bare type annotations and `Map`-class method calls), and are named
+// here like any other import.
+//
+// That used to be avoided: naming ANY of `std.map`'s `Map`-class-instance
+// exports was believed to expose a latent bug in instance/dictionary
+// resolution for `instance [BOrd K] Map BTreeMap {...}`, with methods
+// dispatching to the wrong dictionary at runtime ("expected function
+// found: K -> V -> M K V -> M K V") while type-checking succeeded. The
+// import was left empty to dodge it: the names stayed reachable anyway
+// through the always-on whole-closure mechanism, so the workaround cost
+// nothing.
+//
+// The claim does not reproduce: with the names listed, every test below
+// passes on both runtimes, including the `Map.insert`/`Map.lookup` /
+// `Map.delete` cases the failure would have broken.
+// `std/src/test_map_full.mo` is the same probe against a `HashMap`
+// carrier.
+use std::map {BTreeMap, BTreeMap.fold, BTreeMap.to_list}
+use std::list {List.all, List.length}
 
 #[test]
 def test_empty_to_list : Bool :=

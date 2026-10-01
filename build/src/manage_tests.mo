@@ -24,12 +24,26 @@
 /// Fixtures are pid-and-tag-scoped because the corpus sweep runs sharded
 /// and a fixed `/tmp` name would collide across concurrent shards.
 
-use io {IO}
-use std::process {capture, process_id, shell_quote}
+use std::list {List.filter, List.intercalate, List.length}
+use std::process {process_id}
 use lang::module {extract_directory}
-use lib::check {check_plan, check_plan_key}
-use lib::store {}
-use lib::manage {}
+use build::check {
+  Build.check_plan, Build.check_plan_active, Build.check_plan_all,
+  Build.check_plan_key, Build.mote_root_of, CheckPlan,
+}
+use build::closure {Build.artifact_key, Build.input_hash}
+use build::store {
+  Build.artifact_ir_path, Build.ensure_dir, Build.entry_root_dir,
+  Build.store_path, artifact, check,
+}
+use build::manage {
+  Build.artifact_keys, Build.artifact_name_key, Build.artifact_state,
+  Build.check_state, Build.clean_run, Build.droppable_name, Build.entry_views,
+  Build.gc_run, Build.is_key, Build.is_output_dir, Build.profile_names,
+  Build.strip_ir_suffix, Build.unreachable, Build.view_detail,
+  Build.view_is_artifact, Build.view_key, Build.view_kind, Build.view_not_ok,
+  EntryView,
+}
 
 /// Two names of the only shape an entry may have -- 64 lowercase hex
 /// characters -- written out rather than hashed, so a test failure reads
@@ -102,6 +116,12 @@ def Build.manage_ir (target : String) (key : String) : String :=
 
 def Build.manage_check_dir (target : String) (key : String) : String :=
     String.concat (Build.entry_root_dir target Entry.check) (String.concat "/" key)
+
+/// The key an `input_hash` gave, as a String, or `""` when it declined.
+/// The `is_key` assertions below are what turn a decline into a failure
+/// rather than into a key of length zero.
+def Build.manage_hash (r : Result String String) : String :=
+    match r { ok h => h, err _ => "" }
 
 /// The key a plan gives one file, as a String. `""` when the plan is
 /// inactive -- which the caller must treat as "no key", not as a key of
@@ -244,7 +264,7 @@ def test_an_empty_name_is_not_an_output_directory : Bool :=
 /// unreachable.
 #[test]
 def test_artifact_keys_are_one_per_profile : Bool :=
-    I64.beq (List.length (Build.artifact_keys "c" "k" Build.manage_triple)) 2
+    I64.beq (List.length (Build.artifact_keys "f" "c" "k" Build.manage_triple)) 2
 
 /// Whether a key list is exactly the build side's formula, profile for
 /// profile. Hoisted out of the test because it is a match over two lists at
@@ -257,7 +277,7 @@ def Build.manage_keys_agree (ks : List String) (ps : List String) : IO Bool := d
         List.cons k rest => match ps {
             List.empty => return false,
             List.cons p prest => do {
-                let ok : Bool := String.beq k (Build.artifact_key "c" "k" p Build.manage_triple);
+                let ok : Bool := String.beq k (Build.artifact_key "f" "c" "k" p Build.manage_triple);
                 if ok then Build.manage_keys_agree rest prest else return false
             }
         }
@@ -270,7 +290,7 @@ def Build.manage_keys_agree (ks : List String) (ps : List String) : IO Bool := d
 /// makes a `gc` delete live artifacts.
 #[test]
 def test_artifact_keys_match_the_build_side : IO Bool := do {
-    let ks : List String := Build.artifact_keys "c" "k" Build.manage_triple;
+    let ks : List String := Build.artifact_keys "f" "c" "k" Build.manage_triple;
     let same <- Build.manage_keys_agree ks Build.profile_names;
     return same && I64.beq (List.length ks) 2
 }
@@ -547,6 +567,40 @@ def test_gc_spares_a_reachable_check_entry : IO Bool := do {
     let kept <- Build.manage_is_dir dir;
     let _x <- Build.manage_drop_fixture d;
     return I64.beq rc 0 && Build.is_key live && kept
+}
+
+/// **Every artifact of one mote, not just the one whose key was asked
+/// for.**
+///
+/// The artifact-side twin of the test above, and the one that catches the
+/// collision it was written for: `src/a.mo` and `src/b.mo` share a mote,
+/// so they share a root AND a closure digest, and a reachable set built
+/// from roots rather than files holds one key where the build side wrote
+/// two. The entries are named by `Build.input_hash` -- the formula
+/// `build_cached` itself calls -- so a `gc` that derives anything else
+/// removes both, and both `is_key` checks fail alongside.
+#[test]
+def test_gc_spares_every_artifact_of_one_mote : IO Bool := do {
+    let d <- Build.manage_mote_fixture "gc_art";
+    let target : String := String.concat d "/target";
+    let fa : String := String.concat d "/src/a.mo";
+    let fb : String := String.concat d "/src/b.mo";
+    let files : List String := [fa, fb];
+    let root <- Build.mote_root_of fa;
+    let ra <- Build.input_hash fa root "debug" Build.manage_triple;
+    let rb <- Build.input_hash fb root "debug" Build.manage_triple;
+    let ka : String := Build.manage_hash ra;
+    let kb : String := Build.manage_hash rb;
+    let _sa <- Build.manage_seed (Build.manage_bin target ka) "a";
+    let _sb <- Build.manage_seed (Build.manage_bin target kb) "b";
+    let rc <- Build.gc_run files target Build.manage_triple true;
+    let kept_a <- Build.manage_present (Build.manage_bin target ka);
+    let kept_b <- Build.manage_present (Build.manage_bin target kb);
+    let _x <- Build.manage_drop_fixture d;
+    return Build.is_key ka && Build.is_key kb
+        && Bool.not (String.beq ka kb)
+        && I64.beq rc 0
+        && kept_a && kept_b
 }
 
 /// **One named file is a plan, not a degenerate case.**

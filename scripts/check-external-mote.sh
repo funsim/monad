@@ -112,7 +112,7 @@ cat > "$work/src/main.mo" <<'MONAD'
 // into the library, so the mote's own `lib::` self-resolution is exercised
 // too.
 
-use io {IO}
+use init::io {IO}
 open IO {println}
 use lib::lib {data_dir}
 

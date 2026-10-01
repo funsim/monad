@@ -1,7 +1,6 @@
 /// Benchmark utilities.
 
-use io {IO}
-use lib::io {current_time, println}
+use lib::io {}
 open IO {current_time, println}
 
 /// Milliseconds from an arbitrary fixed origin. Only differences between
@@ -42,4 +41,3 @@ pub def Bench.report_since (label : String) (t0 : I64) : IO Unit := do {
     let elapsed : I64 <- Bench.since t0;
     Bench.report label elapsed
 }
-

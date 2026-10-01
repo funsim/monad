@@ -42,7 +42,6 @@ the [bootstrap host](./bootstrap-host.md)'s LSP server can surface them.
 **Every `def` requires a type annotation.** There is no top-level inference.
 
 ```monad
-use io {}
 open IO {println}
 
 // Basic function
@@ -266,7 +265,6 @@ def sign (n : I64) : I64 := if n < 0 then 0 - 1 else 1
 ## Do Notation
 
 ```monad
-use io {}
 open IO {println}
 
 def a : IO Unit := do {
@@ -498,13 +496,18 @@ though that spelling is self-hosted only; the bootstrap host rejects it.
 ## Modules
 
 ```monad
-use io {IO}          // import, naming what you need
-use io {*}           // import everything
-use io {}            // load for qualified access and instances only
+use std::process {exec_cmd, process_id}   // import, naming what you need
+use std::list {*}             // import everything
+use std::map {}               // load for qualified access and instances only
 open IO {println}    // drop the prefix for these names
 ```
 
-A bare `use io` with no braces parses but is deprecated. See
+The first segment must name a mote or `lib`; a bare `use io` is an error. Every
+name inside the braces must be a top-level declaration of the target module,
+matched by its **spelled name** — a brace item is a name path (`IO.println`),
+not a module path, so a dotted def is imported as `use std::list
+{List.intercalate}` and the bare tail `use std::list {length}` is an error.
+`{*}` and `{}` are unaffected. See
 [Modules and Imports](./modules.md).
 
 ## Dot Macro

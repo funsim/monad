@@ -28,18 +28,16 @@
 // (comment-free) line, like the one separating this NOTE from the header above, is
 // fine. Confirmed via a minimal repro; worth fixing upstream in the parser.
 
-// TODO: `BTreeMap`/`beq`/`empty`/`map`/`to_list` are all used throughout
-// this file but are deliberately NOT listed here — see std/map_tests.mo's
-// matching TODO for why (a pre-existing latent instance/dictionary-
-// resolution bug: naming any of `std.map`'s `Map`-class-instance-related
-// exports in a non-empty `use` filter breaks `Map.insert`/etc. at runtime,
-// even though type-checking succeeds).
-use std::map {}
-use std::list {Show, filter, intercalate}
-use init::string {beq, concat, drop, is_empty, slice, starts_with, to_list}
-use init::number {beq, sub, to_string}
+// `BTreeMap`/`beq`/`empty`/`map`/`to_list` are all used throughout this
+// file and are listed here like any other import; see std/map_tests.mo's
+// note for the instance/dictionary-resolution claim that used to keep
+// this import empty, and for why it no longer does.
+use std::map {BTreeMap, BTreeMap.to_list, empty}
+use std::list {List.filter, List.intercalate, Show}
+use init::string {}
+use init::number {}
 use lib::parser::core {
-  ParseError, ParseResult, custom, fail, is_empty, parse_error_remaining, success, tag,
+  ParseError, ParseResult, is_empty, parse_error_remaining
 }
 use lib::parser::char_preds {is_ident_char}
 use lib::parser::combinators {

@@ -1,12 +1,12 @@
 // Init module -- the ambient re-export hub for init/ (bare `init`
 // resolves to this file, see AGENTS.md's "init vs std" section).
 
-pub use id {*}
-pub use io {*}
-pub use number {*}
-pub use math {*}
-pub use string {*}
-pub use list {*}
+pub use lib::id {*}
+pub use lib::io {*}
+pub use lib::number {*}
+pub use lib::math {*}
+pub use lib::string {*}
+pub use lib::list {*}
 
 infix (+) := I64.add
 

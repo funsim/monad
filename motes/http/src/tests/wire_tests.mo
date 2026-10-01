@@ -1,8 +1,18 @@
 /// Phase 3 tests — HTTP/1.1 wire format parse/serialize roundtrips.
 
-use lib::types {Body, Headers, Method, Request, Response, Status, Uri}
-use lib::body {}
-use lib::wire {}
+use http::types {
+  Body, Headers, Method, Request, Response, Status.created, Status.no_content,
+  Status.not_found, Status.not_modified, Status.ok, Uri, http1_0, http1_1,
+}
+use http::body {Body.length, Body.to_bytes_pure}
+use http::wire {
+  Wire.body_bytes, Wire.content_length_of, Wire.drop_bytes, Wire.format_request,
+  Wire.format_response, Wire.frame_request, Wire.frame_response,
+  Wire.parse_content_length, Wire.parse_method, Wire.parse_request,
+  Wire.parse_response, Wire.parse_response_with_method, Wire.parse_u16,
+  Wire.parse_version, Wire.request_target, Wire.response_has_body,
+  Wire.split_lines, Wire.take_bytes,
+}
 
 def expect_ok_req (got : Result String Request) (want_method : Method) (want_path : String) : Bool :=
   match got {

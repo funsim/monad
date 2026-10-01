@@ -1,6 +1,6 @@
 /// Whitespace parsing functions for the self-hosted Monad parser.
 
-use lib::parser::core {ParseResult, custom, fail, is_empty, success}
+use lang::parser::core {ParseResult, custom, is_empty}
 use lib::parser::char_preds {is_space_byte}
 use lib::parser::combinators {take_while_byte}
 

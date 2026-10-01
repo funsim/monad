@@ -44,7 +44,8 @@ cd "$root"
 # `nightly` job sets it from the flake (`nix build .#monadHost`), which is
 # the SAME host the `bootstrap` job uses and is a 2s store lookup there,
 # where an unqualified `cargo run --release --` was a cold fat-LTO build
-# (~10 min, since actions/checkout cleans target/ at the start of every job).
+# (~10 min, since actions/checkout cleans the target directories at the start
+# of every job).
 # Unset -- a local `devenv tasks run monad:nightly` -- it falls back to
 # cargo, which is what a developer with no flake host has.
 scripts/build-self-hosted.sh "$root/dist" --verbose --release

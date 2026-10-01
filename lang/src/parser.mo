@@ -1,34 +1,44 @@
 /// Self-hosted Monad grammar parser.
 /// Split into modules for maintainability.
-use lib::types {
-  Decl, DoStmt, term_loc, Identifier, InductConstructor, LocatedSpan, Location, ModulePath,
-  NamePath, NameRef, OpenFilter, Param, QualifiedName, Term, TypeConstraint, UseFilter, UseItem, app,
-  bind_s, class_d, con, custom, def_d, expr_s, forall, hole, id, if_,
-  inductive_d, infix_d, instance_d, lam, let_s, list_reverse, lit, match_,
-  mc, mk, mp, name, named, nid, nnp, npath, ntv, nqn, open_all, open_d, open_only,
-  operator, parse_param_many, parse_param_with_mult, pi, ret_s, scoped_open_d,
-  char_to_string, show_identifier, show_name_path,
-  struct_d, use_bare, use_d, use_glob, use_items, use_name,
-  use_rename, use_sub, use_sub_rename, var,
+use lang::types {
+  AttrArg, Attribute, Decl, DoStmt, FieldPattern, FieldPatternEntry, Identifier,
+  InductConstructor, LocatedSpan, Location, ModulePath, Multiplicity, NamePath,
+  NameRef, OpenFilter, Param, ParseClass, ParseClassDef, ParseDecl, ParseDef,
+  ParseInductConstructor, ParseInstance, ParseMatchCase, ParseParam, ParseSpan,
+  ParseStruct, ParseStructField, ParseStructLitField, ParseTerm, ParsedParam,
+  QualifiedName, Term, TypeConstraint, UseFilter, UseItem, Visibility, affine,
+  app, char, char_to_string, concrete, destructured, f32, f64, flt, group,
+  has_attr, i64, id_eq, ident, if_, linear, list_reverse, many, match_, mc, mk,
+  named, num, operator, package_private, parse_param_many, parse_param_with_mult,
+  pd_at, pd_class_d, pd_decl_gen_d, pd_def_d, pd_def_macro_d, pd_inductive_d,
+  pd_infix_d, pd_instance_d, pd_macro_call_d, pd_mote_d, pd_open_d,
+  pd_scoped_open_d, pd_struct_d, pd_use_d, pi, plain, priv_, pt_app, pt_at, pt_do,
+  pt_from, pt_hole, pt_lam, pt_lit, pt_pi, pt_quote_, pt_sort, pt_var,
+  pt_var_macro, pub_, sentinel, show_identifier, show_name_path, str, struct_lit,
+  struct_update, term_loc, u32, u64, var, zero,
 }
-use std::list {filter, intercalate, length}
+use std::list {List.intercalate, List.length}
 // For `HashMap` (the located parser's position table) and the monomorphic
 // helpers over it -- never `Map.insert`/`Map.lookup`, whose generic
 // dispatch can resolve to the wrong instance.
-use std::map {}
+use std::map {HashMap}
 use llvm::strmap {str_map_empty, str_map_insert}
-use lib::parser::lower_parse {
-  collect_decl_rems, lower_ctx_bare, lower_ctx_bind_all, lower_ctx_locating,
-  lower_parse_decl, lower_parse_decls, lower_parse_term, name_ref_to_string,
+use lang::parser::lower_parse {
+  ParseLowerCtx, collect_decl_rems, lower_ctx_bare, lower_ctx_bind_all,
+  lower_ctx_locating, lower_parse_decl, lower_parse_decls, lower_parse_term,
+  name_ref_to_string,
 }
-use lib::parser::core {
-  ParseResult, custom, fail, is_empty, mk, op_char_member, op_chars,
-  op_lookup_prec, op_table, parse_error_remaining, success, tag,
+use lang::parser::core {
+  ParseResult, custom, is_empty, op_char_member, op_chars, op_entry_prec,
+  op_entry_rassoc, op_lookup_entry, op_lookup_prec, op_table,
+  parse_error_remaining,
 }
-use lib::parser::char_preds {is_ident_char_byte, is_space_byte}
-use lib::parser::combinators {
-  alt, alt_fold, bind_parse, delimited_by, many1, map_parse, opt,
-  preceded_by, separated_by, tag, tag_keyword, take_while_byte, terminated_by,
+use lang::parser::char_preds {
+  is_ident_char_byte, is_prefix, is_space, is_space_byte,
+}
+use lang::parser::combinators {
+  alt, alt_fold, bind_parse, delimited_by, many1, map_parse, opt, preceded_by,
+  separated_by, tag, tag_keyword, take_while, take_while_byte, terminated_by,
 }
 use lib::parser::number {number, numeric_literal}
 use lib::parser::whitespace {skip_spaces, skip_spaces_match, ws0, ws1}
@@ -887,15 +897,31 @@ def use_brace_item_glob (input : String) : ParseResult UseItem :=
 		fail e => fail e
 	}
 
+/// The name position of a `use Module { ... }` item: an ordinary
+/// identifier, or a `.`-separated dotted SPELLING (`List.length`) naming a
+/// dotted declaration.
+///
+/// Stays ONE identifier whose text still contains the dots, matching
+/// `use_item_name` on the Rust host. A brace item's job is to match a
+/// declaration's own spelled name (`decl_local_name` renders a `NamePath`
+/// `.`-joined for exactly this comparison), so keeping the item whole
+/// means no split/join mismatch between the two implementations. The
+/// sub-module forms keep a plain `identifier` — a sub-module is a file,
+/// so it is always one segment and the alt ordering still lands
+/// `Sub.x` on the name arm and `Sub {x}` on the sub-module arm.
+#[partial]
+def use_brace_item_name_dotted (input : String) : ParseResult String :=
+	map_parse join_dotted_identifiers dotted_identifier input
+
 def use_brace_item_name (input : String) : ParseResult UseItem :=
-	match identifier input {
+	match use_brace_item_name_dotted input {
 		success rem name => success rem (UseItem.use_name (Identifier.id name)),
 		fail e => fail e
 	}
 
 #[partial]
 def use_brace_item_rename (input : String) : ParseResult UseItem :=
-	match identifier input {
+	match use_brace_item_name_dotted input {
 		success rem name => use_brace_item_rename_alias name rem,
 		fail e => fail e
 	}
@@ -9139,7 +9165,7 @@ def open_filter_is_all (filter : OpenFilter) : Bool :=
 
 #[test]
 def test_use_parser : Bool :=
-    match use_parser "use prelude" {
+    match use_parser "use init" {
         success rem out =>
             match out.kind {
                 use_d path filter _pub => (String.beq rem "") && use_filter_is_bare filter,
@@ -9235,7 +9261,7 @@ def use_item_is_glob (item : UseItem) : Bool :=
 
 #[test]
 def test_use_glob : Bool :=
-    match use_parser "use io {*}" {
+    match use_parser "use init::io {*}" {
         success rem out =>
             match out.kind {
                 use_d path filter _pub =>
@@ -9254,7 +9280,7 @@ def test_use_glob : Bool :=
 
 #[test]
 def test_use_empty_braces : Bool :=
-    match use_parser "use io {}" {
+    match use_parser "use init::io {}" {
         success rem out =>
             match out.kind {
                 use_d path filter _pub =>
@@ -9269,7 +9295,7 @@ def test_use_empty_braces : Bool :=
 
 #[test]
 def test_use_nested_simple : Bool :=
-    match use_parser "use io {file {read}}" {
+    match use_parser "use init::io {file {read}}" {
         success rem out =>
             match out.kind {
                 use_d path filter _pub =>
@@ -9302,7 +9328,7 @@ def test_use_nested_simple : Bool :=
 
 #[test]
 def test_use_nested_rename : Bool :=
-    match use_parser "use io {file as f {read}}" {
+    match use_parser "use init::io {file as f {read}}" {
         success rem out =>
             match out.kind {
                 use_d path filter _pub =>
@@ -9326,14 +9352,14 @@ def test_use_nested_rename : Bool :=
 
 #[test]
 def test_use_nested_deep : Bool :=
-    match use_parser "use io {a {b {c}}}" {
+    match use_parser "use init::io {a {b {c}}}" {
         success rem out => String.beq rem "",
         fail _ => false
     }
 
 #[test]
 def test_use_multiple_rename : Bool :=
-    match use_parser "use io {read as r, write as w}" {
+    match use_parser "use init::io {read as r, write as w}" {
         success rem out =>
             match out.kind {
                 use_d path filter _pub =>

@@ -15,12 +15,16 @@ Use `use` to bring a module into scope, listing exactly the names you want in
 `{...}`:
 
 ```monad
-use io {IO}
-use std::path {Path}
+use std::process {exec_cmd, process_id}
 
-def p : Option Path := none
-def io_unit : Option (IO Unit) := none
+def pid : I64 := process_id
+def run : IO I64 := exec_cmd "true" []
 ```
+
+The names in `{...}` are the module's own top-level definitions, and only the
+bare ones: a *dotted* definition such as `List.intercalate` is never bound bare
+— reach it by its dotted name once the module is loaded, or `open` its
+namespace.
 
 ### `::` separates module path segments
 
@@ -37,7 +41,7 @@ Both parsers enforce it (`use_path_sep` in `lang/src/parser.mo`,
 
 | Form | Separator | Example |
 | --- | --- | --- |
-| `use` path (names a file) | `::` | `use std::list {intercalate}` |
+| `use` path (names a file) | `::` | `use std::process {exec_cmd}` |
 | `open` path (names a namespace) | `.` | `open List {map}` |
 | term reference, decl name, field access | `.` | `List.cons`, `x.field`, `String.length` |
 
@@ -55,21 +59,39 @@ An empty `{}` still loads the module — for qualified access, and for its
 instances — without binding any bare names:
 
 ```monad
-use io {}
+use std::map {}
 open IO {println}
 
 def main (args : List String) : IO Unit := println "Hello"
 ```
 
-`{*}` imports everything explicitly. A bare `use io` with no braces at all still
-parses, but the compiler warns that it is deprecated.
+`{*}` imports every name of the module, bare and qualified; `{…}` imports
+exactly the names you list, bare and qualified; `{}` imports nothing but the
+module itself — its qualified names and its instances. The **first segment must name a mote**
+(`init`, `std`, `runtime`, a `motes/*`) **or `lib`**, the reserved alias for
+the importing mote's own modules. A bare `use io` is an error: `io` is a module
+of `init`, not a mote, so a bare name would silently mean whichever `io.mo`
+happened to sit beside the importing file.
+
+Every name inside `{…}` must name a **top-level declaration** of the target
+module — a `def`, `type`, `struct`, `class`, `instance` or `defmacro` — by its
+own **spelled name**. A dot inside a brace item is part of a declaration's
+spelling, not a path separator: a dotted def is declared as one name containing
+a dot (`def IO.println`), so it is named the same way, `use std::io
+{IO.println}`. The item is a **name path** — one `.`-joined spelling — the same
+kind of thing you write at the call site. Naming such a def by its tail,
+`use std::io {println}`, is rejected rather than silently binding nothing, with
+a hint naming the spelling that works: `List.length` and `String.length` are
+two different declarations, so a bare `length` could not say which one is meant.
+The same rule covers a rename — `{n as m}` is checked against `n`, and
+`use std::io {IO.println as println}` is how you get the bare `println` — and
+`{*}`/`{}` are unaffected.
 
 ## Opening Modules
 
 `open` makes a module's definitions available without their prefix:
 
 ```monad
-use io {IO}
 open IO {println}
 
 def main (args : List String) : IO Unit := println "Hello"
@@ -78,7 +100,6 @@ def main (args : List String) : IO Unit := println "Hello"
 Without the `open`, write the full path — which always works:
 
 ```monad
-use io {IO}
 
 def main (args : List String) : IO Unit := IO.println "Hello"
 ```
@@ -114,11 +135,12 @@ Twelve modules are loaded ambiently: the prelude, plus `id`, `io`, `number`,
 `math`, `string`, `list`, the `init` hub, `std.path`, `std.io`, `std.process`,
 and the `std` hub. Everything else must be imported.
 
-`prelude` is loaded for you, so there is nothing to `use` it for — but it is
-not off limits: `use prelude {…}` resolves like any other module
-(`init/src/prelude.mo`, with its own resolution case because the name has no
-directory of its own to match), which is what a file that wants a prelude name
-it cannot otherwise reach would do.
+`prelude` is loaded for you, so there is nothing to `use` it for — and naming it
+is an error in either spelling (`use prelude`, `use init::prelude`). The prelude
+is ambient, so an import of it is redundant by construction; banning it also
+keeps its one-file-two-names wart (`prelude` is the one module whose name is not
+its file name) from spreading. The loader's own seed of it is a module path
+rather than a `use`, so the ban costs nothing.
 
 ### The re-export hubs do not cover everything
 
@@ -185,9 +207,14 @@ somewhere that is not a compiler checkout. That is what the rest of the search
 is for, and this half is what makes the word *mote* load-bearing rather than
 decorative. In order, and only after every candidate above has missed:
 
-1. **The `motes/` convention.** Every `motes/*/src/{stem}.mo` is probed, which
-   is how a bare `use greet` finds `motes/example/src/greet.mo` without naming
-   its mote; then `motes/{head}/src/{rest}.mo` for the qualified spelling.
+1. **The `motes/` convention.** `motes/{head}/src/{rest}.mo` answers the
+   qualified spelling (`use example::greet` reads
+   `motes/example/src/greet.mo`) — the shape the fixture in
+   `examples/test_mote.mo` uses. The bare-name scan beside it, which once let
+   a one-segment `use greet` find the same file without naming its mote, is
+   unreachable for a `use` now that a `use` path must begin with a mote or
+   `lib`; it is kept because the dependency walk and the prelude/toolchain
+   probes run through the same cascade.
 2. **The importing file's own manifest.** `mote.toml`'s declared dependency
    paths answer the lookup, so `use std::list` resolves to the dependency's
    real `src/list.mo` rather than to a directory that happens to be named like
@@ -281,6 +308,13 @@ The compiler warns when a name listed in a `use`/`open` is never referenced:
 warning: unused import `Path` from `std.path`
 ```
 
+That warning only fires for a name that *binds*. An entry that binds nothing —
+a dotted tail, or a typo — is not a warning but an **error**, reported at the
+`use` line rather than left for the call site to discover (`use std::list
+{length}` is rejected because `length` is the dotted def `List.length`). So a
+clean `use` list is one whose every name is a bare declaration of its target,
+and the warning then tells you which of the surviving bindings are unused.
+
 The [bootstrap host](./bootstrap-host.md#editor-and-agent-tooling) can rewrite
 the declarations for you — `monad-rs organize-imports --write` computes the
 minimal name list, converts bare `use`/`open` to the explicit form, and deletes
@@ -290,7 +324,6 @@ compiler.
 ## Complete Example
 
 ```monad
-use io {IO}
 open IO {println}
 
 def say_hello (s : String) : IO Unit := println s

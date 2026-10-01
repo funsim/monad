@@ -13,9 +13,7 @@
 // These run under BOTH runners, which is the point: the two failed at
 // different stages, so a test either one skips proves nothing.
 
-use std::base {}
-use std::process {}
-use init::string {}
+use std::base {Ordering, gt, lt}
 
 // --- A qualified def reference ---------------------------------------
 

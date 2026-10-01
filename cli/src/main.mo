@@ -1,30 +1,45 @@
-use io {IO}
+use std::list {List.length}
 open IO {println, read_file, write_file, file_exists}
 use std::process {exec_cmd, process_id}
-use std::bench {now, report_since}
-use lang::types {Decl, LocalScope, ModulePath, NamePath, show_module_path, show_identifier}
+use std::bench {Bench.now, Bench.report_since}
+use lang::types {
+  Decl, LocalScope, ModulePath, NamePath, id, show_identifier, show_module_path,
+}
 use llvm::ir {LLVMModule, emit_module}
 use llvm::link {link_ir}
 use runtime {}
-use lang::codegen::emit {compile_db_module_with_debug, compile_loaded_modules_to_ir_with_debug, ok}
+use lang::codegen::emit {compile_db_module_with_debug, compile_loaded_modules_to_ir_with_debug}
 use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, ElaboratedModules, FileCheckAndCache, LoadedModules, ModuleInfo, ModuleInfoCache, bench_step, check_file_cached, check_module_with_scope, elaborate_loaded_modules, elaborate_loaded_modules_cached, elaborate_module_decls_best_effort, expand_check_paths, extract_directory, load_file_modules, load_module_with_info, module_name_from_path, module_info_cache_empty, resolve_runtime_src, try_parse_decls, try_parse_decls_strict}
 use lang::scope {resolve_class_calls_decls}
-use lang::mote {MoteManifest}
-use build::closure {input_hash}
-use build::store {artifact_ir_path, ensure_entry_dir, store_path, target_dir_for}
-use build::check {CheckPlan, check_block, check_entry_read, check_maybe_write, check_plan, check_plan_active, check_plan_key, check_plan_reason, check_plan_root, mote_root_of}
-use build::manage {clean_run, gc_run, store_ls, store_verify}
+use lang::mote {
+  Mote.discover, Mote.discover_config_target_dir, Mote.workspace_members,
+  MoteManifest,
+}
+use build::closure {Build.input_hash}
+use build::store {
+  Build.artifact_ir_path, Build.ensure_dir, Build.ensure_entry_dir,
+  Build.store_path, Build.target_dir_at, Build.target_dir_for,
+  Build.target_dir_of, artifact,
+}
+use build::check {
+  Build.check_block, Build.check_entry_read, Build.check_maybe_write,
+  Build.check_plan, Build.check_plan_active, Build.check_plan_key,
+  Build.check_plan_reason, Build.check_plan_root, Build.mote_root_of, CheckPlan,
+}
+use build::manage {
+  Build.clean_run, Build.gc_run, Build.store_ls, Build.store_verify,
+}
 use std::map {}
 use lang::pretty {show_decls}
 use lang::codegen::test_driver {TestIrResult, compile_loaded_modules_to_test_ir, is_no_tests_error, parse_driver_result}
 use lib::args {*}
 // `--verbose` stage/module trace and the colored finish/failure lines
 // (`std/src/log.mo` -- its own header documents the gating rules).
-use std::log {fail_line, stage}
+use std::log {fail_line, ok_line, stage}
 use lang::lower_core_ir {lower_ctx_from_decls, lower_root, LowerError}
 use lang::core_ir {CoreIr}
 use lang::core_eval {eval, basic_native_table}
-use lang::core_value {GlobalTable, global_cache_new, global_table_len}
+use lang::core_value {GlobalTable, env_nil, global_cache_new, global_table_len}
 use lang::typecheck::meta_eval {show_value_debug, show_core_eval_error_debug}
 
 #[native "build_commit"]
@@ -35,7 +50,6 @@ def build_commit : String
 /// threads) don't collide on the same `/tmp/monad_test_bin_<N>` or output
 /// binary paths.
 def default_output_dir : Path := Path.path ("/tmp/monad_out_" ++ I64.to_string process_id)
-
 
 /// `compile_loaded_modules_to_ir` can now fail cleanly -- either
 /// `resolve_class_calls_decls` found a `ClassName.method` call with no
@@ -204,7 +218,7 @@ def build_cached (src : String) (dest_name : Path) (verbose : Bool) (debug : Boo
     let target_dir <- Build.target_dir_for src;
     let dest_dir : String := build_dest_dir target_dir debug;
     let root <- Build.mote_root_of src;
-    let key <- Build.input_hash root (profile_name debug) host_triple;
+    let key <- Build.input_hash src root (profile_name debug) host_triple;
     // The key names the IR, so it is resolved from the key, and a key that
     // could not be taken leaves the IR where it always was (beside the
     // output). That is the ONLY case where a `build` puts `-o` inside the
@@ -280,7 +294,7 @@ def build_dest_dir (target_dir : String) (debug : Bool) : String :=
 ///
 /// `cmp -s` first, so a hit does not rewrite a file that already holds the
 /// right bytes -- `cp` would move its mtime, and "the `.ll` did not move" is
-/// how a reader tells a hit from a miss (`target/verify/escape_hatch.sh`
+/// how a reader tells a hit from a miss (`target-monad/verify/escape_hatch.sh`
 /// prints it as one of three signals). Nothing depends on it for
 /// correctness: the ladder `cmp`s content. `cmp` is POSIX, so unlike the
 /// digest tool of Phase 0c it needs no probe.
@@ -1013,7 +1027,7 @@ def no_target_diagnostic (subcommand : String) : IO I64 := do {
 /// so a hatch build through one root REWRITES the IR the other recorded.
 /// The artifact is never touched, so the answer served stays correct; what
 /// this note corrects is only the older claim that a hatch run writes
-/// nothing at all. See `target/verify/c3c4_build.sh` for the measurement and
+/// nothing at all. See `target-monad/verify/c3c4_build.sh` for the measurement and
 /// the plan's resolved-toolchain-root item for the fix.
 #[partial]
 def cache_enabled (no_cache : Bool) : IO Bool := do {
@@ -1101,13 +1115,13 @@ def run_check (files : List String) (workspace : Bool) (verbose : Bool) (no_cach
 /// to have them. An empty flag leaves the other three tiers to decide,
 /// which is what `build` and `check` do.
 ///
-/// `Mote.discover_build_dir`, not `Mote.discover`: the latter stops at a
-/// virtual workspace root, so a store owned by one would be invisible from
-/// inside it. `Build.target_dir_at` makes the same choice for the same
-/// reason.
+/// `Mote.discover_config_target_dir`, not `Mote.discover`: the config is the
+/// tool's, so the walk has no mote boundary to stop at -- and a store owned
+/// by a virtual workspace root would otherwise be invisible from inside it.
+/// `Build.target_dir_at` makes the same choice for the same reason.
 #[partial]
 def target_dir_flagged (flag : String) : IO String := do {
-    let d <- Mote.discover_build_dir "";
+    let d <- Mote.discover_config_target_dir "";
     Build.target_dir_of flag d ""
 }
 
@@ -1247,7 +1261,6 @@ def find_workspace_members (dir : String) (depth : I64) : IO (List String) := do
         else do { return here }
     }
 }
-
 
 #[partial]
 def run_test (files : List String) (out_dir : String) (verbose : Bool) : IO I64 := do {

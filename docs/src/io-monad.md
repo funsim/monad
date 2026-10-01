@@ -8,7 +8,6 @@ Monad manages side effects through the `IO` monad.
 have side effects:
 
 ```monad
-use io {IO}
 open IO {println}
 
 def main (args : List String) : IO Unit := println "Hello, World!"
@@ -35,8 +34,12 @@ instance Monad IO {
 }
 ```
 
-Wrap a pure value with **`IO.pure`**, not the `IO.io` constructor: `io` exists so
-`bind` can match on it, and is meant to become an implementation detail.
+**Never name the `io` constructor outside `init/src/io.mo`.** Wrap a pure value
+with **`IO.pure`**, and reach a value's contents with **`Monad.bind`** —
+`let x <- action;` in a `do` block — which is what the instance above does.
+Constructing with `IO.io`, or matching on it, is not what the constructor is
+for, and keeping every other file off it is what leaves it free to become a
+native.
 
 The *operations* — printing, files, the clock — live in `std/io.mo`, because
 they touch the operating system.
@@ -44,7 +47,6 @@ they touch the operating system.
 ## Basic IO Operations
 
 ```monad
-use io {}
 open IO {println}
 
 def main (args : List String) : IO Unit :=
@@ -69,12 +71,12 @@ Other operations in `std.io`:
 
 There is no `getLine` — reading stdin is not implemented yet.
 
-> **A gotcha worth knowing.** Listing names in `use io {IO}` can break
+> **A wart worth knowing.** Naming `IO` in a *non-empty* `use` filter can break
 > `do`-notation's implicit `Monad IO` lookup at run time ("instance-Monad-IO not
 > found"), even though the file type-checks. `open`'s filtering is unaffected.
-> The workaround, used throughout `examples/`, is `use io {}` plus
-> `open IO {println}`. This is a known bug in how instance resolution interacts
-> with non-empty `use` filters.
+> Since `IO` and its instance are ambient, the fix is to import nothing at all:
+> `open IO {println}` for the bare names you write, and no `use` line. This is a
+> known bug in how instance resolution interacts with non-empty `use` filters.
 
 ## Sockets and TCP
 
@@ -98,8 +100,6 @@ them. That is what lets the implementation carry a bare file descriptor instead
 of a handle — so nothing may pattern-match, compare or print either.
 
 ```monad
-use io {}
-use std::io {}
 
 /// Send one request over a fresh connection and return whatever comes back.
 /// Every step can fail, so each is matched on rather than discarded.
@@ -132,8 +132,6 @@ def fetch (host : String) (port : U16) : IO (Result String String) := do {
 actually settled on back with `IO.tcp_local_port`:
 
 ```monad
-use io {}
-use std::io {}
 open IO {println}
 
 /// Listen on an OS-assigned port, print it, accept one connection, echo back
@@ -203,7 +201,6 @@ A `do` block sequences monadic actions. Two equivalent spellings:
 ### `do { ... }`
 
 ```monad
-use io {}
 open IO {println}
 
 def greet : IO Unit := do {
@@ -217,7 +214,6 @@ def greet : IO Unit := do {
 A definition can use `{ ... }` directly in place of `:= do { ... }`:
 
 ```monad
-use io {}
 open IO {println}
 
 def greet : IO Unit {
@@ -247,8 +243,6 @@ are parsed as a single application, which produces a confusing error like
 A worked example using all four:
 
 ```monad
-use io {}
-use std::io {}
 open IO {println}
 
 def show_home : IO Unit {
@@ -294,7 +288,6 @@ backend — the Rust host has no TCP implementation at all.
 The runtime executes `main`, passing command-line arguments as a `List String`:
 
 ```monad
-use io {}
 open IO {println}
 
 def main (args : List String) : IO Unit :=
@@ -312,7 +305,6 @@ See [Compiling and Running](./compiling.md).
 ## Combining IO with Other Types
 
 ```monad
-use io {}
 open IO {println}
 
 def print_result (r : Result String I64) : IO Unit :=

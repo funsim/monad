@@ -1,3 +1,4 @@
+use std::list {List.length}
 use lib::types {
   Con, DebugName, Identifier, Literal, LocalScope, MatchCase, NamePath,
   NameRef, Scope, Term, id_eq, show_identifier, sentinel, term_peel,

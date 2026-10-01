@@ -22,14 +22,12 @@
 /// rather than inspecting IR text -- only running a compiled binary
 /// catches a wrong-layout read, which is how the v29 crash stayed
 /// invisible through `check` and `llc` both.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
 use std::process {process_id, exec_cmd}
 use lang::module {LoadedModules, load_file_modules}
 use lang::codegen::emit {compile_loaded_modules_to_ir}
 use llvm::ir {emit_module}
-
 
 /// Two types both declaring `mk`, at arities 1 and 3, both constructed
 /// and matched from `main`. Must compile AND run with every field
@@ -39,8 +37,7 @@ use llvm::ir {emit_module}
 /// `Slim`/`Wide` field reads crossed the two layouts.
 #[test]
 def test_ctor_differing_arity_collision_runs_correctly : IO Bool :=
-    let source := r#"use io {IO}
-type Slim { mk (only : I64) }
+    let source := r#"type Slim { mk (only : I64) }
 type Wide { mk (a : I64) (b : I64) (c : I64) }
 def main (args : List String) : IO I64 := do {
     let s := Slim.mk 1;
@@ -58,8 +55,7 @@ def main (args : List String) : IO I64 := do {
 /// field reads.
 #[test]
 def test_ctor_same_arity_collision_still_runs : IO Bool :=
-    let source := r#"use io {IO}
-type Inner { mk (path : String) (rest : List String) }
+    let source := r#"type Inner { mk (path : String) (rest : List String) }
 type Outer { mk (result : Inner) (cache : I64) }
 def main (args : List String) : IO I64 := do {
     let i := Inner.mk "x" [];
@@ -82,8 +78,7 @@ def main (args : List String) : IO I64 := do {
 /// field.
 #[test]
 def test_ctor_value_position_shim_with_ambiguous_bare_name : IO Bool :=
-    let source := r#"use io {IO}
-type Box { mk (v : I64) }
+    let source := r#"type Box { mk (v : I64) }
 type Slim { mk (a : I64) (b : I64) }
 type Wide { mk (x : I64) (y : I64) (z : I64) }
 def sum_boxes (xs : List Box) (acc : I64) : I64 :=
@@ -131,8 +126,7 @@ def main (args : List String) : IO I64 := do {
 def test_user_ctor_shadowing_builtin_name_keeps_own_layout : IO Bool := do {
     let output_dir := "/tmp/monad_e2e_" ++ I64.to_string process_id;
     let src_path := output_dir ++ "/ctor_builtin_shadow.mo";
-    let source := r#"use io {IO}
-type Wide { ok (a : I64) (b : I64) (c : I64) }
+    let source := r#"type Wide { ok (a : I64) (b : I64) (c : I64) }
 def build : Wide := Wide.ok 1 2 3
 def unwrap (w : Wide) : I64 :=
     match w { ok x y z => x + y + z }

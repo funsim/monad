@@ -1,10 +1,9 @@
-use lib::types {
-  Identifier, InductConstructor, Inductive, Infix, InstanceKey,
-  LocalVar, Module, ModulePath, ModuleRegistry, Multiplicity, NamePath,
-  Operator, Param,
-  Scope, ScopeClassDef, ScopeConflict, ScopeData, ScopeDef, ScopeError,
-  ScopeInstance, Similar, Term, hole, id, many, mk, mp,
-  name_not_found, nid, nop, operator,
+use lang::types {
+  Attribute, Identifier, InductConstructor, Inductive, Infix, InstanceKey,
+  LocalVar, Module, ModulePath, ModuleRegistry, Multiplicity, NamePath, Operator,
+  Param, Scope, ScopeClassDef, ScopeConflict, ScopeData, ScopeDef, ScopeError,
+  ScopeInstance, Similar, Term, nid, nnp, nop, package_private, sort_n,
+  visibility_beq,
 }
 use lib::scope {scope_data_add_def, scope_data_add_inductive, scope_data_empty}
 

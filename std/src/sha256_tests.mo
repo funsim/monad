@@ -3,7 +3,7 @@
 /// additional ones). Every digest below was independently confirmed with
 /// a real `sha256sum` run during development, not taken from memory.
 
-use lib::sha256 {}
+use std::sha256 {Sha256.hash, Sha256.hex_bytes_of_byte}
 
 // ── Primitive unit tests ──
 // Isolates a failure to "native op" vs. "algorithm composition" first.

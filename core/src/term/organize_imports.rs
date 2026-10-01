@@ -5,12 +5,14 @@
 //! `compute_organize_import_edits` + `apply_text_edits`; see
 //! `core::lib::organize_imports_for_files` for the batch driver.
 
-use super::module::{LoadedModules, Module, collect_referenced_names, referenced_contains_name};
-use crate::Set;
+use super::module::{
+  ImportCompletion, LoadedModules, Module, collect_referenced_names, referenced_contains_name,
+};
 use crate::term::{
   Identifier, InductiveVariant, Location, ModulePath, NamePath, Named, OpenFilter, SourceRange,
-  UseFilter,
+  UseFilter, UseItem,
 };
+use crate::{Map, Set};
 
 /// A byte-range-equivalent (line/column, via the existing `SourceRange`
 /// type) replacement in a source file.
@@ -35,21 +37,39 @@ fn is_valid_identifier(s: &str) -> bool {
     && chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// The bare names a module makes available for `use`/`open` to select:
-/// top-level def names, inductive/struct/class type names, and (for
-/// non-class inductives) their constructors — the same set `open`-ing a
-/// module conventionally brings into bare scope. Transitive over `pub
+/// Whether `s` is a spelling a brace item can hold: one identifier, or a
+/// `.`-joined `NamePath` spelling (`List.length`) — a `use` list item is
+/// matched against a declaration's full spelled name, so dotted spellings
+/// are selectable (`use std::list {List.length}`) and must survive the
+/// synthetic-name filter below.
+fn is_valid_spelling(s: &str) -> bool {
+  !s.is_empty() && s.split('.').all(is_valid_identifier)
+}
+
+/// The names a module makes available for `use`/`open` to select:
+/// top-level def spellings, inductive/struct/class type spellings, and
+/// (for non-class inductives) their constructors — the same set `open`-ing
+/// a module conventionally brings into bare scope. Transitive over `pub
 /// use` re-exports (e.g. `init/init.mo`'s `pub use id`/`pub use io`/...),
 /// same as the real scope builder's "Include re-exported modules" step in
 /// `GlobalScopeData::from_module` — without this, a bare `use init` that
 /// really only exists to pull in `init`'s re-exported names (`not`,
 /// `unit`, `err`, ...) would minimize down to an empty/wrong brace list.
 /// `visited` guards against re-export cycles.
+///
+/// A def or type is emitted under its own **spelled** name, dots and all
+/// (`List.length`, `Toml.Value`) — a brace item is matched against the
+/// declaration's full spelled name, not its last segment, so emitting
+/// `length` for `List.length` would produce a list item that selects
+/// nothing. Constructors are the exception and stay bare
+/// (`List.cons` -> `cons`), matching `declared_names_of` and the
+/// self-hosted `decl_carried_names`: both compilers accept a constructor
+/// by its bare name in a brace list, and the two sides must agree.
 fn exported_bare_names(module: &Module, loaded: &LoadedModules) -> Set<Identifier> {
   let mut names = Set::default();
   let mut visited = Set::default();
   collect_exported_bare_names(module, loaded, &mut names, &mut visited);
-  names.retain(|name| is_valid_identifier(name.as_str()));
+  names.retain(|name| is_valid_spelling(name.as_str()));
   names
 }
 
@@ -63,10 +83,10 @@ fn collect_exported_bare_names(
     return;
   }
   for ctx in module.defs() {
-    names.insert(ctx.value().name.last().clone());
+    names.insert(Identifier::new(ctx.value().name.to_string()));
   }
   for ind in module.inductives() {
-    names.insert(ind.name.last().clone());
+    names.insert(Identifier::new(ind.name.to_string()));
     if ind.variant != InductiveVariant::Class {
       for cons in ind.constructors() {
         names.insert(cons.name().last().clone());
@@ -234,16 +254,9 @@ fn render_path(keyword: &str, module_path: &ModulePath) -> String {
   }
 }
 
-fn format_import_decl(keyword: &str, module_path: &ModulePath, names: &[Identifier]) -> String {
+fn format_import_decl(keyword: &str, module_path: &ModulePath, names: &[String]) -> String {
   let module_path = render_path(keyword, module_path);
-  let compact = format!(
-    "{keyword} {module_path} {{{}}}",
-    names
-      .iter()
-      .map(|n| n.as_str())
-      .collect::<Vec<_>>()
-      .join(", ")
-  );
+  let compact = format!("{keyword} {module_path} {{{}}}", names.join(", "));
   if names.len() <= 1 || compact.len() <= MAX_LINE_WIDTH {
     return compact;
   }
@@ -269,6 +282,112 @@ fn format_import_decl(keyword: &str, module_path: &ModulePath, names: &[Identifi
     .collect::<Vec<_>>()
     .join("\n");
   format!("{keyword} {module_path} {{\n{body}\n}}")
+}
+
+/// The `use`-line edits that make `module`'s imports COMPLETE: for every
+/// name it reaches from a module it has not selected, add that name to the
+/// import — extending an existing brace list, filling in a `use M {}`, or
+/// adding a whole new line for a module the file never names at all.
+///
+/// Separate from [`compute_organize_import_edits`] because the two answer
+/// different questions and can edit the same declaration: that one narrows
+/// an existing import to what the file uses, this one widens it to what it
+/// needs. The driver applies this FIRST, then re-reads and organizes — by
+/// then no bare `use M` is left for the organizer to touch.
+///
+/// A name is never REMOVED here. `use M {a as b}` keeps its alias: the
+/// alias is a spelling the file chose, and the check judges the selection
+/// by the declaration's own name, which `a as b` already selects.
+pub fn compute_completeness_edits(module: &Module, completion: &ImportCompletion) -> Vec<TextEdit> {
+  let mut wanted: Map<ModulePath, Vec<Identifier>> = Map::new();
+  for u in &completion.unimported {
+    wanted
+      .entry(u.owner.clone())
+      .or_default()
+      .push(Identifier::new(u.spelling.to_string()));
+  }
+  // Deterministic order, so a run is reproducible and two runs diff clean.
+  let mut owners: Vec<ModulePath> = wanted.keys().cloned().collect();
+  owners.sort_by_key(|p| p.to_string());
+
+  let mut edits = Vec::new();
+  let mut new_lines: Vec<String> = Vec::new();
+  for owner in owners {
+    let mut missing = wanted.remove(&owner).expect("just read from `wanted`");
+    missing.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    missing.dedup();
+
+    let existing = module
+      .get_uses()
+      .iter()
+      .find(|ctx| ctx.value().module_path == owner);
+    let Some(ctx) = existing else {
+      new_lines.push(format_import_decl("use", &owner, &render(&missing)));
+      continue;
+    };
+    let u = ctx.value();
+    let mut present: Vec<String> = Vec::new();
+    let mut selected: Set<String> = Set::default();
+    match &u.filter {
+      UseFilter::Bare => {}
+      UseFilter::Items(items) => {
+        for item in items {
+          present.push(item.to_string());
+          // Only a plain name or a rename names a declaration of THIS
+          // module; a sub-module item selects a different module's names.
+          match item {
+            UseItem::Name(name) => {
+              selected.insert(name.as_str().to_string());
+            }
+            UseItem::Rename(from, _) => {
+              selected.insert(from.as_str().to_string());
+            }
+            UseItem::Glob => {
+              // `{*}` already selects everything — the check would not have
+              // reported this module at all.
+            }
+            UseItem::SubModule { .. } | UseItem::SubModuleRename { .. } => {}
+          }
+        }
+      }
+    }
+    for name in &missing {
+      if selected.insert(name.as_str().to_string()) {
+        present.push(name.as_str().to_string());
+      }
+    }
+    present.sort();
+    edits.push(TextEdit {
+      range: u.source_location.clone(),
+      replacement: format_import_decl("use", &owner, &present),
+    });
+  }
+
+  if !new_lines.is_empty() {
+    // One insertion, at the head of the file's import block, rather than
+    // one per module: they would all land on the same offset otherwise,
+    // and `apply_text_edits` splices by range, not by intent.
+    new_lines.sort();
+    edits.push(TextEdit {
+      range: SourceRange {
+        start: Location {
+          line: completion.insert_line,
+          column: 1,
+        },
+        end: Location {
+          line: completion.insert_line,
+          column: 1,
+        },
+        path: None,
+      },
+      replacement: format!("{}\n", new_lines.join("\n")),
+    });
+  }
+  edits
+}
+
+fn render(names: &[Identifier]) -> Vec<String> {
+  names.iter().map(|n| n.as_str().to_string()).collect()
 }
 
 /// Delete the ENTIRE line `range` starts on — from column 1 through the
@@ -324,7 +443,7 @@ pub fn compute_organize_import_edits(module: &Module, loaded: &LoadedModules) ->
     } else {
       edits.push(TextEdit {
         range: u.source_location.clone(),
-        replacement: format_import_decl("use", &u.module_path, &names),
+        replacement: format_import_decl("use", &u.module_path, &render(&names)),
       });
     }
   }
@@ -338,7 +457,7 @@ pub fn compute_organize_import_edits(module: &Module, loaded: &LoadedModules) ->
     let names = minimal_open_names(&open_module_path, module, loaded, &referenced);
     edits.push(TextEdit {
       range: o.source_location.clone(),
-      replacement: format_import_decl("open", &open_module_path, &names),
+      replacement: format_import_decl("open", &open_module_path, &render(&names)),
     });
   }
 

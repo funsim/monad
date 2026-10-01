@@ -26,18 +26,15 @@
 /// mismatch -- and the two calls are deliberately compared against each
 /// other, since a value read from the wrong field is still a perfectly
 /// well-formed integer.
-use io {IO}
 open IO {println}
 use lang::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// The minimal shape: the SAME field access, once as an ordinary
 /// positional argument and once as a named one. Both must read field
 /// `d`. Before the fix the named call read field `a`, giving 41.
 #[test]
 def test_named_call_arg_reads_the_named_field : IO Bool :=
-    let source := r#"use io {IO}
-struct Four {
+    let source := r#"struct Four {
     a : I64,
     b : I64,
     c : I64,
@@ -61,8 +58,7 @@ def main (args : List String) : IO I64 := do {
 /// could collide with a wrong answer.
 #[test]
 def test_named_call_args_keep_their_own_fields : IO Bool :=
-    let source := r#"use io {IO}
-struct Four {
+    let source := r#"struct Four {
     a : I64,
     b : I64,
     c : I64,
@@ -82,8 +78,7 @@ def main (args : List String) : IO I64 := do {
 /// a fold over the literal's own order would silently transpose them.
 #[test]
 def test_named_call_out_of_order_fields_bind_by_name : IO Bool :=
-    let source := r#"use io {IO}
-struct Two {
+    let source := r#"struct Two {
     lo : I64,
     hi : I64,
 }

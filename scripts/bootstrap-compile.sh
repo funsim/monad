@@ -41,7 +41,16 @@ cd "$root"
 
 ulimit -s 131072 || true
 
-out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
+# The scratch directory, private to this checkout. One definition, shared with
+# check-monad-tests.sh, debug-oracle.sh and tools/debug_transparency_oracle.sh
+# -- see scripts/lib/bootstrap-dir.sh, including why TMPDIR is no longer
+# consulted for this path.
+# shellcheck disable=SC2034  # read by the sourced helper, not here
+MONAD_REPO_ROOT="$root"
+# shellcheck source=scripts/lib/bootstrap-dir.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/bootstrap-dir.sh"
+out="$MONAD_BOOTSTRAP_DIR"
 # No timeout, by design: the interpreted self-compile measured ~320s
 # (2026-09-09) but stretches 2-4x when the runner's other jobs and local
 # sessions share this machine. A fixed `timeout` here was killing healthy
@@ -55,7 +64,7 @@ out="${TMPDIR:-/tmp}/monad-bootstrap-ci"
 # (`nix build .#monadHost`); unset, scripts/build-self-hosted.sh falls back to
 # `cargo run --release --`, whose cold fat-LTO build was ~10 minutes here
 # (actions/checkout runs git clean -ffdx at the start of every job, wiping
-# target/, .devenv/ and the config, so it was cold every time).
+# both target directories, .devenv/ and the config, so it was cold every time).
 #
 # RUNG 1 ITSELF IS NOW ALSO AVAILABLE AS A PACKAGE, and the release ladder
 # takes it when this machine's store already holds it -- see the block above
@@ -211,7 +220,7 @@ release_pid=$!
 # lang/scope.mo, which no small-file test can reach (see
 # examples/located_terms.mo's own header for why, verified rather than
 # assumed).
-dbg="${TMPDIR:-/tmp}/monad-bootstrap-ci-debug"
+dbg="$MONAD_BOOTSTRAP_DIR-debug"
 ( ladder "$dbg" 0 2>&1 | sed -u 's/^/[debug]   /'; exit "${PIPESTATUS[0]}" ) &
 debug_pid=$!
 

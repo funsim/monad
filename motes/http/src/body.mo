@@ -17,10 +17,13 @@
 /// is here is what a *body* means: its content type, its form encoding, and the
 /// multipart grammar.
 
-use lib::strings {}
+use http::strings {Strings.list_drop_prefix, Strings.list_starts_with}
 use lib::types {Body, Headers}
 use lib::uri {}
-use lib::wire {}
+use http::wire {
+  Wire.body_bytes, Wire.content_length_of, Wire.drop_leading_space,
+  Wire.parse_one_header, Wire.split_lines, Wire.trim_trailing_crlf,
+}
 
 // ── content type ─────────────────────────────────────────────────────────
 

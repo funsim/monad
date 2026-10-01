@@ -27,10 +27,8 @@
 /// the pre-fix buggy code. Only a genuine monadic bind (`let x <- e1; e2`,
 /// or an escaping first-class lambda) forces real lambda-lifting, which is
 /// why every test below uses `<-`, not `:=`.
-use io {IO}
 open IO {println, write_file}
 use lib::codegen::test::e2e_harness {compile_source_run_expect}
-
 
 /// Primary regression test: `b`'s own bind-continuation transitively
 /// captures `a` from the enclosing lifted lambda. Uses `I64.add`
@@ -40,10 +38,9 @@ use lib::codegen::test::e2e_harness {compile_source_run_expect}
 #[test]
 def test_bind_capture : IO Bool :=
     let source :=
-        "use io {IO, println}\n" ++
         "def main (args : List String) : IO I64 := do {\n" ++
-        "    let a <- IO.io 5;\n" ++
-        "    let b <- IO.io 10;\n" ++
+        "    let a <- IO.pure 5;\n" ++
+        "    let b <- IO.pure 10;\n" ++
         "    return (I64.add a b)\n" ++
         "}\n"
     in
@@ -56,11 +53,10 @@ def test_bind_capture : IO Bool :=
 #[test]
 def test_bind_capture_3level : IO Bool :=
     let source :=
-        "use io {IO, println}\n" ++
         "def main (args : List String) : IO I64 := do {\n" ++
-        "    let a <- IO.io 1;\n" ++
-        "    let b <- IO.io 2;\n" ++
-        "    let c <- IO.io 3;\n" ++
+        "    let a <- IO.pure 1;\n" ++
+        "    let b <- IO.pure 2;\n" ++
+        "    let c <- IO.pure 3;\n" ++
         "    return (I64.add (I64.add a b) c)\n" ++
         "}\n"
     in
@@ -90,7 +86,6 @@ def test_bind_capture_3level : IO Bool :=
 #[test]
 def test_sibling_lambda_preserves_outer_locals : IO Bool :=
     let source :=
-        "use io {IO, println}\n" ++
         "def helper (verbose : Bool) : IO I64 := do {\n" ++
         "    let n := 5;\n" ++
         "    if verbose then do {\n" ++
@@ -119,10 +114,9 @@ def test_sibling_lambda_preserves_outer_locals : IO Bool :=
 #[test]
 def test_shim_boxed_def_as_value : IO Bool :=
     let source :=
-        "use io {IO, println}\n" ++
         "def add_one (x : I64) : I64 := I64.add x 1\n" ++
         "def apply_fn (f : I64 -> I64) (x : I64) : I64 := f x\n" ++
         "def main (args : List String) : IO I64 :=\n" ++
-        "    IO.io (apply_fn add_one 8)\n"
+        "    IO.pure (apply_fn add_one 8)\n"
     in
     compile_source_run_expect source "test_shim_boxed_def_as_value" 9

@@ -9,7 +9,6 @@
 // unaffected; only `use`'s is. Restore an explicit list once fixed.
 #![mote { name := "do_block", deps := [init] }]
 
-use io {}
 open IO {println}
 
 // A one-field record for the unannotated-bind probes below.

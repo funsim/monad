@@ -12,10 +12,14 @@
 /// Fixtures are pid-and-tag-scoped because the corpus sweep runs sharded
 /// and a fixed `/tmp` name would collide across concurrent shards.
 
-use io {IO}
-use std::process {capture, process_id, shell_quote}
-use lib::check {CheckPlan, check_block, check_entry_dir, check_entry_read, check_entry_write, check_key, check_plan, check_plan_active, check_plan_key, check_plan_reason, check_plan_root, check_worth_caching, mote_root_of}
-use lib::store {}
+use std::process {process_id}
+use build::check {
+  Build.check_block, Build.check_entry_dir, Build.check_entry_read,
+  Build.check_entry_write, Build.check_key, Build.check_plan,
+  Build.check_plan_active, Build.check_plan_key, Build.check_plan_reason,
+  Build.check_plan_root, Build.check_worth_caching, Build.mote_root_of, CheckPlan,
+}
+use build::store {Build.ensure_dir}
 
 /// A pid-and-tag-scoped fixture root.
 def Build.check_fixture_root (tag : String) : String :=

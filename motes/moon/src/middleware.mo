@@ -13,10 +13,14 @@
 ///   - `Middleware.auth_basic`   — checks Basic Authorization header
 ///   - `Middleware.auth_bearer`  — checks Bearer token in Authorization header
 
-use io {IO}
-use http::types {Request, Response}
-use http::body {}
-use http::strings {}
+use http::types {
+  Headers.empty, Headers.get, Headers.set, Request, Response, Status.forbidden,
+  Status.unauthorized, http1_1, text,
+}
+use http::body {Body.content_type}
+use http::strings {
+  Strings.base64_decode, Strings.list_drop_prefix, Strings.list_starts_with,
+}
 
 /// Log the request method and path to stdout before calling the handler.
 def Middleware.logging (handler : Request -> IO Response) (req : Request) : IO Response := do {

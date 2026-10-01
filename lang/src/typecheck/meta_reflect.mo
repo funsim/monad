@@ -34,12 +34,14 @@
 /// `extend_env_with_fields`/`dispatch_arm` runtime behavior exactly.
 /// `push_locals` below is the one place that convention is applied.
 use lib::core_eval {value_as_i64, value_as_str}
-use lib::core_ir {IrLit}
+use lang::core_ir {IrLit, match_}
 use lib::core_value {Value}
 use lib::scope {struct_fields_to_params}
-use lib::types {
-  Attribute, Decl, Def, Identifier, InductConstructor,
-  Inductive, MatchCase, Param, Struct, Term, TypeConstraint, sentinel,
+use lang::types {
+  Attribute, Decl, Def, Identifier, InductConstructor, Inductive, MatchCase,
+  NamePath, Param, Struct, Term, TypeConstraint, i64, if_, many, match_, mk,
+  named, no_attrs, npath, num, package_private, sentinel, show_name_path, str,
+  unnamed,
 }
 
 // ─── Value-construction helpers (host -> Value, the INPUT side) ────────
