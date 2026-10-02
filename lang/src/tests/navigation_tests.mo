@@ -49,7 +49,6 @@ use lib::scope {build_scope_from_decls}
 use lib::types {
   Identifier, Location, ModulePath, Scope, ScopeData, SourceRange, Term,
 }
-use io {IO}
 open IO {println}
 use std::process {exec_cmd, process_id}
 

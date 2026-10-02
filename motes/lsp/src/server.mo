@@ -44,7 +44,6 @@
 /// available, since a frame whose header could not be read does not say how long its
 /// body is. A broken peer therefore spins the loop and terminates at end of stream,
 /// while a well-behaved one never takes this path at all.
-use io {IO}
 use lang::json {Json}
 use lsp::checks {
   Check, CheckStore, checkstore_close, checkstore_empty, checkstore_lookup, checkstore_recheck,

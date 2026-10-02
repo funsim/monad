@@ -14,7 +14,6 @@
 ///
 /// Slow on purpose: two full closure loads of a temp module (~4s), which
 /// is why it lives here and not in `lang/src/tests`.
-use io {IO}
 open IO {println}
 use std::process {exec_cmd, process_id}
 use lang::module {

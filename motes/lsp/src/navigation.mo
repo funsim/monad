@@ -46,7 +46,6 @@
 /// composed -- a signature for a def, the whole declaration for a type or a class --
 /// in a markdown fence, because a type's rendering is multi-line and a client that
 /// reflowed it would destroy the layout that carries the meaning.
-use io {IO}
 use lang::json {Json}
 use lang::module {
   DeclRange, RangedFileCheck, decl_range_kind, decl_range_name, decl_range_span,
@@ -64,14 +63,13 @@ use toolkit::docstore {DocStore, docstore_text, docstore_uri_of_path}
 use toolkit::jsonrpc {rpc_object}
 use toolkit::position {
   LineIndex, PositionEncoding, WirePosition, line_index_of_source, offset_of_wire,
-  wire_position_mk,
+  wire_position_mk, wire_range_of_offsets,
 }
 use toolkit::text {
   TextSpan, text_identifier_at, text_span_start, text_span_stop, text_span_text,
 }
 use toolkit::wire {
-  location_json_of_source_range, wire_range_json, wire_range_of_offsets,
-  wire_range_of_source_range,
+  location_json_of_source_range, wire_range_json, wire_range_of_source_range,
 }
 
 // --- A resolved cursor ---

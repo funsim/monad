@@ -23,7 +23,6 @@
 /// body contains a character outside ASCII -- and this corpus's comments are full of em
 /// dashes and curly quotes. The client would then read the next frame starting inside
 /// this one. The assertion is a byte count, so it fails the moment that is got wrong.
-use io {IO}
 use lsp::server {
   ServerState, ServerStep, lsp_at_eof, lsp_dispatch, lsp_frame, lsp_next_read, lsp_server_new,
   server_initialized, server_step_exit, server_step_bodies, server_step_state,

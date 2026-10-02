@@ -42,7 +42,6 @@
 /// line into a malformed frame the client rejects. This module adds no printing; the
 /// printing already inside the dependency walk is a real hazard with a named place in
 /// the plan, not something a caller here can suppress.
-use io {IO}
 use lang::module {
   ModuleInfoCache, RangedFileCheck, check_file_cached_from_source_ranged, module_info_cache_empty,
   ranged_file_cache,
