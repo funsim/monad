@@ -46,7 +46,7 @@ from source is the portable alternative.
 ### Build from source
 
 ```bash
-git clone https://tangled.org/monad-lang/monad
+git clone https://tangled.org/monad-lang.org/monad
 cd monad
 devenv shell          # provides Rust, clang, llc, Boehm GC, mdbook
 cargo build --release
@@ -113,7 +113,7 @@ the working directory, and `--workspace` covers every mote in the workspace.
 | Platform | Link |
 |----------|------|
 | Zulip (main forum) | https://monad-lang.zulipchat.com/ |
-| Tangled (primary repo) | https://tangled.org/monad-lang/monad |
+| Tangled (primary repo) | https://tangled.org/monad-lang.org/monad |
 | GitHub (releases) | https://github.com/monad-lang/monad |
 | Reddit | https://www.reddit.com/r/monad_lang/ |
 | Discord | https://discord.gg/XDKk7PPH |

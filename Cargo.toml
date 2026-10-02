@@ -8,7 +8,7 @@ edition = "2024"
 license = "ASL2"
 authors = ["Anders Christiansen Sørby <anders@sorby.xyz>"]
 homepage = "https://monad-lang.org"
-repository = "https://tangled.org/monad-lang/monad"
+repository = "https://tangled.org/monad-lang.org/monad"
 
 [workspace.dependencies]
 nom = "8.0.0"
