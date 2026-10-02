@@ -16,4 +16,4 @@
 // doc comment). It depends on nothing beyond the prelude, so re-exporting
 // it keeps a `use lib` in a proof file cheap.
 
-pub use cubical {*}
+pub use lib::cubical {*}
