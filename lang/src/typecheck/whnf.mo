@@ -9,6 +9,7 @@ use lib::scope {
   flatten_call_spine, last_dot_index, scope_find_def_body,
   scope_find_inductive_by_constructor, scope_find_local, scope_resolve_name,
 }
+use lib::typecheck::faces {face_decide}
 use lib::typecheck::subst {beta_reduce, term_shift, term_subst}
 
 // ─── Weak-head normal form ───────────────────────────────────────────
@@ -420,6 +421,64 @@ def whnf_face (c : Cubical) : Option Term :=
             },
     }
 
+/// The Kan rule for `hcomp A φ u u0`. Its input is the already-reduced
+/// `Cubical` -- `whnf_cubical` whnfs every argument before dispatching --
+/// which is what lets `face_decide` be consulted at all: that decision
+/// procedure reads flat literals, and its contract is a NORMALIZED
+/// cofibration. Here the contract is met by construction rather than by
+/// a call, since the arguments arrived reduced.
+///
+/// One case reduces, one deliberately does not.
+///
+/// * `φ` REFUTED (`some false`): every disjunct has a definitely-false
+///   literal or the contradiction pair, so `φ` is the empty subobject. A
+///   system over nothing constrains nothing, and the composite of a box
+///   with no sides is its base: `hcomp A i0 u u0 ≡ u0`.
+/// * `φ` SATISFIED (`some true`) stays STUCK, and that is the rule worth
+///   stating rather than the one worth wishing for. The boundary law is
+///   `hcomp A φ u u0 ≡ u i1` on `φ` -- CCHM's, the composite IS the
+///   system's top -- while `u0` is the system's BOTTOM (`u i0 = u0` on
+///   `φ`). So at `φ = i1` the answer is `u i1`, and answering `u0` there
+///   would be outright unsound. Computing `u i1` needs a witness of
+///   `is_one i1`, which this syntax has no canonical term for and the
+///   checker never fabricates: `is_one` stays rigid (Stage 4) and
+///   `hcomp` inherits its rigidity. A limit, recorded rather than
+///   papered over -- and the same reason the plan's sketch of this rule
+///   (`hcomp φ u u0 ≡ u0` on `φ` decided) is not what is implemented here.
+///
+/// A malformed `hcomp` never reduces: the argument count is re-checked
+/// rather than trusted, the same discipline `whnf_face`'s arms use.
+def whnf_hcomp (c : Cubical) : Option Term :=
+    match c {
+        { prim := p, args := as } =>
+            if cubical_prim_eq p CubicalPrim.hcomp then
+                match as {
+                    List.cons _a_typ rest =>
+                        match rest {
+                            List.cons a_face rest2 =>
+                                match rest2 {
+                                    List.cons _a_sys rest3 =>
+                                        match rest3 {
+                                            List.cons a_base rest4 =>
+                                                if List.is_empty rest4 then
+                                                    match face_decide a_face {
+                                                        Option.some b =>
+                                                            if b then Option.none
+                                                            else Option.some a_base,
+                                                        Option.none => Option.none,
+                                                    }
+                                                else Option.none,
+                                            List.empty => Option.none,
+                                        },
+                                    List.empty => Option.none,
+                                },
+                            List.empty => Option.none,
+                        },
+                    List.empty => Option.none,
+                }
+            else Option.none,
+    }
+
 /// The generator step `face_eq0` and `face_eq1` share, on the single,
 /// already-reduced argument. At the endpoint where the constraint HOLDS
 /// the cofibration is `i1` (`face_eq0 i0`: the face `i = 0` is all of
@@ -504,7 +563,6 @@ def whnf_face_contradicts (l : Term) (r : Term) : Option Term :=
 /// which came out of `whnf_cubical_args` below), and a stuck head keeps
 /// its reduced arguments, so a caller comparing two stuck terms compares
 /// them as reduced as they can be.
-#[partial]
 def whnf_cubical (fuel : I64) (scope : Scope) (locals : LocalScope) (c : Cubical) : Term :=
     match c {
         { prim := p, args := as } =>
@@ -518,9 +576,13 @@ def whnf_cubical (fuel : I64) (scope : Scope) (locals : LocalScope) (c : Cubical
                     match whnf_face c_r {
                         Option.some t => t,
                         Option.none =>
-                            match whnf_transp c_r {
+                            match whnf_hcomp c_r {
                                 Option.some t => t,
-                                Option.none => Term.cubical c_r,
+                                Option.none =>
+                                    match whnf_transp c_r {
+                                        Option.some t => t,
+                                        Option.none => Term.cubical c_r,
+                                    },
                             },
                     },
             },

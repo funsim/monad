@@ -26,7 +26,7 @@ use lib::scope {build_scope_from_decls, scope_find_cubical_prim}
 
 def synthetic_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "synthetic") List.empty)
 
-/// The eleven Stage 1+2+3+4 declarations, spelled exactly as they are
+/// The twelve Stage 1+2+3+4+5 declarations, spelled exactly as they are
 /// in `proofs/src/cubical.mo`. One literal per decl, concatenated: a
 /// single spanning literal would need line continuations the string
 /// lexer does not have, and one literal per line keeps each under the
@@ -42,7 +42,8 @@ def cubical_source : String :=
     (String.concat "#[cubical \"transp\"] def transp (A : I -> Type) (a : A i0) : A i1\n"
     (String.concat "#[cubical \"face_eq0\"] def face_eq0 (i : I) : I\n"
     (String.concat "#[cubical \"face_eq1\"] def face_eq1 (i : I) : I\n"
-    "#[cubical \"is_one\"] def is_one (i : I) : Type\n")))))))))
+    (String.concat "#[cubical \"is_one\"] def is_one (i : I) : Type\n"
+    "#[cubical \"hcomp\"] def hcomp (A : Type) (phi : I) (u : I -> is_one phi -> A) (u0 : A) : A\n"))))))))))
 
 /// A scope carrying whatever `source` declares. A snippet that fails to
 /// parse yields an empty scope, which makes the binding tests below
@@ -79,11 +80,11 @@ def binds_nothing (s : Scope) (nm : String) : Bool :=
 
 #[test]
 def test_cubical_decls_parse : Bool :=
-    // All eleven, not "at least one": a parser that stops after the
+    // All twelve, not "at least one": a parser that stops after the
     // first body-less def (the reference host's does) still hands back
     // a successful non-empty parse.
     match parse_all_decls cubical_source {
-        success _ decls => I64.beq (List.length decls) 11,
+        success _ decls => I64.beq (List.length decls) 12,
         fail _ => false,
     }
 
@@ -101,6 +102,7 @@ def test_cubical_names_bind : Bool :=
         && binds s "face_eq0" CubicalPrim.face_eq0
         && binds s "face_eq1" CubicalPrim.face_eq1
         && binds s "is_one" CubicalPrim.is_one
+        && binds s "hcomp" CubicalPrim.hcomp
 
 #[test]
 def test_unmarked_def_of_the_same_name_binds_nothing : Bool :=

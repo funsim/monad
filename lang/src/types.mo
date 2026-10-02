@@ -636,6 +636,27 @@ pub type CubicalPrim {
     face_eq0,
     face_eq1,
     is_one,
+    /// Kan composition: `hcomp A φ u u0 : A` for a type `A`, a
+    /// cofibration `φ`, a system `u : I -> is_one φ -> A`, and a base
+    /// `u0 : A` (Stage 5, plans/type-system/univalence.md). The
+    /// arguments are not dimensions (`A` and the two elements) and not
+    /// all of the same shape, which is why this prim gets its own
+    /// typing rule rather than the generic `check_cubical_args_then`.
+    ///
+    /// The BOUNDARY law is CCHM's: on `φ` the composite IS the system's
+    /// top, `hcomp A φ u u0 ≡ u i1`. Note what that does NOT say: `u0`
+    /// is the system's BOTTOM (`u i0 = u0` on `φ`), so `hcomp A i1 u u0`
+    /// is `u i1`, never `u0`. Only one of the two decided cases is
+    /// therefore reducible here. When `face_decide` refutes `φ` the
+    /// system constrains nothing and `whnf_hcomp` answers the base
+    /// (`hcomp A i0 u u0 ≡ u0`, the empty box's composition); when
+    /// `face_decide` satisfies `φ` the right answer is `u i1`, which
+    /// needs a witness of `is_one i1` that this syntax has no canonical
+    /// term for -- so it stays STUCK, deliberately, exactly as Stage 4
+    /// leaves `ijoin`-of-opposite-faces stuck. `whnf_hcomp`
+    /// (`lang/typecheck/whnf.mo`) is the reducer and states the
+    /// asymmetry at the rule.
+    hcomp,
 }
 
 /// One cubical primitive applied to `args`, whose length is its arity.
@@ -2106,9 +2127,20 @@ pub def cub_face_eq0 (i : Term) : Term := cub CubicalPrim.face_eq0 [i]
 pub def cub_face_eq1 (i : Term) : Term := cub CubicalPrim.face_eq1 [i]
 
 /// `is_one φ` -- the proposition that the cofibration `φ` is `i1`. A
-/// former of types (result `Sort 1`); introduction and elimination are
-/// Stage 5's (`hcomp`), so at Stage 4 it stays rigid.
+/// former of types (result `Sort 1`); its proofs are what a partial
+/// element (`is_one φ -> A`) consumes, and `hcomp` below is the one
+/// consumer of a whole system. Both `is_one` and the `hcomp` it feeds
+/// stay rigid -- nothing in the checker fabricates a proof of
+/// `is_one φ`, which is exactly why `hcomp`'s satisfied-face case has no
+/// reduction (see `CubicalPrim.hcomp`).
 pub def cub_is_one (i : Term) : Term := cub CubicalPrim.is_one [i]
+
+/// `hcomp A φ u u0` -- Kan composition. `whnf_hcomp`
+/// (`lang/src/typecheck/whnf.mo`) answers `u0` when the cofibration is
+/// REFUTED and stays stuck when it is satisfied; see `CubicalPrim.hcomp`
+/// for why the satisfied case has no rule here.
+pub def cub_hcomp (a_typ : Term) (a_face : Term) (a_sys : Term) (a_base : Term) : Term :=
+    cub CubicalPrim.hcomp [a_typ, a_face, a_sys, a_base]
 
 /// How many arguments a primitive takes. `args` is positional and this is
 /// the only statement of its expected length; `type_check_cubical` is what
@@ -2127,6 +2159,7 @@ pub def cubical_arity (prim : CubicalPrim) : I64 := match prim {
     CubicalPrim.face_eq0 => 1,
     CubicalPrim.face_eq1 => 1,
     CubicalPrim.is_one => 1,
+    CubicalPrim.hcomp => 4,
 }
 
 /// Is this primitive one of the two interval ENDPOINTS? The reducer and the
@@ -2144,6 +2177,7 @@ pub def cubical_is_endpoint (prim : CubicalPrim) : Bool := match prim {
     CubicalPrim.face_eq0 => false,
     CubicalPrim.face_eq1 => false,
     CubicalPrim.is_one => false,
+    CubicalPrim.hcomp => false,
 }
 
 /// A dense tag per primitive. Total over `CubicalPrim`, so a primitive added
@@ -2168,6 +2202,7 @@ pub def cubical_prim_tag (prim : CubicalPrim) : I64 := match prim {
     CubicalPrim.face_eq0 => 8,
     CubicalPrim.face_eq1 => 9,
     CubicalPrim.is_one => 10,
+    CubicalPrim.hcomp => 11,
 }
 
 pub def cubical_prim_eq (a : CubicalPrim) (b : CubicalPrim) : Bool :=
@@ -2187,6 +2222,7 @@ pub def cubical_prim_name (prim : CubicalPrim) : String := match prim {
     CubicalPrim.face_eq0 => "face_eq0",
     CubicalPrim.face_eq1 => "face_eq1",
     CubicalPrim.is_one => "is_one",
+    CubicalPrim.hcomp => "hcomp",
 }
 
 /// Every primitive, in `cubical_prim_tag` order. Exists as one list so the
@@ -2196,7 +2232,8 @@ pub def cubical_prims_all : List CubicalPrim :=
     List.cons CubicalPrim.interval (List.cons CubicalPrim.i0 (List.cons CubicalPrim.i1
         (List.cons CubicalPrim.ineg (List.cons CubicalPrim.imeet (List.cons CubicalPrim.ijoin
         (List.cons CubicalPrim.pathp (List.cons CubicalPrim.transp (List.cons CubicalPrim.face_eq0
-        (List.cons CubicalPrim.face_eq1 (List.cons CubicalPrim.is_one List.empty))))))))))
+        (List.cons CubicalPrim.face_eq1 (List.cons CubicalPrim.is_one
+        (List.cons CubicalPrim.hcomp List.empty)))))))))))
 
 /// The string a `#[cubical "..."]` MARKER names a primitive by -- the
 /// marker key, which is NOT the surface name `cubical_prim_name` returns:
@@ -2218,6 +2255,7 @@ pub def cubical_marker_key (prim : CubicalPrim) : String := match prim {
     CubicalPrim.face_eq0 => "face_eq0",
     CubicalPrim.face_eq1 => "face_eq1",
     CubicalPrim.is_one => "is_one",
+    CubicalPrim.hcomp => "hcomp",
 }
 
 /// Decode a `#[cubical "..."]` marker's string back to the primitive it
@@ -2228,7 +2266,6 @@ pub def cubical_marker_key (prim : CubicalPrim) : String := match prim {
 /// authored in user source, so an unknown string must answer "binds
 /// nothing" and the def then stays an ordinary def -- the same answer as
 /// no marker at all.
-#[partial]
 pub def cubical_prim_of_name (s : String) : Option CubicalPrim :=
     cubical_prim_of_name_scan cubical_prims_all s
 

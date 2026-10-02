@@ -5,7 +5,8 @@ use lang::types {
   LocalScope, LocalVar, Location, MatchCase, ModulePath, NamePath, NameRef,
   Native, NumSuffix, Param, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, Similar, SortLevel, StructLitField, Term, TypeConstraint,
-  TypeError, concrete, cub_i0, cub_i1, cub_interval, cub_pathp, cubical_arity,
+  TypeError, concrete, cub_hcomp, cub_i0, cub_i1, cub_interval, cub_is_one,
+  cub_pathp, cubical_arity,
   cubical_prim_eq, cubical_prim_name, field_access_chain,
   id_eq, id_member, level_lt, level_of_type, list_rev_loop, list_reverse, many,
   max, package_private, sentinel, show_identifier, show_name_path,
@@ -4120,14 +4121,17 @@ def type_check_cubical (c : Cubical) (expected_type : Term) (scope : Scope)
             // `cubical_result_type` -- `I` for the two face generators,
             // `Sort 1` for `is_one` (a former of types, the `l = 1`
             // discipline `PathP` uses). The generic tail handles all
-            // three; no bespoke rule exists until Stage 5's `hcomp`
-            // consumes the cofibration.
+            // three; `hcomp` (Stage 5) is the fourth bespoke rule,
+            // because it is the first consumer of a cofibration and its
+            // result is an argument rather than a row.
             CubicalPrim.face_eq0 =>
                 check_cubical_args_then c expected_type scope local_types locals,
             CubicalPrim.face_eq1 =>
                 check_cubical_args_then c expected_type scope local_types locals,
             CubicalPrim.is_one =>
                 check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.hcomp =>
+                type_check_hcomp c.args expected_type scope local_types locals,
         }
 
 /// The generic tail of `type_check_cubical` shared by every Stage 1
@@ -4230,6 +4234,106 @@ def type_check_transp_go (a_line : Term) (a_elem : Term) (expected_type : Term)
                     },
                 _ => err (TypeError.custom
                     "transp's first argument must be a line over the interval"),
+            },
+    }
+
+/// The formation rule for `hcomp A φ u u0 : A`, where `A` is a type, `φ` a
+/// cofibration, `u : I -> is_one φ -> A` a system, and `u0 : A` the
+/// system's base (Stage 5, plans/type-system/univalence.md).
+///
+/// Unlike `PathP` and `transp`, the result type is an ARGUMENT: `transp`
+/// reads `A i1` off the line it infers, but `hcomp`'s result is `A`
+/// itself, and taking it from the EXPECTED type instead would make
+/// `hcomp` uninferrable and would let a wrong `A` among the arguments
+/// pass silently. So `A` is checked as a type and the remaining three
+/// arguments are checked against it: `φ` against `I`, `u` against the Pi
+/// `I -> is_one φ -> A` rebuilt from the checked `φ` and `A`, and `u0`
+/// against `A` -- checked and then UNIFIED, the same
+/// bidirectional-plus-unify discipline `transp` uses for its element,
+/// since the var and constructor arms return their own types without
+/// ever comparing against the expectation.
+///
+/// The result is unified with the expected type, so `hcomp` appears only
+/// where its type is already known. That is the honest situation for a
+/// Kan operation whose `A` cannot be recovered from the system alone.
+def type_check_hcomp (args : List Term) (expected_type : Term) (scope : Scope)
+    (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    // Nested constructor patterns do not parse; the four args are peeled
+    // one level at a time.
+    match args {
+        List.cons a_typ rest =>
+            match rest {
+                List.cons a_face rest2 =>
+                    match rest2 {
+                        List.cons a_sys rest3 =>
+                            match rest3 {
+                                List.cons a_base rest4 =>
+                                    match rest4 {
+                                        List.empty =>
+                                            type_check_hcomp_go a_typ a_face a_sys a_base
+                                                expected_type scope local_types locals,
+                                        _ => err (TypeError.custom "hcomp takes 4 argument(s)"),
+                                    },
+                                _ => err (TypeError.custom "hcomp takes 4 argument(s)"),
+                            },
+                        _ => err (TypeError.custom "hcomp takes 4 argument(s)"),
+                    },
+                _ => err (TypeError.custom "hcomp takes 4 argument(s)"),
+            },
+        // The arity table rejects every other argument count before this
+        // runs; the arm exists only because the list has to be peeled.
+        _ => err (TypeError.custom "hcomp takes 4 argument(s)"),
+    }
+
+/// The body of the formation rule once the four arguments are peeled
+/// apart (`type_check_hcomp` delegates for the same reason
+/// `type_check_transp` does).
+def type_check_hcomp_go (a_typ : Term) (a_face : Term) (a_sys : Term) (a_base : Term)
+    (expected_type : Term) (scope : Scope) (local_types : List Term)
+    (locals : LocalScope) : Result TypeError TypedTerm :=
+    // `A` is INFERRED, not checked: it is a type, and checking it against
+    // a `Type` expectation would echo that expectation back as its own
+    // type and lose the level the later unify needs. The sort guard is
+    // what makes it a TYPE rather than an element -- `hcomp` composes in
+    // a type, so `Sort l` for some `l` is the whole requirement.
+    match type_check a_typ Term.hole scope local_types locals {
+        err e => err e,
+        ok typ_tt =>
+            match sort_level_of typ_tt.typ {
+                Option.none => err (TypeError.custom
+                    "hcomp's first argument must be a type"),
+                Option.some _l =>
+                    match type_check a_face cub_interval scope local_types locals {
+                        err e => err e,
+                        ok face_tt =>
+                            // `u : I -> is_one φ -> A`, built from the
+                            // CHECKED `φ` and the checked `A` so the
+                            // system is checked against the very types
+                            // the other two arguments established.
+                            let sys_typ : Term :=
+                                Term.pi cub_interval
+                                    (Term.pi (cub_is_one face_tt.term) typ_tt.term) in
+                            match type_check a_sys sys_typ scope local_types locals {
+                                err e => err e,
+                                ok sys_tt =>
+                                    match type_check a_base typ_tt.term scope local_types locals {
+                                        err e => err e,
+                                        ok base_tt =>
+                                            match unify base_tt.typ typ_tt.term scope locals {
+                                                err e => err e,
+                                                ok _ =>
+                                                    let rebuilt : Term :=
+                                                        cub_hcomp typ_tt.term face_tt.term
+                                                            sys_tt.term base_tt.term in
+                                                    match unify typ_tt.term expected_type scope locals {
+                                                        err e => err e,
+                                                        ok unified =>
+                                                            ok (mk_typed rebuilt unified),
+                                                    },
+                                            },
+                                    },
+                            },
+                    },
             },
     }
 
@@ -4357,12 +4461,13 @@ def type_check_pathp_endpoints (line : Term) (a_left : Term) (a_right : Term) (s
 /// What a primitive's application is a term OF. `interval` is the type
 /// former, so it answers a sort; everything else in Stage 1 is interval-
 /// valued. `is_one` is the other former here: it answers `Sort 1`, the
-/// `l = 1` discipline `PathP` uses. `pathp`'s and `transp`'s rows are
-/// never consulted -- `type_check_cubical` routes both to their own rules
-/// (`type_check_pathp`, `type_check_transp`) because each result depends
-/// on the LINE, which no prim-keyed table can state -- but the rows exist
-/// all the same: with no exhaustiveness checking a missing arm is a
-/// silent future crash, not a compile error.
+/// `l = 1` discipline `PathP` uses. `pathp`'s, `transp`'s and `hcomp`'s
+/// rows are never consulted -- `type_check_cubical` routes all three to
+/// their own rules (`type_check_pathp`, `type_check_transp`,
+/// `type_check_hcomp`) because each result depends on an ARGUMENT (the
+/// line, or the type being composed in), which no prim-keyed table can
+/// state -- but the rows exist all the same: with no exhaustiveness
+/// checking a missing arm is a silent future crash, not a compile error.
 def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.interval => sort_n 1,
     CubicalPrim.i0 => cub_interval,
@@ -4375,6 +4480,7 @@ def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.face_eq0 => cub_interval,
     CubicalPrim.face_eq1 => cub_interval,
     CubicalPrim.is_one => sort_n 1,
+    CubicalPrim.hcomp => Term.hole,
 }
 
 /// Every Stage 1 argument is a dimension, i.e. an `I`. When `PathP` lands

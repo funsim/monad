@@ -87,3 +87,38 @@
 #[cubical "face_eq0"] def face_eq0 (i : I) : I
 #[cubical "face_eq1"] def face_eq1 (i : I) : I
 #[cubical "is_one"] def is_one (i : I) : Type
+
+// Kan composition (Stage 5). `hcomp A φ u u0 : A` composes the open box
+// whose sides are the system `u : I -> is_one φ -> A` over the
+// cofibration `φ`, starting from the base `u0 : A`.
+//
+// Its BOUNDARY law is CCHM's and is NOT `u0`: on `φ` the composite is the
+// system's TOP, `hcomp A φ u u0 ≡ u i1`, while `u0` is the system's
+// bottom (`u i0 = u0` on `φ`). The asymmetry matters, so it is written
+// here where someone reaching for the rule would look. Of the two
+// decided cases exactly one is reducible:
+//
+//   * `φ` refuted (the empty subobject): the system constrains nothing
+//     and the composite is the base, `hcomp A i0 u u0 ≡ u0`
+//     (`whnf_hcomp`, lang/src/typecheck/whnf.mo, deciding via the
+//     whole-term `face_decide`, lang/src/typecheck/faces.mo).
+//   * `φ` satisfied: the honest answer is `u i1`, which needs a witness
+//     of `is_one i1` -- and this syntax has no canonical term for one,
+//     because `is_one` stays rigid (see its note above) and nothing in
+//     the checker fabricates a proof. So it stays STUCK. Reducing to
+//     `u0` here instead would be unsound, so the rule is absent rather
+//     than wrong, deliberately, in the style of Stage 4's three absent
+//     face rules. Where a canonical `is_one i1` would have to come from
+//     is Stage 6 (`Glue`).
+//
+// `A` is an explicit argument, unlike `PathP`'s line: `hcomp`'s result is
+// `A` itself, so an implicit `A` could not be recovered from the system
+// (`type_check_hcomp`, lang/src/typecheck/infer.mo). The signature is the
+// `Type`-valued instance of the general rule, the same `l = 1`
+// discipline `PathP`/`transp` above carry, and it is not read for the
+// saturated case -- `type_check_hcomp` derives the result from the
+// arguments and the expected type. CCHM derives `comp` from `hcomp` and
+// `transp`; that library step is deferred with `paths.mo`, for the reason
+// recorded there (measured sig vacuity makes a source-level `comp` a
+// declaration no one can check).
+#[cubical "hcomp"] def hcomp (A : Type) (phi : I) (u : I -> is_one phi -> A) (u0 : A) : A

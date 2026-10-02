@@ -2417,9 +2417,10 @@ def compile_db_term_ir (c : CodegenCtx) (term_ : Term) : CompileResult := match 
 /// Everything else erases to void. That is two different policies: the
 /// three De Morgan operations are NOT compiled yet -- `ineg`/`imeet`/
 /// `ijoin` need real integer instructions (`1 - i`, min, max) -- and the
-/// five later prims are TYPE-LEVEL: `pathp`/`is_one` form types,
-/// `transp` transports at the type level, and the two face generators are
-/// consumed by the checker's face lattice (`lang/src/typecheck/faces.mo`).
+/// six later prims are TYPE-LEVEL: `pathp`/`is_one` form types,
+/// `transp` transports at the type level, `hcomp` composes at the type
+/// level, and the two face generators are consumed by the checker's face
+/// lattice (`lang/src/typecheck/faces.mo`).
 /// The De Morgan debt is KNOWN rather than a design: it comes due with the
 /// first executable cubical proof, tracked in
 /// `plans/type-system/univalence.md`. Until then the checker is the only
@@ -2440,6 +2441,7 @@ def compile_cubical_ir (c : CodegenCtx) (cub_ : Cubical) : CompileResult :=
         CubicalPrim.face_eq0 => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
         CubicalPrim.face_eq1 => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
         CubicalPrim.is_one => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.hcomp => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     }
 
 #[partial]

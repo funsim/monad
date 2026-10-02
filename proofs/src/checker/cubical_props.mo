@@ -17,7 +17,7 @@
 //
 // The scope is built by the REAL parse + scope-build pipeline
 // (`try_parse_decls` + `build_scope_from_decls`) over the exact
-// eleven-declaration source of `proofs/src/cubical.mo`, because what is
+// twelve-declaration source of `proofs/src/cubical.mo`, because what is
 // under test includes the marker's survival from source text to
 // `ScopeData.cubical_prims`. The same string is pinned from the scope
 // side in `lang/src/tests/cubical_bind_tests.mo`; if the declaration
@@ -30,15 +30,15 @@ use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
 use lang::typecheck::whnf {whnf}
 use lang::types {
   CubicalPrim, ModulePath, Scope, ScopeData, SortLevel, Similar, Term,
-  cub_face_eq0, cub_face_eq1, cub_i0, cub_i1, cub_imeet, cub_ijoin, cub_ineg,
-  cub_interval, cub_pathp, cub_transp,
+  cub, cub_face_eq0, cub_face_eq1, cub_hcomp, cub_i0, cub_i1, cub_imeet,
+  cub_ijoin, cub_ineg, cub_interval, cub_is_one, cub_pathp, cub_transp,
   cubical_prim_eq, sentinel, sort_n,
 }
 
 def checker_synthetic_path : ModulePath :=
     ModulePath.mp (List.cons (Identifier.id "proofs_checker") List.empty)
 
-/// The eleven Stage 1+2+3+4 declarations, spelled exactly as they are
+/// The twelve Stage 1+2+3+4+5 declarations, spelled exactly as they are
 /// in `proofs/src/cubical.mo`.
 def cubical_decls_source : String :=
     String.concat "#[cubical \"interval\"] def I : Type\n"
@@ -51,7 +51,8 @@ def cubical_decls_source : String :=
     (String.concat "#[cubical \"transp\"] def transp (A : I -> Type) (a : A i0) : A i1\n"
     (String.concat "#[cubical \"face_eq0\"] def face_eq0 (i : I) : I\n"
     (String.concat "#[cubical \"face_eq1\"] def face_eq1 (i : I) : I\n"
-    "#[cubical \"is_one\"] def is_one (i : I) : Type\n")))))))))
+    (String.concat "#[cubical \"is_one\"] def is_one (i : I) : Type\n"
+    "#[cubical \"hcomp\"] def hcomp (A : Type) (phi : I) (u : I -> is_one phi -> A) (u0 : A) : A\n"))))))))))
 
 /// The scope the checker sees when `proofs/src/cubical.mo` is loaded.
 /// A parse failure yields an empty scope, which makes every pin below
@@ -967,3 +968,266 @@ def test_whnf_leaves_a_face_of_a_meet_stuck : Bool :=
     stays_cubical_prim
         (whnf cubical_scope empty_locals (cub_face_eq0 (cub_imeet dim_u (free_var "v"))))
         CubicalPrim.face_eq0
+
+// ─── Stage 5: Kan composition ───────────────────────────────────────────
+//
+// `hcomp A φ u u0` is the first rule whose content is an ASYMMETRY, and
+// getting the asymmetry wrong is unsound rather than merely incomplete.
+// CCHM's boundary law is `hcomp A φ u u0 ≡ u i1` on `φ` -- the composite
+// IS the system's top -- while `u0` is the system's BOTTOM (`u i0 = u0`
+// on `φ`). So exactly one of the two decided cases reduces:
+//
+//   * `φ` REFUTED (`face_decide φ = some false`): the empty subobject,
+//     where a system constrains nothing. `≡ u0`.
+//   * `φ` SATISFIED: the honest answer is `u i1`, which needs a witness
+//     of `is_one i1` that this syntax has no canonical term for. STUCK.
+//
+// The plan sketch asked for `≡ u0` on a decided `φ`; that is the unsound
+// half, and the satisfied-face pin below is what fails if anyone lands
+// it. The refuted-face pins are its complement.
+
+/// The checked system `fn (i : I) => fn (h : is_one φ) => i0` -- a
+/// well-typed system over `phi`, spelled the way the checker itself
+/// builds one (a lambda chain, both binder types bound).
+def system_over (phi : Term) : Term :=
+    Term.lam (DebugName.named (Identifier.id "i")) cub_interval
+        (Term.lam (DebugName.named (Identifier.id "h")) (cub_is_one phi) cub_i0)
+
+/// Is `t` the checked system `fn (i : I) => fn (h : is_one φ) => base`?
+/// The INNER BINDER TYPE is the pin: the rule must build `is_one` over
+/// the cofibration it CHECKED, not over the source-spelled argument, and
+/// a rule that reused the source term would agree here only by accident.
+def is_system_over (t : Term) (phi : Term) (base : Term) : Bool :=
+    match t {
+        Term.lam _dbg_i dom_i body =>
+            match body {
+                Term.lam _dbg_h dom_h inner =>
+                    Similar.similar dom_i cub_interval
+                        && Similar.similar dom_h (cub_is_one phi)
+                        && Similar.similar inner base,
+                _ => false,
+            },
+        _ => false,
+    }
+
+/// Does checking `t` against `expected` in `s` succeed, produce the
+/// cubical primitive `p` applied to exactly FOUR arguments satisfying
+/// `args_ok`, and answer a type matching `typ_is`? The four-argument
+/// twin of `checks_as_prim_with` above.
+def checks_as_prim_with4 (s : Scope) (t : Term) (p : CubicalPrim) (expected : Term)
+    (args_ok : Term -> Term -> Term -> Term -> Bool) (typ_is : Term -> Bool) : Bool :=
+    match type_check t expected s empty_local_types empty_locals {
+        ok tt =>
+            let shape_ok : Bool :=
+                match tt.term {
+                    Term.cubical c =>
+                        match c {
+                            { prim := q, args := as } =>
+                                cubical_prim_eq q p
+                                    && match as {
+                                        List.cons a1 r1 =>
+                                            match r1 {
+                                                List.cons a2 r2 =>
+                                                    match r2 {
+                                                        List.cons a3 r3 =>
+                                                            match r3 {
+                                                                List.cons a4 r4 =>
+                                                                    List.is_empty r4
+                                                                        && args_ok a1 a2 a3 a4,
+                                                                List.empty => false,
+                                                            },
+                                                        List.empty => false,
+                                                    },
+                                                List.empty => false,
+                                            },
+                                        List.empty => false,
+                                    },
+                        },
+                    _ => false,
+                } in
+            shape_ok && typ_is tt.typ,
+        err _ => false,
+    }
+
+/// `hcomp A φ sys base` in its SOURCE spelling with every position
+/// supplied, so each rejection pin varies exactly one of the four against
+/// a shape that otherwise checks.
+def hcomp_call_with (a_typ : Term) (phi : Term) (sys : Term) (base : Term) : Term :=
+    Term.app
+        (Term.app (Term.app (Term.app (free_var "hcomp") a_typ) phi) sys)
+        base
+
+/// The good system in its SOURCE spelling: `fn (i : I) => fn (h : is_one
+/// i0) => i0`. Both binder types are written as holes, so the checker
+/// takes them from the expected Pi it is checked against -- which is the
+/// path the acceptance pin exists to exercise.
+def good_system : Term :=
+    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
+        (Term.lam (DebugName.named (Identifier.id "h")) Term.hole (free_var "i0"))
+
+/// `hcomp I φ (fn i => fn h => i0) i0` -- the acceptance and reducer
+/// pins' shared spine, varying only the cofibration.
+def hcomp_call_over (phi : Term) : Term :=
+    hcomp_call_with (free_var "I") phi good_system (free_var "i0")
+
+/// The system's inner body replaced by a SORT -- a shape no system can
+/// have. Deliberately not a variable: the variable and free-variable arms
+/// return their own type WITHOUT unifying against the expectation, so a
+/// pin built from one would stay green against a rule that never built
+/// the Pi at all.
+def non_system : Term :=
+    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
+        (Term.lam (DebugName.named (Identifier.id "h")) Term.hole (sort_n 1))
+
+/// The four checked arguments of `hcomp_call_over (free_var "i0")`: the
+/// interval, the empty face, the checked system over it, and the base.
+def hcomp_args_ok (a_typ : Term) (a_face : Term) (a_sys : Term) (a_base : Term) : Bool :=
+    arg_is_bare_prim a_typ CubicalPrim.interval
+        && arg_is_bare_prim a_face CubicalPrim.i0
+        && is_system_over a_sys cub_i0 cub_i0
+        && arg_is_bare_prim a_base CubicalPrim.i0
+
+#[test]
+def test_hcomp_formation_checks_and_rewrites : Bool :=
+    // `hcomp I i0 (fn i => fn h => i0) i0` checks against `I`: the first
+    // argument is a type, the face a dimension, the system the Pi rebuilt
+    // from the CHECKED face and type, and the base an element of that
+    // type. The result type is read too -- `A` is an ARGUMENT here, so a
+    // rule that took its result from the expected type would still have
+    // to answer `I` and cannot be told apart by shape alone.
+    checks_as_prim_with4 cubical_scope (hcomp_call_over (free_var "i0"))
+        CubicalPrim.hcomp cub_interval hcomp_args_ok
+        (fn ty => arg_is_bare_prim ty CubicalPrim.interval)
+
+#[test]
+def test_hcomp_rejects_a_face_that_is_not_a_cofibration : Bool :=
+    // Cofibrations are INTERVAL terms (Stage 4): `Type 1` is not one.
+    check_fails_in cubical_scope (hcomp_call_over (sort_n 1))
+
+#[test]
+def test_hcomp_rejects_a_base_of_the_wrong_type : Bool :=
+    // The base is checked against `A`, not against the expected type:
+    // `Type 1` is not an `I`.
+    check_fails_in cubical_scope
+        (hcomp_call_with (free_var "I") (free_var "i0") good_system (sort_n 1))
+
+#[test]
+def test_hcomp_rejects_a_system_that_is_not_over_the_cofibration : Bool :=
+    // The system is checked against the Pi `I -> is_one φ -> A` rebuilt
+    // from the two checked arguments. A rule that checked it against
+    // `Term.hole` instead would take the inferring lambda arm and accept
+    // this.
+    check_fails_in cubical_scope
+        (hcomp_call_with (free_var "I") (free_var "i0") non_system (free_var "i0"))
+
+#[test]
+def test_hcomp_rejects_a_type_that_is_not_a_type : Bool :=
+    // `A` is inferred and then guarded by `sort_level_of`: a dimension is
+    // a term, not a type, and this is the pin on that guard.
+    //
+    // The base is `Term.hole` so the guard is the ONLY thing rejecting
+    // this: with the guard dropped the call would sail through -- `i0`'s
+    // own type `I` unifies with a hole, and the result `i0` unifies with
+    // the hole expectation. (With `free_var "i0"` as the base instead the
+    // pin stayed GREEN under the mutation, because `unify I i0` rejected
+    // the base before the guard ever mattered -- a pin that names the
+    // guard while testing something else.)
+    check_fails_in cubical_scope
+        (hcomp_call_with (free_var "i0") (free_var "i0") good_system Term.hole)
+
+#[test]
+def test_hcomp_rejects_a_base_that_is_a_type_not_an_element : Bool :=
+    // The base's own inferred type must UNIFY with `A`. `I` is a TYPE, so
+    // checked against `A = I` it comes back typed `Type` -- and the
+    // free-variable arm returns a type without comparing it to the
+    // expectation, so only the rule's own unify rejects this. Drop that
+    // unify and this pin goes red while every other hcomp pin stays green.
+    check_fails_in cubical_scope
+        (hcomp_call_with (free_var "I") (free_var "i0") good_system (free_var "I"))
+
+#[test]
+def test_hcomp_result_type_is_unified_with_the_expected_type : Bool :=
+    // `hcomp`'s result is `A`, and it is unified with the expected type
+    // exactly as `check_cubical_args_then` unifies every other
+    // primitive's. Checking against `Type` is a mismatch that a rule
+    // simply returning `A` would accept.
+    check_fails_against cubical_scope (hcomp_call_over (free_var "i0")) (sort_n 1)
+
+/// `hcomp I φ (fn i => fn h => i0) i0` as a WHNF probe: hand-built and
+/// already checked-shaped, because `whnf` is what is under test.
+def hcomp_in (phi : Term) : Term :=
+    cub_hcomp cub_interval phi (system_over phi) cub_i0
+
+#[test]
+def test_whnf_reduces_hcomp_over_a_refuted_face_to_the_base : Bool :=
+    // `hcomp A i0 u u0 ≡ u0`: the empty subobject constrains nothing, and
+    // the composite of a box with no sides is its base. The acceptance
+    // half of the rule.
+    arg_is_bare_prim (whnf cubical_scope empty_locals (hcomp_in cub_i0)) CubicalPrim.i0
+
+#[test]
+def test_whnf_leaves_hcomp_over_a_satisfied_face_stuck : Bool :=
+    // THE SOUNDNESS PIN. `hcomp A i1 u u0` is `u i1` -- the system's top,
+    // not its base, which is `u i0`. Reducing to `u0` here is what the
+    // plan's sketch of this rule asked for and is wrong; the rule is
+    // deliberately absent, so the term stays stuck. This pin goes red the
+    // moment anyone adds `some true => a_base` to `whnf_hcomp`.
+    stays_cubical_prim (whnf cubical_scope empty_locals (hcomp_in cub_i1)) CubicalPrim.hcomp
+
+#[test]
+def test_whnf_leaves_hcomp_over_an_undecided_face_stuck : Bool :=
+    // A bare dimension is no cofibration and `face_decide` answers none
+    // over it (`faces.mo`): no rule applies, so the term stays stuck.
+    stays_cubical_prim
+        (whnf cubical_scope empty_locals (hcomp_in dim_u)) CubicalPrim.hcomp
+
+#[test]
+def test_whnf_leaves_hcomp_over_a_disjunction_of_opposite_faces_stuck : Bool :=
+    // `hcomp A (u = 0 ∨ u = 1) u u0` stays stuck: `face_decide` never
+    // answers `some true` -- `isOne1 = 0` is POSTULATED in CCHM, not
+    // derivable -- so neither branch can fire. The dual of the soundness
+    // pin, on the decider's other blind spot.
+    stays_cubical_prim
+        (whnf cubical_scope empty_locals
+            (hcomp_in (cub_ijoin (cub_face_eq0 dim_u) (cub_face_eq1 dim_u))))
+        CubicalPrim.hcomp
+
+/// A cofibration that is refuted but NOT at the head: `u = 0 ∧ (u = 1 ∧
+/// v = 1)`. `whnf`'s face pass folds only a meet whose two arguments are
+/// the two generators of ONE dimension, so this one stays stuck -- which
+/// is exactly what makes it the witness that `whnf_hcomp` reads the
+/// whole-term `face_decide` rather than the head.
+def buried_contradiction : Term :=
+    cub_imeet (cub_face_eq0 dim_u)
+        (cub_imeet (cub_face_eq1 dim_u) (cub_face_eq1 (free_var "v")))
+
+#[test]
+def test_whnf_leaves_a_buried_face_contradiction_stuck : Bool :=
+    // The premise of the pin below, pinned on its own: no rule of the
+    // face pass fires on this cofibration, so it reaches `whnf_hcomp`
+    // still an `imeet`. (That `face_decide` sees the contradiction is
+    // pinned separately, in the decider's own module's tests.)
+    stays_cubical_prim (whnf cubical_scope empty_locals buried_contradiction) CubicalPrim.imeet
+
+#[test]
+def test_whnf_reads_the_whole_term_decider_for_the_face : Bool :=
+    // `hcomp A (u = 0 ∧ u = 1 ∧ v = 1) u u0 ≡ u0`: refuted, so the base --
+    // even though the face pass above could not see it. This is the pin
+    // on `face_decide` being LOAD-BEARING in the rule: swapping it for
+    // the shallow literal reader (`face_literal_truth`) leaves the `i0`
+    // pin above green and turns this one red.
+    arg_is_bare_prim
+        (whnf cubical_scope empty_locals (hcomp_in buried_contradiction)) CubicalPrim.i0
+
+/// A `hcomp` spine with a FIFTH argument -- a shape `cubical_arity` never
+/// lets through formation, but which `whnf` can still be handed.
+def over_applied_hcomp : Term :=
+    cub CubicalPrim.hcomp [cub_interval, cub_i0, system_over cub_i0, cub_i0, cub_i0]
+
+#[test]
+def test_whnf_leaves_an_over_applied_hcomp_stuck : Bool :=
+    // The reducer re-checks the argument count rather than trusting the
+    // formation-time arity table. Without that check this five-argument
+    // spine would have reduced to `i0` on its refuted face.
+    stays_cubical_prim
+        (whnf cubical_scope empty_locals over_applied_hcomp) CubicalPrim.hcomp
