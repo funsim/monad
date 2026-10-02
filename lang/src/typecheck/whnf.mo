@@ -2,7 +2,8 @@ use std::list {List.length}
 use lib::types {
   Con, Cubical, CubicalPrim, DebugName, Identifier, Literal, LocalScope, MatchCase,
   NamePath, NameRef, Scope, Similar, Term,
-  cub_i0, cub_i1, cubical_prim_eq, id_eq, show_identifier, sentinel, term_peel,
+  cub_face_eq0, cub_face_eq1, cub_i0, cub_i1, cubical_prim_eq, id_eq,
+  show_identifier, sentinel, term_peel,
 }
 use lib::scope {
   flatten_call_spine, last_dot_index, scope_find_def_body,
@@ -365,14 +366,144 @@ def whnf_transp (c : Cubical) : Option Term :=
             },
     }
 
+/// The face-lattice step (Stage 4, `univalence.md`): the cofibration
+/// generators on their single, already-reduced dimension, plus the one
+/// contradiction law over a meet. Or `Option.none` when no rule applies
+/// and the head is stuck.
+///
+/// Two rules are deliberately ABSENT, and the absence is soundness
+/// rather than laziness. `ijoin (face_eq0 u) (face_eq1 u) = i1` would
+/// say `u = 0 ∨ u = 1` holds everywhere -- CCHM POSTULATES the converse
+/// (`isOne1 = 0`) precisely because it is not derivable, and a reducer
+/// that folded the disjunction would prove, by conversion, that the
+/// interval has exactly the two endpoint points. Likewise
+/// `face_eq0 (imeet u v)` is not decomposed into
+/// `ijoin (face_eq0 u) (face_eq0 v)`: the presheaf semantics of the
+/// mixed law is not part of CCHM's cofibration quotient, so the term
+/// stays stuck and `face_decide` (`faces.mo`) answers none.
+///
+/// A bare dimension is NOT a cofibration and this pass does not fire on
+/// one: only the generators and their meet carry face-lattice meaning.
+def whnf_face (c : Cubical) : Option Term :=
+    match c {
+        { prim := p, args := as } =>
+            match p {
+                CubicalPrim.face_eq0 =>
+                    match as {
+                        List.cons u rest =>
+                            if List.is_empty rest then whnf_face_gen CubicalPrim.i0 cub_face_eq1 u else Option.none,
+                        List.empty => Option.none,
+                    },
+                CubicalPrim.face_eq1 =>
+                    match as {
+                        List.cons u rest =>
+                            if List.is_empty rest then whnf_face_gen CubicalPrim.i1 cub_face_eq0 u else Option.none,
+                        List.empty => Option.none,
+                    },
+                CubicalPrim.imeet =>
+                    // The one face rule on a lattice head: `u = 0` and
+                    // `u = 1` together name the empty subobject, in
+                    // either argument order. It lives here rather than
+                    // in `whnf_demorgan` because reading the generators
+                    // is face-lattice reasoning, not pure De Morgan.
+                    match as {
+                        List.cons left rest =>
+                            match rest {
+                                List.cons right rest2 =>
+                                    if List.is_empty rest2 then whnf_face_contradicts left right else Option.none,
+                                List.empty => Option.none,
+                            },
+                        List.empty => Option.none,
+                    },
+                // `ijoin` is deliberately absent -- see the pass doc.
+                _ => Option.none,
+            },
+    }
+
+/// The generator step `face_eq0` and `face_eq1` share, on the single,
+/// already-reduced argument. At the endpoint where the constraint HOLDS
+/// the cofibration is `i1` (`face_eq0 i0`: the face `i = 0` is all of
+/// the cube at `i0`); at the opposite endpoint it is `i0`
+/// (`face_eq1 i0` constrains nothing there). A NEGATED argument swaps
+/// the two generators -- `ineg u = 0` IS `u = 1` -- which is the reason
+/// there are two generators and not four. Parameterized by the
+/// endpoint that holds and the generator the negated arm builds.
+def whnf_face_gen (holds : CubicalPrim) (negated : Term -> Term) (u : Term) : Option Term :=
+    let fails : CubicalPrim :=
+        if cubical_prim_eq holds CubicalPrim.i0 then CubicalPrim.i1 else CubicalPrim.i0 in
+    if whnf_term_is_bare_prim u holds then Option.some cub_i1
+    else if whnf_term_is_bare_prim u fails then Option.some cub_i0
+    else
+        match u {
+            Term.cubical inner =>
+                match inner {
+                    { prim := q, args := inner_as } =>
+                        // The inner `ineg` must be well-formed (arity 1)
+                        // -- the same discipline as
+                        // `whnf_demorgan_ineg`: a malformed args list
+                        // does not get to reduce.
+                        if cubical_prim_eq q CubicalPrim.ineg then
+                            match inner_as {
+                                List.cons x rest =>
+                                    if List.is_empty rest then Option.some (negated x) else Option.none,
+                                List.empty => Option.none,
+                            }
+                        else Option.none,
+                },
+            _ => Option.none,
+        }
+
+/// The dimension under a face-generator head, with arity checked, or
+/// `Option.none` when `t` is not that generator applied to exactly one
+/// argument. For the contradiction law's two sides.
+def whnf_face_gen_arg (p : CubicalPrim) (t : Term) : Option Term :=
+    match t {
+        Term.cubical inner =>
+            match inner {
+                { prim := q, args := inner_as } =>
+                    if cubical_prim_eq q p then
+                        match inner_as {
+                            List.cons u rest =>
+                                if List.is_empty rest then Option.some u else Option.none,
+                            List.empty => Option.none,
+                        }
+                    else Option.none,
+            },
+        _ => Option.none,
+    }
+
+/// Do `l` and `r` contradict as face literals -- one `face_eq0 u`, the
+/// other `face_eq1 u`, over `Similar` dimensions? Then their meet is
+/// `i0`: no point of the cube is both `u = 0` and `u = 1`. `Similar`
+/// peels `Term.ctx` on both sides and compares dimensions as terms --
+/// the same notion of "same dimension" the De Morgan idempotence rule
+/// uses.
+def whnf_face_contradicts (l : Term) (r : Term) : Option Term :=
+    match whnf_face_gen_arg CubicalPrim.face_eq0 l {
+        Option.some u =>
+            match whnf_face_gen_arg CubicalPrim.face_eq1 r {
+                Option.some v => if Similar.similar u v then Option.some cub_i0 else Option.none,
+                Option.none => Option.none,
+            },
+        Option.none =>
+            match whnf_face_gen_arg CubicalPrim.face_eq1 l {
+                Option.some u =>
+                    match whnf_face_gen_arg CubicalPrim.face_eq0 r {
+                        Option.some v => if Similar.similar u v then Option.some cub_i0 else Option.none,
+                        Option.none => Option.none,
+                    },
+                Option.none => Option.none,
+            },
+    }
+
 /// Normalize a cubical head: reduce each argument to WHNF, then take
-/// one De Morgan step if any applies, then one transport step if the
-/// family is constant. No further pass over either step's result is
-/// needed -- it is assembled from pieces that are already in WHNF
-/// (whnf_transp answers the already-reduced element, which came out of
-/// `whnf_cubical_args` below), and a stuck head keeps its reduced
-/// arguments, so a caller comparing two stuck terms compares them as
-/// reduced as they can be.
+/// one De Morgan step if any applies, then one face-lattice step, then
+/// one transport step if the family is constant. No further pass over
+/// any step's result is needed -- it is assembled from pieces that are
+/// already in WHNF (whnf_transp answers the already-reduced element,
+/// which came out of `whnf_cubical_args` below), and a stuck head keeps
+/// its reduced arguments, so a caller comparing two stuck terms compares
+/// them as reduced as they can be.
 #[partial]
 def whnf_cubical (fuel : I64) (scope : Scope) (locals : LocalScope) (c : Cubical) : Term :=
     match c {
@@ -384,9 +515,13 @@ def whnf_cubical (fuel : I64) (scope : Scope) (locals : LocalScope) (c : Cubical
             match whnf_demorgan c_r {
                 Option.some t => t,
                 Option.none =>
-                    match whnf_transp c_r {
+                    match whnf_face c_r {
                         Option.some t => t,
-                        Option.none => Term.cubical c_r,
+                        Option.none =>
+                            match whnf_transp c_r {
+                                Option.some t => t,
+                                Option.none => Term.cubical c_r,
+                            },
                     },
             },
     }

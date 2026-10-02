@@ -623,6 +623,19 @@ pub type CubicalPrim {
     /// it takes no cofibration. Like `pathp`, its arguments are not
     /// dimensions.
     transp,
+    /// The two cofibration generators `face_eq0 i` / `face_eq1 i` --
+    /// the constraints `i = 0` / `i = 1` -- and the truth predicate
+    /// `is_one φ : Sort 1` (Stage 4). Cofibrations are INTERVAL terms:
+    /// `∧`/`∨` are the existing `imeet`/`ijoin` and `0`/`1` the
+    /// endpoints, so these three are the only new formers the face
+    /// lattice needs. A partial element over `φ` is then an ordinary
+    /// function `is_one φ -> A` -- Agda's encoding, no new syntax. Note
+    /// `is_one`'s result is a SORT: it is a former of types, like
+    /// `pathp`, and unlike everything else in this list its arguments
+    /// are still dimensions.
+    face_eq0,
+    face_eq1,
+    is_one,
 }
 
 /// One cubical primitive applied to `args`, whose length is its arity.
@@ -2083,6 +2096,20 @@ pub def cub_pathp (a_line : Term) (a_left : Term) (a_right : Term) : Term :=
 pub def cub_transp (a_line : Term) (a_elem : Term) : Term :=
     cub CubicalPrim.transp [a_line, a_elem]
 
+/// `face_eq0 i` -- the cofibration `i = 0`. Reduces to `i1` exactly at
+/// `i0` and to `i0` at `i1` (`whnf_face`,
+/// `lang/src/typecheck/whnf.mo`); `face_eq0 (ineg i)` is `face_eq1 i`.
+pub def cub_face_eq0 (i : Term) : Term := cub CubicalPrim.face_eq0 [i]
+
+/// `face_eq1 i` -- the cofibration `i = 1`. Reduces to `i1` exactly at
+/// `i1` and to `i0` at `i0`; `face_eq1 (ineg i)` is `face_eq0 i`.
+pub def cub_face_eq1 (i : Term) : Term := cub CubicalPrim.face_eq1 [i]
+
+/// `is_one φ` -- the proposition that the cofibration `φ` is `i1`. A
+/// former of types (result `Sort 1`); introduction and elimination are
+/// Stage 5's (`hcomp`), so at Stage 4 it stays rigid.
+pub def cub_is_one (i : Term) : Term := cub CubicalPrim.is_one [i]
+
 /// How many arguments a primitive takes. `args` is positional and this is
 /// the only statement of its expected length; `type_check_cubical` is what
 /// rejects a mismatch, exactly as `type_check_con` does for `Con.num_args`.
@@ -2097,6 +2124,9 @@ pub def cubical_arity (prim : CubicalPrim) : I64 := match prim {
     CubicalPrim.ijoin => 2,
     CubicalPrim.pathp => 3,
     CubicalPrim.transp => 2,
+    CubicalPrim.face_eq0 => 1,
+    CubicalPrim.face_eq1 => 1,
+    CubicalPrim.is_one => 1,
 }
 
 /// Is this primitive one of the two interval ENDPOINTS? The reducer and the
@@ -2111,6 +2141,9 @@ pub def cubical_is_endpoint (prim : CubicalPrim) : Bool := match prim {
     CubicalPrim.ijoin => false,
     CubicalPrim.pathp => false,
     CubicalPrim.transp => false,
+    CubicalPrim.face_eq0 => false,
+    CubicalPrim.face_eq1 => false,
+    CubicalPrim.is_one => false,
 }
 
 /// A dense tag per primitive. Total over `CubicalPrim`, so a primitive added
@@ -2132,6 +2165,9 @@ pub def cubical_prim_tag (prim : CubicalPrim) : I64 := match prim {
     CubicalPrim.ijoin => 5,
     CubicalPrim.pathp => 6,
     CubicalPrim.transp => 7,
+    CubicalPrim.face_eq0 => 8,
+    CubicalPrim.face_eq1 => 9,
+    CubicalPrim.is_one => 10,
 }
 
 pub def cubical_prim_eq (a : CubicalPrim) (b : CubicalPrim) : Bool :=
@@ -2148,6 +2184,9 @@ pub def cubical_prim_name (prim : CubicalPrim) : String := match prim {
     CubicalPrim.ijoin => "ijoin",
     CubicalPrim.pathp => "PathP",
     CubicalPrim.transp => "transp",
+    CubicalPrim.face_eq0 => "face_eq0",
+    CubicalPrim.face_eq1 => "face_eq1",
+    CubicalPrim.is_one => "is_one",
 }
 
 /// Every primitive, in `cubical_prim_tag` order. Exists as one list so the
@@ -2156,7 +2195,8 @@ pub def cubical_prim_name (prim : CubicalPrim) : String := match prim {
 pub def cubical_prims_all : List CubicalPrim :=
     List.cons CubicalPrim.interval (List.cons CubicalPrim.i0 (List.cons CubicalPrim.i1
         (List.cons CubicalPrim.ineg (List.cons CubicalPrim.imeet (List.cons CubicalPrim.ijoin
-        (List.cons CubicalPrim.pathp (List.cons CubicalPrim.transp List.empty)))))))
+        (List.cons CubicalPrim.pathp (List.cons CubicalPrim.transp (List.cons CubicalPrim.face_eq0
+        (List.cons CubicalPrim.face_eq1 (List.cons CubicalPrim.is_one List.empty))))))))))
 
 /// The string a `#[cubical "..."]` MARKER names a primitive by -- the
 /// marker key, which is NOT the surface name `cubical_prim_name` returns:
@@ -2175,6 +2215,9 @@ pub def cubical_marker_key (prim : CubicalPrim) : String := match prim {
     CubicalPrim.ijoin => "ijoin",
     CubicalPrim.pathp => "pathp",
     CubicalPrim.transp => "transp",
+    CubicalPrim.face_eq0 => "face_eq0",
+    CubicalPrim.face_eq1 => "face_eq1",
+    CubicalPrim.is_one => "is_one",
 }
 
 /// Decode a `#[cubical "..."]` marker's string back to the primitive it

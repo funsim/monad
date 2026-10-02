@@ -2414,15 +2414,19 @@ def compile_db_term_ir (c : CodegenCtx) (term_ : Term) : CompileResult := match 
 /// two interval endpoints and compile to the immediates `0`/`1`, which is
 /// their whole runtime content.
 ///
-/// The three De Morgan operations are NOT compiled yet: `ineg`/`imeet`/
-/// `ijoin` need real integer instructions (`1 - i`, min, max), and nothing
-/// reaches them today because no surface syntax produces a cubical term --
-/// scope binding for the primitive names lands in a later Stage 1 commit.
-/// They erase here rather than emitting wrong arithmetic, and that is a
-/// KNOWN DEBT rather than a design: it comes due with the first executable
-/// cubical proof, tracked in `plans/type-system/univalence.md`. Until then
-/// the checker is the only consumer, and `lang/src/tests` pins it at term
-/// level.
+/// Everything else erases to void. That is two different policies: the
+/// three De Morgan operations are NOT compiled yet -- `ineg`/`imeet`/
+/// `ijoin` need real integer instructions (`1 - i`, min, max) -- and the
+/// five later prims are TYPE-LEVEL: `pathp`/`is_one` form types,
+/// `transp` transports at the type level, and the two face generators are
+/// consumed by the checker's face lattice (`lang/src/typecheck/faces.mo`).
+/// The De Morgan debt is KNOWN rather than a design: it comes due with the
+/// first executable cubical proof, tracked in
+/// `plans/type-system/univalence.md`. Until then the checker is the only
+/// consumer, and the pins (`lang/src/tests`, `proofs/src/checker`) hold
+/// everything at term level. Every primitive has an arm because with no
+/// exhaustiveness checking a missing one is a silent future crash, not a
+/// compile error.
 def compile_cubical_ir (c : CodegenCtx) (cub_ : Cubical) : CompileResult :=
     match cub_.prim {
         CubicalPrim.i0 => CompileResult.ok c List.empty (LLVMValue.int_ 0) List.empty List.empty List.empty,
@@ -2431,6 +2435,11 @@ def compile_cubical_ir (c : CodegenCtx) (cub_ : Cubical) : CompileResult :=
         CubicalPrim.ineg => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
         CubicalPrim.imeet => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
         CubicalPrim.ijoin => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.pathp => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.transp => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.face_eq0 => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.face_eq1 => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+        CubicalPrim.is_one => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     }
 
 #[partial]

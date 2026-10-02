@@ -17,7 +17,7 @@
 //
 // The scope is built by the REAL parse + scope-build pipeline
 // (`try_parse_decls` + `build_scope_from_decls`) over the exact
-// eight-declaration source of `proofs/src/cubical.mo`, because what is
+// eleven-declaration source of `proofs/src/cubical.mo`, because what is
 // under test includes the marker's survival from source text to
 // `ScopeData.cubical_prims`. The same string is pinned from the scope
 // side in `lang/src/tests/cubical_bind_tests.mo`; if the declaration
@@ -29,16 +29,17 @@ use lang::typecheck::cubical {peels_to_bare_interval}
 use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
 use lang::typecheck::whnf {whnf}
 use lang::types {
-  CubicalPrim, ModulePath, Scope, ScopeData, Term,
-  cub_i0, cub_i1, cub_ineg, cub_interval, cub_pathp, cub_transp,
+  CubicalPrim, ModulePath, Scope, ScopeData, SortLevel, Similar, Term,
+  cub_face_eq0, cub_face_eq1, cub_i0, cub_i1, cub_imeet, cub_ijoin, cub_ineg,
+  cub_interval, cub_pathp, cub_transp,
   cubical_prim_eq, sentinel, sort_n,
 }
 
 def checker_synthetic_path : ModulePath :=
     ModulePath.mp (List.cons (Identifier.id "proofs_checker") List.empty)
 
-/// The eight Stage 1+2+3 declarations, spelled exactly as they are in
-/// `proofs/src/cubical.mo`.
+/// The eleven Stage 1+2+3+4 declarations, spelled exactly as they are
+/// in `proofs/src/cubical.mo`.
 def cubical_decls_source : String :=
     String.concat "#[cubical \"interval\"] def I : Type\n"
     (String.concat "#[cubical \"i0\"] def i0 : I\n"
@@ -47,7 +48,10 @@ def cubical_decls_source : String :=
     (String.concat "#[cubical \"imeet\"] def imeet (i : I) (j : I) : I\n"
     (String.concat "#[cubical \"ijoin\"] def ijoin (i : I) (j : I) : I\n"
     (String.concat "#[cubical \"pathp\"] def PathP (A : I -> Type) (a : A i0) (b : A i1) : Type\n"
-    "#[cubical \"transp\"] def transp (A : I -> Type) (a : A i0) : A i1"))))))
+    (String.concat "#[cubical \"transp\"] def transp (A : I -> Type) (a : A i0) : A i1\n"
+    (String.concat "#[cubical \"face_eq0\"] def face_eq0 (i : I) : I\n"
+    (String.concat "#[cubical \"face_eq1\"] def face_eq1 (i : I) : I\n"
+    "#[cubical \"is_one\"] def is_one (i : I) : Type\n")))))))))
 
 /// The scope the checker sees when `proofs/src/cubical.mo` is loaded.
 /// A parse failure yields an empty scope, which makes every pin below
@@ -732,3 +736,234 @@ def test_transp_with_a_stuck_line_stays_stuck : Bool :=
     // body to substitute into. The reducer declines to guess -- a stuck
     // line is not treated as constant.
     stays_transp (whnf cubical_scope empty_locals (cub_transp (free_var "I") (cub_i0)))
+
+// ─── Stage 4: the face lattice ──────────────────────────────────────────
+//
+// `face_eq0`/`face_eq1` -- the cofibration generators `i = 0` / `i = 1`
+// -- and `is_one`, the truth predicate that makes a partial element an
+// ordinary function `is_one φ -> A`. Cofibrations are INTERVAL terms:
+// `∧`/`∨` reuse imeet/ijoin and `0`/`1` reuse i0/i1, so the only new
+// TYPING is the three result rows (interval, interval, Sort 1) plus the
+// Stage-1 dimension discipline on the argument. The reducer's face pass
+// (`whnf_face`, whnf.mo) is where the stage's real content sits -- and
+// three of its rules are pinned by their ABSENCE: CCHM POSTULATES
+// `isOne1 = 0`, so `ijoin (face_eq0 u) (face_eq1 u) = i1` is not
+// derivable, and neither are `ineg (face_eq0 u) = face_eq1 u` nor the
+// decomposition of `face_eq0 (imeet u v)`. Folding any of the three
+// would make the interval two-point by conversion; the stuck pins below
+// fail if any is ever added. The whole-term decision procedure
+// (`face_decide`, faces.mo) is pinned in its own module's tests.
+
+/// The saturated source spine `face_eq0 u` / `face_eq1 u` / `is_one u`,
+/// with the head in its source spelling so the pins exercise the
+/// cubical probe on the way through, exactly as a real call site would.
+def face_call (nm : String) (arg : Term) : Term :=
+    Term.app (free_var nm) arg
+
+/// The dimension the whnf pins constrain -- a free, rigid variable, so
+/// no reduction of the dimension itself can blur which rule fired.
+def dim_u : Term := free_var "u"
+
+/// Is `t` the sort `Type 1`? `is_one` is a former of types and lands in
+/// `Sort 1` -- the same `l = 1` instance discipline as `PathP`'s
+/// declared signature.
+def is_sort_one (t : Term) : Bool :=
+    match t {
+        Term.sort lv =>
+            match lv {
+                SortLevel.concrete n => I64.beq n 1,
+                _ => false,
+            },
+        _ => false,
+    }
+
+/// Does checking `t` against `expected` in `s` succeed, produce the
+/// cubical `p` applied to exactly one argument matching `arg_is`, and
+/// answer a type matching `typ_is`? The result-type read is
+/// load-bearing: `cubical_result_type`'s three new rows are the whole of
+/// this stage's typing, and a pin that only reads the term cannot see a
+/// wrong row.
+def checks_as_prim_with (s : Scope) (t : Term) (p : CubicalPrim) (expected : Term)
+    (arg_is : Term -> Bool) (typ_is : Term -> Bool) : Bool :=
+    match type_check t expected s empty_local_types empty_locals {
+        ok tt =>
+            let shape_ok : Bool :=
+                match tt.term {
+                    Term.cubical c =>
+                        match c {
+                            { prim := q, args := as } =>
+                                cubical_prim_eq q p
+                                    && match as {
+                                        List.cons a rest =>
+                                            List.is_empty rest && arg_is a,
+                                        List.empty => false,
+                                    },
+                        },
+                    _ => false,
+                } in
+            shape_ok && typ_is tt.typ,
+        err _ => false,
+    }
+
+/// Is `t` the cubical generator `gen` applied to exactly one argument
+/// that is itself the bare primitive `bare`? For `is_one`'s argument:
+/// the cofibration it is asked about is a generator's checked term.
+def arg_is_face_gen_of_bare (gen : CubicalPrim) (t : Term) (bare : CubicalPrim) : Bool :=
+    match t {
+        Term.cubical c =>
+            match c {
+                { prim := q, args := as } =>
+                    cubical_prim_eq q gen
+                        && match as {
+                            List.cons a rest =>
+                                List.is_empty rest && arg_is_bare_prim a bare,
+                            List.empty => false,
+                        },
+            },
+        _ => false,
+    }
+
+/// Is `t` the cubical generator `p` applied to exactly one argument,
+/// `Similar` to `u`? The argument-De Morgan pins observe WHICH
+/// generator the negated arm builds, without pinning the dimension's
+/// identity any tighter than the rules themselves compare it.
+def is_face_gen_of (t : Term) (p : CubicalPrim) (u : Term) : Bool :=
+    match t {
+        Term.cubical c =>
+            match c {
+                { prim := q, args := as } =>
+                    cubical_prim_eq q p
+                        && match as {
+                            List.cons a rest =>
+                                List.is_empty rest && Similar.similar a u,
+                            List.empty => false,
+                        },
+            },
+        _ => false,
+    }
+
+/// Is `t` the cubical `p` head, still applied -- i.e. did whnf decline
+/// to reduce it? The stuck shape for the three deliberate absences.
+def stays_cubical_prim (t : Term) (p : CubicalPrim) : Bool :=
+    match t {
+        Term.cubical c =>
+            match c {
+                { prim := q, args := _as } => cubical_prim_eq q p,
+            },
+        _ => false,
+    }
+
+#[test]
+def test_face_eq0_checks_and_rewrites : Bool :=
+    // `face_eq0 i0` checks against the interval: the argument is a
+    // dimension, the checked term is the cubical primitive applied to
+    // the checked argument, and the result type is the interval row.
+    checks_as_prim_with cubical_scope (face_call "face_eq0" (free_var "i0"))
+        CubicalPrim.face_eq0 cub_interval
+        (fn a => arg_is_bare_prim a CubicalPrim.i0)
+        (fn ty => arg_is_bare_prim ty CubicalPrim.interval)
+
+#[test]
+def test_face_eq1_checks_and_rewrites : Bool :=
+    // The dual generator, pinned on its own: `face_eq1 i1` is the
+    // constraint `i = 1` at the endpoint where it holds.
+    checks_as_prim_with cubical_scope (face_call "face_eq1" (free_var "i1"))
+        CubicalPrim.face_eq1 cub_interval
+        (fn a => arg_is_bare_prim a CubicalPrim.i1)
+        (fn ty => arg_is_bare_prim ty CubicalPrim.interval)
+
+#[test]
+def test_is_one_checks_as_a_type_in_sort_one : Bool :=
+    // `is_one (face_eq0 i0)` is a TYPE: the checked term is the
+    // primitive applied to the checked cofibration, and the result is
+    // `Type 1`. The result-type read is the pin on the is_one row -- a
+    // mutation to the interval row fails here even though the term
+    // shape is unchanged.
+    checks_as_prim_with cubical_scope
+        (face_call "is_one" (face_call "face_eq0" (free_var "i0")))
+        CubicalPrim.is_one (sort_n 1)
+        (fn a => arg_is_face_gen_of_bare CubicalPrim.face_eq0 a CubicalPrim.i0)
+        is_sort_one
+
+#[test]
+def test_face_eq0_rejects_a_non_dimension_argument : Bool :=
+    // `face_eq0 (Type 1)`: a sort is not a dimension. The argument
+    // discipline is Stage 1's -- the same rule that rejects
+    // `ineg (Type 1)`.
+    check_fails_in cubical_scope (face_call "face_eq0" (sort_n 1))
+
+#[test]
+def test_is_one_rejects_a_non_dimension_argument : Bool :=
+    // `is_one (Type 1)`: the argument is a dimension regardless of the
+    // result being a type -- a cofibration is an interval term, and the
+    // discipline does not loosen because the primitive changed sorts.
+    check_fails_in cubical_scope (face_call "is_one" (sort_n 1))
+
+#[test]
+def test_whnf_folds_the_face_eq0_endpoint_laws : Bool :=
+    // `face_eq0 i0 = i1` -- the constraint `i = 0` holds on all of the
+    // cube at `i0` -- and `face_eq0 i1 = i0`.
+    arg_is_bare_prim (whnf cubical_scope empty_locals (cub_face_eq0 cub_i0)) CubicalPrim.i1
+        && arg_is_bare_prim (whnf cubical_scope empty_locals (cub_face_eq0 cub_i1)) CubicalPrim.i0
+
+#[test]
+def test_whnf_folds_the_face_eq1_endpoint_laws : Bool :=
+    // The dual: `face_eq1 i1 = i1` and `face_eq1 i0 = i0` -- the
+    // generator keeps its endpoints, it does not swap them.
+    arg_is_bare_prim (whnf cubical_scope empty_locals (cub_face_eq1 cub_i1)) CubicalPrim.i1
+        && arg_is_bare_prim (whnf cubical_scope empty_locals (cub_face_eq1 cub_i0)) CubicalPrim.i0
+
+#[test]
+def test_whnf_swaps_the_generator_under_a_negated_argument : Bool :=
+    // `face_eq0 (ineg u) = face_eq1 u` and the dual: `ineg u = 0` IS
+    // `u = 1`. This is the reason there are two generators and not
+    // four -- and the only De Morgan law the face pass has.
+    is_face_gen_of (whnf cubical_scope empty_locals (cub_face_eq0 (cub_ineg dim_u)))
+        CubicalPrim.face_eq1 dim_u
+        && is_face_gen_of (whnf cubical_scope empty_locals (cub_face_eq1 (cub_ineg dim_u)))
+        CubicalPrim.face_eq0 dim_u
+
+#[test]
+def test_whnf_folds_a_face_contradiction_to_i0 : Bool :=
+    // `face_eq0 u ∧ face_eq1 u = i0`: no cube point is both endpoints.
+    arg_is_bare_prim
+        (whnf cubical_scope empty_locals (cub_imeet (cub_face_eq0 dim_u) (cub_face_eq1 dim_u)))
+        CubicalPrim.i0
+
+#[test]
+def test_whnf_folds_a_face_contradiction_in_either_order : Bool :=
+    // The meet is commutative at the contradiction: the swapped spine
+    // folds too, pinning the second branch of the order check.
+    arg_is_bare_prim
+        (whnf cubical_scope empty_locals (cub_imeet (cub_face_eq1 dim_u) (cub_face_eq0 dim_u)))
+        CubicalPrim.i0
+
+#[test]
+def test_whnf_leaves_the_disjunction_of_opposite_faces_stuck : Bool :=
+    // `ijoin (face_eq0 u) (face_eq1 u)` does NOT fold to `i1`: CCHM
+    // POSTULATES `isOne1 = 0` because `u = 0 ∨ u = 1` is not derivable,
+    // and a reducer that folded it would make the interval two-point by
+    // conversion. This pin fails if the absent rule is ever added.
+    stays_cubical_prim
+        (whnf cubical_scope empty_locals (cub_ijoin (cub_face_eq0 dim_u) (cub_face_eq1 dim_u)))
+        CubicalPrim.ijoin
+
+#[test]
+def test_whnf_leaves_the_negation_of_a_face_stuck : Bool :=
+    // `ineg (face_eq0 u)` has no law: the endpoint lattice is De
+    // Morgan's, and the generator lattice has no complement. Folding
+    // it to `face_eq1 u` would give every cofibration a negated
+    // cofibration -- not derivable, so the term stays stuck.
+    stays_cubical_prim
+        (whnf cubical_scope empty_locals (cub_ineg (cub_face_eq0 dim_u)))
+        CubicalPrim.ineg
+
+#[test]
+def test_whnf_leaves_a_face_of_a_meet_stuck : Bool :=
+    // `face_eq0 (imeet u v)` is not decomposed into a disjunction: the
+    // mixed law `(u ∧ v) = 0 ⇒ u = 0 ∨ v = 0` is presheaf semantics,
+    // not part of CCHM's cofibration quotient. Stuck -- and
+    // `face_decide` answers none over it too.
+    stays_cubical_prim
+        (whnf cubical_scope empty_locals (cub_face_eq0 (cub_imeet dim_u (free_var "v"))))
+        CubicalPrim.face_eq0

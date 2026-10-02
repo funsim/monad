@@ -4115,6 +4115,19 @@ def type_check_cubical (c : Cubical) (expected_type : Term) (scope : Scope)
                 check_cubical_args_then c expected_type scope local_types locals,
             CubicalPrim.ijoin =>
                 check_cubical_args_then c expected_type scope local_types locals,
+            // Stage 4's three are Stage-1-shaped: every argument is a
+            // dimension, and the result is the prim's own row of
+            // `cubical_result_type` -- `I` for the two face generators,
+            // `Sort 1` for `is_one` (a former of types, the `l = 1`
+            // discipline `PathP` uses). The generic tail handles all
+            // three; no bespoke rule exists until Stage 5's `hcomp`
+            // consumes the cofibration.
+            CubicalPrim.face_eq0 =>
+                check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.face_eq1 =>
+                check_cubical_args_then c expected_type scope local_types locals,
+            CubicalPrim.is_one =>
+                check_cubical_args_then c expected_type scope local_types locals,
         }
 
 /// The generic tail of `type_check_cubical` shared by every Stage 1
@@ -4343,12 +4356,13 @@ def type_check_pathp_endpoints (line : Term) (a_left : Term) (a_right : Term) (s
 
 /// What a primitive's application is a term OF. `interval` is the type
 /// former, so it answers a sort; everything else in Stage 1 is interval-
-/// valued. `pathp`'s and `transp`'s rows are never consulted --
-/// `type_check_cubical` routes both to their own rules (`type_check_pathp`,
-/// `type_check_transp`) because each result depends on the LINE, which no
-/// prim-keyed table can state -- but the rows exist all the same: with no
-/// exhaustiveness checking a missing arm is a silent future crash, not a
-/// compile error.
+/// valued. `is_one` is the other former here: it answers `Sort 1`, the
+/// `l = 1` discipline `PathP` uses. `pathp`'s and `transp`'s rows are
+/// never consulted -- `type_check_cubical` routes both to their own rules
+/// (`type_check_pathp`, `type_check_transp`) because each result depends
+/// on the LINE, which no prim-keyed table can state -- but the rows exist
+/// all the same: with no exhaustiveness checking a missing arm is a
+/// silent future crash, not a compile error.
 def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.interval => sort_n 1,
     CubicalPrim.i0 => cub_interval,
@@ -4358,6 +4372,9 @@ def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.ijoin => cub_interval,
     CubicalPrim.pathp => Term.hole,
     CubicalPrim.transp => Term.hole,
+    CubicalPrim.face_eq0 => cub_interval,
+    CubicalPrim.face_eq1 => cub_interval,
+    CubicalPrim.is_one => sort_n 1,
 }
 
 /// Every Stage 1 argument is a dimension, i.e. an `I`. When `PathP` lands

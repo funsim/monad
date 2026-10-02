@@ -65,3 +65,25 @@
 // `comp` deliberately: `transp` takes no cofibration, so Stage 3 lands
 // before the face lattice exists (Stage 4).
 #[cubical "transp"] def transp (A : I -> Type) (a : A i0) : A i1
+
+// The face lattice (Stage 4). Cofibrations are INTERVAL terms: `∧`/`∨`
+// reuse `imeet`/`ijoin`, `0`/`1` reuse `i0`/`i1`, and the only new
+// formers are the two generators `face_eq0`/`face_eq1` -- the
+// constraints `i = 0` / `i = 1` -- and the truth predicate `is_one`,
+// which is a former of TYPES and lands in `Sort 1` (the `l = 1`
+// discipline again). Partial elements need no new syntax and no `Sub`:
+// a partial element of `A` on cofibration `φ` is an ordinary function
+// `is_one φ -> A`, Agda's trick -- `fn (u : is_one φ) => a` is a
+// `Term.lam` the ordinary pi rule already checks.
+//
+// `face_eq0`/`face_eq1` deliberately have no elimination into `Bool`:
+// the endpoint laws fold (`whnf_face`), the contradiction law folds,
+// and everything else stays stuck -- CCHM POSTULATES `isOne1 = 0`
+// (there is no cube point that is BOTH endpoints), and a reducer that
+// folded `ijoin (face_eq0 u) (face_eq1 u)` to `i1` would make the
+// interval two-point by conversion. The whole-term decision procedure
+// `face_decide` (lang/src/typecheck/faces.mo) answers `some false`
+// there without ever answering `some true`.
+#[cubical "face_eq0"] def face_eq0 (i : I) : I
+#[cubical "face_eq1"] def face_eq1 (i : I) : I
+#[cubical "is_one"] def is_one (i : I) : Type
