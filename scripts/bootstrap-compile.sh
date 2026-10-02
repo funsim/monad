@@ -60,7 +60,7 @@ out="$MONAD_BOOTSTRAP_DIR"
 # stalled.
 #
 # The interpreter the two builds below run is the job's `MONAD_HOST_BIN`,
-# which CI's `bootstrap` job sets to the flake's packaged host
+# which CI's `compiler-checks` job sets to the flake's packaged host
 # (`nix build .#monadHost`); unset, scripts/build-self-hosted.sh falls back to
 # `cargo run --release --`, whose cold fat-LTO build was ~10 minutes here
 # (actions/checkout runs git clean -ffdx at the start of every job, wiping
@@ -72,8 +72,9 @@ out="$MONAD_BOOTSTRAP_DIR"
 # "has no `.ll` beside it (nix/monad.nix does not install one)": `nix/monad.nix`
 # now splits rung 1 into `packages.monadRung1`, and that output DOES install the
 # `.ll` the interpreter wrote, precisely so this comparison can be made against
-# a re-used rung 1 rather than only a re-built one. CI's `test` job has no such
-# comparison to make, so it sweeps the packaged compiler -- see its step.
+# a re-used rung 1 rather than only a re-built one. CI's `compiler-checks` job
+# has no such comparison to make, so it sweeps the release rung-1 this script
+# builds -- see its step in scripts/ci-compiler-checks.sh.
 #
 # --release: debug info is on by default; DWARF emission costs ~30s on this
 # workload and the binary this job tests does not need it. So the release
@@ -120,10 +121,13 @@ out="$MONAD_BOOTSTRAP_DIR"
 #     the step's wall clock; said plainly here so a CI log is not read as a win it
 #     cannot make.
 #   * A hit is OPPORTUNISTIC. The fleet's two runners share no nix store, and
-#     `ci.yml:62-71` already records that. It hits on a re-run, on a commit that
-#     leaves the compiler's sources alone, or when the `test` job landed on this
-#     machine -- and `test` builds `.#monad`, which DEPENDS on `rung1`, so a
-#     machine that has swept already has this.
+#     `ci.yml` already records that. It hits on a re-run, on a commit that
+#     leaves the compiler's sources alone, or on a machine that has already
+#     built the flake's package -- `.#monad` DEPENDS on `rung1`, so
+#     `flake-package` realizes this. That is also the only thing left in the
+#     pipeline that does: `compiler-checks` builds its rung-1 from source in
+#     its own scratch directory and no longer goes through the flake at all,
+#     so a machine that has only swept has NOT got this.
 #   * `nix-store --check-validity` asks "is it already realized", which is the
 #     question. `nix build` would answer it by BUILDING, which is the ~320 s of
 #     interpretation this exists to avoid; `nix eval` of the output path carries
@@ -174,6 +178,20 @@ ladder() {
   else
     scripts/build-self-hosted.sh "$dir" --verbose "$@"
   fi
+  # RUNG 1 IS FINISHED, and this is how the merged CI job learns it. The sweep
+  # grades this binary, and in `compiler-checks` it runs CONCURRENTLY with the
+  # rest of this function (the check and the fixpoint turn below), so it has to
+  # know when the build has returned. It waits on this marker rather than on
+  # `[ -x "$dir/monad" ]` because `build-self-hosted.sh` builds with the
+  # compiler's own `build -o "$dir/monad"`, which creates that file as it links
+  # it -- an executable that is still half-written would start a sweep grading
+  # a truncated compiler. Reached on BOTH branches above, so a store re-use
+  # signals too. Nothing else reads it (`rm -rf "$dir"` at the top of this
+  # function clears it, so it cannot survive into another run of the ladder),
+  # and it is deliberately touched before `check`: a rung-1 that fails to check
+  # the corpus is still the rung-1 the sweep is entitled to grade, and the
+  # ladder's own verdict stays the ladder's.
+  : > "$dir/rung1.done"
   "$dir/monad" check cli/src/main.mo
   scripts/self-compile-turn.sh "$dir/monad" "$dir" monad2 "$@"
   cmp "$dir/monad.ll" "$dir/monad2.ll"
@@ -181,8 +199,9 @@ ladder() {
 
 # The two ladders are INDEPENDENT -- separate output directories, separate
 # builds, nothing shared but the read-only sources -- so they run at once
-# rather than one after the other. Measured: 38m53s together in the
-# `bootstrap` job (run 36243944155), the second-longest step in the pipeline.
+# rather than one after the other. Measured: 38m53s together in the job that
+# was then `bootstrap` (run 36243944155), and 25m25s in run 36914860312, where
+# the step is the whole of `compiler-checks`' ladder half.
 # Each ladder is single-threaded -- one `llc`, one `clang` at a time -- so
 # overlapping them uses a second core of the runner's eight rather than
 # contending for the first, and the step's wall clock becomes the slower

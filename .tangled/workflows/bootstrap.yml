@@ -1,6 +1,9 @@
-# The `bootstrap` job from .github/workflows/ci.yml: the self-hosted compiler
+# The ladder half of the `compiler-checks` job in .github/workflows/ci.yml --
+# the `bootstrap` job, until that job absorbed `test`: the self-hosted compiler
 # compiles itself, and then the binary that falls out has to do the job it was
-# built for.
+# built for. On GitHub the sweep now grades that binary, so the two halves are
+# one workflow there too (scripts/ci-compiler-checks.sh); here they are still
+# two files, which costs a second interpretation and changes nothing else.
 #
 # These two steps MUST stay in one workflow file. `monad:debug-oracle` reuses
 # the binary `monad:bootstrap-compile` just wrote to
@@ -27,8 +30,8 @@
 # which is the only reason this job works at all (run 36236800752 failed on
 # `failed to read /build/...-source/init/src/prelude.mo` before that line
 # existed; the GitHub job's step comment says it in full).
-# The compiler itself stays a from-source build here, unlike in
-# the `test` job, because both rung-1 builds assert the
+# The compiler itself stays a from-source build here, unlike in the sweep half
+# (which now takes this very binary), because both rung-1 builds assert the
 # interpreted-vs-compiled comparison and a store compiler has no
 # interpreter-produced `.ll` beside it -- the GitHub job's step comment says it
 # in full. Same `VAR=...` reasoning as .tangled/workflows/test.yml for why the

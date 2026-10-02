@@ -21,9 +21,11 @@
 #
 # Cost, and why it is not a CI job: rung 1 here is `packages.monad`, so this
 # check only pays that ~20 minute build when it is not already in the store --
-# but the check itself is a `check` plus two self-compiles. The 20 minutes are
-# what CI's `test` job already pays for rung 1, so gating a pipeline on this
-# would work against the PR this check arrived with.
+# but the check itself is a `check` plus two self-compiles. CI's ladder pays
+# the same interpretation on every compiler change, and in a different
+# derivation (its own scratch directory, not `packages.monadRung1`), so that is
+# the same work and not the same store path: gating a pipeline on this would add
+# a third ~20 minute interpretation rather than reusing one.
 { commit, monadVersion }:
 {
   perSystem =

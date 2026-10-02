@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The full .mo test sweep, run by `tasks."monad:test"` in devenv.nix
-# (which CI's `test` job invokes). prek does not invoke a shell, so a
+# (which CI's `compiler-checks` job invokes, from
+# scripts/ci-compiler-checks.sh). prek does not invoke a shell, so a
 # hook entry cannot chain commands -- hence this wrapper script.
 #
 # Runs the SELF-HOSTED test runner (`monad test`, implemented in
@@ -12,8 +13,12 @@
 #
 # The binary has to be built in this job: actions/checkout runs git
 # clean -ffdx at the start of every job, wiping target-rust/, target-monad/,
-# .devenv/ and the config, so neither the `test` nor `bootstrap` job can borrow the other's
-# artifacts. The staleness check and build command live in
+# .devenv/ and the config, so no job and no run inherits a compiler. The two
+# halves of `compiler-checks` DO share this checkout's scratch directory, on
+# purpose -- the sweep's compiler IS the ladder's release rung-1
+# (scripts/ci-compiler-checks.sh) -- and what keeps that from being a race is
+# that the ladder writes that path and this script only reads it. The staleness
+# check and build command live in
 # scripts/build-self-hosted.sh, shared with the other two CI scripts:
 # reuse an existing binary, but rebuild when any source compiled INTO
 # it is newer, since a stale compiler reports failures that are really
@@ -21,14 +26,21 @@
 # target, llvm/ and runtime/ the backend.
 #
 # `MONAD_BIN` replaces that build when the caller already has the compiler.
-# CI's `test` job points it at the flake's `packages.monad` -- rung 1 built
-# from this commit's tree in a nix sandbox and wrapped so llc/clang/boehmgc
-# are reachable -- so the sweep runs the artifact the flake SHIPS instead of
-# one this job happened to build. What that replaces is the interpreter's
-# ~5 minute turn, and it removes the last cargo build from this job as well:
-# `packages.monad` builds the host for it (nix/monad.nix takes
-# packages.monadHost as a native input), so a Rust compile error still fails
-# the job, under a step named for the build. MONAD_BIN is the repo's existing
+# CI's `compiler-checks` job points it at the LADDER's own release rung-1
+# (`<checkout>/target-monad/bootstrap-ci/monad`, scripts/lib/bootstrap-dir.sh):
+# the ladder builds that binary from this commit's tree on every compiler
+# change, and handing it to the sweep is what makes one interpretation do two
+# jobs -- the sweep starts the moment the binary is finished instead of after
+# the ladder has also checked and turned over, and nothing builds a second copy
+# of the same compiler from the same tree (scripts/ci-compiler-checks.sh). What
+# MONAD_BIN replaces is still the interpreter's ~5 minute turn; with the
+# ladder's binary there is no cargo build in this job to remove, and the flake
+# package was the thing that used to supply both.
+#
+# `packages.monad` is graded instead by the `flake-package` job, on the changes
+# that can move it (`nix/**`, `flake.nix`, `flake.lock`) -- it links rung 1
+# rather than re-interpreting the tree, so for its own inputs it is a store hit.
+# MONAD_BIN is the repo's existing
 # name for "the self-hosted compiler to run" (scripts/check-docs.sh,
 # tools/debug_transparency_oracle.sh); build-self-hosted.sh's own header says
 # why the HOST override it takes is spelled differently.
@@ -373,7 +385,7 @@ fi
 # `monad` process, which walks it a file at a time (`run_test_loop`,
 # cli/src/main.mo:836). Measured on the runner (run 36243944155), that is
 # 42m23s for the sweep and 8m44s for the check, out of a 51m20s step --
-# the sweep alone is most of the `test` job. They are sharded here:
+# the sweep alone is most of the job that runs it. They are sharded here:
 # MONAD_SWEEP_JOBS processes, one shard each, running concurrently.
 #
 # Safe by construction, because of what the two commands write and
@@ -413,21 +425,44 @@ fi
 # because the earlier form of this line, `(T - N*warmup)/N + warmup`, is
 # algebraically just `T/N`, i.e. the claim it was making.)
 #
-# The size of that warm-up is what bounds what a bigger N can buy: the
-# round-1 measurement (58m45s serial -> 25m35s at 7 shards, 2.30x, local,
-# one binary over 197 files) is what this model predicts for a warm-up of
-# roughly a third of the serial time -- some 20 minutes of the 58. If that
-# holds, the sweep's floor is that warm-up however many shards run, and the
-# residual at N=3 is ~7 minutes rather than the ~34 the T/N ratio suggests.
-# It is a derived figure from two measurements under a crude model, not a
-# measured warm-up, and it is machine- and load-dependent (CI's 3-shard
-# sweep, 1423s, beat what the model predicts on the local box).
+# THAT WARM-UP HAS NOW BEEN MEASURED, and it is small enough that the model
+# above is not what decides the shard count. A fresh process on `monad test
+# motes/demo/src/helper.mo` -- a file with no tests in it -- takes 13 s from a
+# cold store, and that file plus a second one in the SAME process takes the
+# same 13 s, so the per-process term is ~13 s and one small file's own work is
+# inside the noise. (The first of the two read 31 s, a cold page cache, which
+# is why it is measured twice.) Against a 3849 s shard sum, a 13 s term per
+# shard cannot be what this wall is made of: the sweep is WORK-bound.
+#
+# So the shard count is decided by CORES, and the scaling was measured rather
+# than derived -- 2026-10-02, `taskset -c 0-3` (the 4-core runner's shape), the
+# compiler already built, the store wiped between runs because CI's `git
+# clean -ffdx` starts every job cold, same 231-file corpus:
+#
+#   4 shards   973s 1233s 715s 928s                        max 1233s  sum 3849s
+#   8 shards   786s 1283s 871s 771s 667s 765s 855s 992s     max 1283s  sum 6990s
+#   12 shards  38s 1160s 468s 668s 804s 1022s 511s 1036s
+#              871s 802s 730s 906s                           max 1160s  sum 9016s
+#
+# `max` is the phase's wall and it is FLAT -- 1233 / 1283 / 1160 s, a 124 s
+# band -- while the summed per-shard wall grows 3849 -> 6990 -> 9016 s. That
+# growth IS the answer: each shard's number is wall clock, so it absorbs
+# contention, and it nearly triples because 8 or 12 processes sharing 4 cores
+# each run proportionally slower. Past `nproc`, more shards buy no shorter
+# critical path, only more co-tenancy: the floor is the 3849 s of work over 4
+# cores (~962 s) and all three configurations land near 1200 s, so what is
+# left over is the machine and its co-tenants rather than the split. (Round
+# 1's 58m45s-serial-to-25m35s-at-7-shards reading is not evidence about
+# warm-up for the same reason: 7 shards on 4 cores is oversubscribed.)
 #
 # The default is min(nproc, 8): one shard per core, nothing held back. What
 # each extra shard costs is a closure resident in memory rather than a file on
 # disk, and that cost was measured rather than assumed on 2026-09-27 -- `monad
 # test lang/src/scope.mo`, the heaviest file in this corpus, peaks at 172 MB of
-# summed tree RSS -- so memory is not what bounds this and cores are.
+# summed tree RSS -- so memory is not what bounds this and cores are. The
+# measurement above is also what a shard count PAST the core count costs: at 8
+# and at 12 shards on 4 cores the phase's wall did not improve, and 8 was the
+# slowest of the three.
 #
 # It used to be min(nproc - 1, 8), holding a core back "for the machine". The
 # reason to reverse that needs no timing at all: the phase's wall is the
@@ -736,7 +771,8 @@ fi
 #     the old check phase would have FAILed cannot reach codegen and cannot
 #     leave the sweep green.
 #
-# Measured (run 36301331844): the phase cost 552 s of the `test` job's 3252 s
+# Measured (run 36301331844, when this job was still called `test`): the phase
+# cost 552 s of its 3252 s
 # -- the second-largest step in the pipeline -- while buying only the
 # ok/FAIL matrix the sweep already prints. It also did not scale with
 # processes, 544 s at one shard against 552 s at three, which is what says

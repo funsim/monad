@@ -42,7 +42,7 @@ cd "$root"
 #
 # MONAD_HOST_BIN is the knob that keeps this from being a cold build: CI's
 # `nightly` job sets it from the flake (`nix build .#monadHost`), which is
-# the SAME host the `bootstrap` job uses and is a 2s store lookup there,
+# the SAME host `compiler-checks` uses and is a 2s store lookup there,
 # where an unqualified `cargo run --release --` was a cold fat-LTO build
 # (~10 min, since actions/checkout cleans the target directories at the start
 # of every job).

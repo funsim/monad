@@ -5,8 +5,9 @@
 # It is a script, and CI runs it INSIDE the dev shell, because of a red
 # pipeline: a bare `run:` step in these jobs uses the RUNNER HOST's PATH, not
 # the dev shell's, and that PATH carries only the nix store entries the runner
-# itself needs. It has no `awk` and no `lscpu`. Run 36313431973's `test` job
-# died 8 s in on
+# itself needs. It has no `awk` and no `lscpu`. Run 36313431973's `test` job --
+# that job is `compiler-checks` now, and it runs this same script -- died 8 s in
+# on
 #
 #   line 4: lscpu: command not found
 #   line 7: awk: command not found
@@ -70,6 +71,18 @@
 #     instrumentation that was reporting a running maximum, not each shard's
 #     own duration (see `run_shards` in scripts/check-monad-tests.sh), so the
 #     first correct per-shard numbers are the next run's, not these.
+#   * what a shard count ABOVE the core count costs was measured next
+#     (2026-10-02, `taskset -c 0-3`, warm compiler, cold store between runs,
+#     the same 231-file corpus): the phase wall -- the LARGEST shard -- was
+#     1233 s at 4 shards, 1283 s at 8 and 1160 s at 12, a 124 s band, while the
+#     summed per-shard wall grew 3849 -> 6990 -> 9016 s as more processes
+#     shared four cores. Oversubscribing bought nothing and 8 was the slowest
+#     of the three, which is why this script stays at one shard per core
+#     instead of splitting finer to chase the ~271 s between the 4-shard wall
+#     and the 962 s the 3849 s of work would take on four cores: that residue
+#     is the machine and its co-tenants, not the split. The sweep's own
+#     per-process warm-up is ~13 s (a fresh `monad test` on a file with no
+#     tests, cold store), far too small to be why the count does not scale.
 #   * the cap of 8 is a guard on shard COUNT, not on memory. The memory
 #     reasoning it used to carry ("this corpus has OOM'd a box before") does
 #     not survive contact with the corpus as it now is: `monad test
@@ -77,7 +90,9 @@
 #     tree RSS (measured 2026-09-27), so four shards are well under a gigabyte
 #     on the 15.6 GB runner. It stays because no runner in this fleet has more
 #     than 8 cores, and a workstation that is also a runner should not be
-#     asked for more than that.
+#     asked for more than that -- the measurement above says a count past the
+#     core count is worth avoiding, so on a machine with more cores than this
+#     fleet has, raising the cap means re-measuring rather than assuming.
 #   * the reading that chose the shard count comes from `nproc` INSIDE the dev
 #     shell, so this script -- which runs there -- prints its own `nproc`, and
 #     the step prints the host's beside it. Both are in the log, so a shard

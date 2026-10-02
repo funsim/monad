@@ -1,9 +1,16 @@
-# The `test` job from .github/workflows/ci.yml.
+# The sweep half of the `compiler-checks` job in .github/workflows/ci.yml --
+# the `test` job, until that job absorbed `bootstrap`. The GitHub side now runs
+# this same sweep against the ladder's own release rung-1 and starts it while
+# the ladder is still finishing (scripts/ci-compiler-checks.sh); here it still
+# builds `.#monad` first, which is correct but pays an interpretation the
+# GitHub job no longer does, and that `.#monad` is graded on GitHub by
+# `flake-package` now.
 #
 # Two steps: the flake builds the compiler this job sweeps (`packages.monad` --
-# rung 1, from this commit's tree; see the GitHub job for what taking it from
-# the flake buys and what it costs), then scripts/check-monad-tests.sh runs
-# that binary over the corpus. Called directly rather than through
+# rung 1, from this commit's tree; see the GitHub `flake-package` job for what
+# taking it from the flake buys and what it costs), then
+# scripts/check-monad-tests.sh runs that binary over the corpus. Called
+# directly rather than through
 # `devenv tasks run monad:test` (its local equivalent), as the GitHub job does,
 # so the per-file verdicts reach this log -- devenv-tasks captures a task's
 # stdout and shows it only on failure.
