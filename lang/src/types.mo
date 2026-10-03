@@ -846,8 +846,8 @@ def pt_lam (name : Identifier) (typ : ParseTerm) (body : ParseTerm) : ParseTerm 
     pt_ (ParseTermKind.lam name typ body)
 
 #[partial]
-def pt_pi (arg : ParseTerm) (ret : ParseTerm) : ParseTerm :=
-    pt_ (ParseTermKind.pi Option.none arg ret)
+def pt_pi (name : Option Identifier) (arg : ParseTerm) (ret : ParseTerm) : ParseTerm :=
+    pt_ (ParseTermKind.pi name arg ret)
 
 #[partial]
 def pt_app (f : ParseTerm) (a : ParseTerm) : ParseTerm := pt_ (ParseTermKind.app f a)
@@ -1086,10 +1086,13 @@ pub type ParseTermKind {
     var_macro (name: NameRef),
     lam (name: Identifier) (typ: ParseTerm) (body: ParseTerm),
     forall (name: Identifier) (typ: ParseTerm) (body: ParseTerm),
-    /// `arg_name` is `some` only for a written dependent arrow
-    /// (`(n : T) -> body`, which binds `n` over `body`) and `none` for
-    /// the non-dependent chains `build_pi_chain`/`build_param_pi_chain`
-    /// fold. Mirrors the Rust reference's `Term::Pi { arg_name:
+    /// `arg_name` is `some` for a written dependent arrow
+    /// (`(n : T) -> body`, which binds `n` over `body`) AND, since R2a',
+    /// for each parameter `build_param_pi_chain` folds out of a `def`'s
+    /// parameter list — a declared signature is dependent whenever it
+    /// says it is. It is `none` only for the genuinely non-dependent
+    /// chains `build_pi_chain` folds (class-method parameter types, which
+    /// carry no names at all). Mirrors the Rust reference's `Term::Pi { arg_name:
     /// Option<Name>, .. }` (`core/src/term.rs`), whose `lower_core.rs`
     /// arm likewise pushes `arg_name` into scope only when it is `Some`.
     ///
@@ -1233,6 +1236,23 @@ pub def binder_anon : Binder := {
     info := BinderInfo.explicit,
 }
 
+/// The binder a NAMED arrow carries — `(n : T) -> body` puts `n` in scope
+/// over `body`. Same construction discipline as `binder_anon` above, and
+/// for the same reason.
+///
+/// This is the half of R2 that makes a declared dependent signature mean
+/// something. `build_param_pi_chain` folds a `def`'s parameter list into a
+/// pi chain, and before R2a' it had no name to pass, so every parameter
+/// type and the return type were lowered at the SAME depth while
+/// `type_check_pi` checked the codomain under `List.cons arg local_types`
+/// and `term_map_children_at_depth` walked `ret` at depth 1. Threading the
+/// name moves the producer onto the consumers' side: a mention of an
+/// earlier parameter now binds instead of resolving to `sentinel`.
+pub def binder_named (n : Identifier) : Binder := {
+    name := DebugName.named n,
+    info := BinderInfo.explicit,
+}
+
 // The canonical de Bruijn term IR — what everything after the parser
 // works on. `ParseTerm` above is lowered into this.
 //
@@ -1248,8 +1268,9 @@ pub type Term {
     /// already binds it before `Term` exists (`lower_parse.mo`'s
     /// `pi_ret_ctx` extends the lowering context by the arrow's own binder
     /// when the source named one), and `term_map_children_at_depth` already
-    /// walks `ret` at depth 1. R2 only stops `pi` from DROPPING the name it
-    /// was given.
+    /// walks `ret` at depth 1. R2a stopped `pi` from DROPPING the name it
+    /// was given; R2a' made the grammar actually give it one for a `def`'s
+    /// parameter list (`binder_named` above).
     pi (b : Binder) (arg : Term) (ret: Term),
     app (fun: Term) (arg: Term),
     lit (value: Literal),

@@ -37,13 +37,14 @@
 /// old dotted-path copy predates the qualified-names split, when
 /// name paths and module paths shared one rendering and one type.
 use lang::types {
-  Class, ClassDef, Con, DebugName, Decl, Def, DoStmt, Identifier,
+  Binder, Class, ClassDef, Con, DebugName, Decl, Def, DoStmt, Identifier,
   InductConstructor, Inductive, Instance, Literal, MatchCase, ModulePath,
   NamePath, NameRef, Native, Param, ParseClass, ParseClassDef, ParseCon,
   ParseDecl, ParseDeclKind, ParseDef, ParseInductConstructor, ParseInductive,
   ParseInstance, ParseLiteral, ParseMatchCase, ParseNative, ParseParam,
   ParseStruct, ParseStructField, ParseStructLitField, ParseTerm, ParseTermKind,
-  QualifiedName, Struct, StructField, StructLitField, Term, binder_anon, sentinel,
+  QualifiedName, Struct, StructField, StructLitField, Term, binder_anon, binder_named,
+  sentinel,
   show_identifier,
 }
 // Name resolution lives HERE now, moved out of `lang/parser.mo` for real
@@ -109,6 +110,20 @@ def lower_ctx_bind (name : Identifier) (ctx : ParseLowerCtx) : ParseLowerCtx :=
 #[partial]
 def lower_ctx_bind_all (names : List Identifier) (ctx : ParseLowerCtx) : ParseLowerCtx :=
     { binders := extend_ctx names ctx.binders, locs := ctx.locs }
+
+
+/// The `Binder` a `ParseTermKind.pi` lowers to: named when the source (or
+/// `build_param_pi_chain`, for a `def`'s own parameter list) supplied a
+/// name, anonymous otherwise.
+///
+/// This is an ANNOTATION only. `pi_ret_ctx` below is what actually puts
+/// the name in scope over the return type; all this decides is what an
+/// error message calls the bound variable.
+def pi_binder (arg_name : Option Identifier) : Binder :=
+    match arg_name {
+        Option.some n => binder_named n,
+        Option.none => binder_anon,
+    }
 
 
 /// The context a `Term.pi`'s return type is lowered under: extended by
@@ -566,28 +581,37 @@ def lower_parse_kind (ctx : ParseLowerCtx) (k : ParseTermKind) : Term :=
             Term.forall (DebugName.named name)
                         (lower_parse_term_bare ctx typ)
                         (lower_parse_term (lower_ctx_bind name ctx) body),
-        // A `pi` binds only when the source wrote a name: `(n : T) ->
-        // body` puts `n` in scope over `body`, which is what
-        // `type_dep_arrow_tag` (`lang/parser.mo`) used to do inline
-        // before the grammar stopped resolving names. `Term.pi` has no
-        // field to carry `n`, so a name not consumed HERE is lost and
-        // every use of it inside `body` resolves to `sentinel` -- a
-        // regression this branch shipped once, now pinned by
-        // `test_dep_pi_binds_its_own_name`.
+        // A `pi` binds when the source wrote a name: `(n : T) -> body`
+        // puts `n` in scope over `body`, which is what `type_dep_arrow_tag`
+        // (`lang/parser.mo`) used to do inline before the grammar stopped
+        // resolving names. A name not consumed HERE is lost and every use
+        // of it inside `body` resolves to `sentinel` -- a regression this
+        // branch shipped once, now pinned by
+        // `test_dep_pi_binds_its_own_name`. `binder_named` carries it into
+        // the term, which is what R2a bought.
         //
-        // A NAMELESS `pi` deliberately does not extend, because the
-        // grammar that produces one does not: `build_pi_chain`/
-        // `build_param_pi_chain` fold a "non-dependent Pi chain" (their
-        // own words) with the return type at the SAME depth as the
-        // argument. Note this disagrees with `lang/typecheck/traverse.mo`,
-        // whose depth-aware walker treats every `Term.pi`'s `ret` as
-        // sitting under one binder (`f 1 ret`) -- a real pre-existing
-        // producer/consumer inconsistency. Matching the PRODUCER is what
-        // preserves behaviour; it is a separate question from this
-        // refactor.
+        // Since R2a' the name comes from TWO producers, not one: the
+        // arrow grammar, and `build_param_pi_chain` for a `def`'s own
+        // parameter list. The second is what makes a declared dependent
+        // signature mean something -- the return type of
+        // `def f (A : Type) (a : A) : ...` now mentions `A` as index 1
+        // rather than as a free variable, which is exactly what
+        // `type_check_pi` (`lang/typecheck/infer.mo`) assumes when it
+        // checks the codomain under `List.cons arg local_types` and what
+        // `term_map_children_at_depth` (`lang/typecheck/traverse.mo`)
+        // assumes when it walks `ret` at depth 1. The producer used to
+        // disagree with both; it now agrees, and it agrees with
+        // `lam_parsed_params` (`lang/parser.mo`), which already gives the
+        // body's lambda chain this same discipline.
+        //
+        // A still-NAMELESS `pi` does not extend, because the grammar that
+        // produces one does not: `build_pi_chain` folds class-method
+        // parameter types (which carry no names) with the return type at
+        // the same depth as the argument. That case is genuinely
+        // non-dependent, and matching the producer is what preserves it.
         // R1 on both sides: a pi is entirely type-level.
         ParseTermKind.pi arg_name arg ret =>
-            Term.pi binder_anon (lower_parse_term_bare ctx arg)
+            Term.pi (pi_binder arg_name) (lower_parse_term_bare ctx arg)
                     (lower_parse_term_bare (pi_ret_ctx arg_name ctx) ret),
         // R3: the callee is bare so a spine's inner `app`s stay visible to
         // `flatten_call_spine`; only the outermost `app` (located by

@@ -3002,11 +3002,14 @@ def class_method_ret_type_val (r : ParseResult ParseTerm) (mname : Identifier) (
 
 /// Fold accumulated param types (most-recent-first / reverse declaration
 /// order, same invariant `def`'s own `List Param` follows) with the
-/// return type into a non-dependent Pi chain.
+/// return type into a non-dependent Pi chain. `Option.none` for the
+/// binder: a class method's parameter TYPES are accumulated here with no
+/// names attached, so this chain is genuinely non-dependent and stays
+/// lowered flat. `build_param_pi_chain` below is the one that has names.
 #[partial]
 def build_pi_chain (param_types : List ParseTerm) (ret : ParseTerm) : ParseTerm := match param_types {
 	List.empty => ret,
-	List.cons t rest => build_pi_chain rest (pt_pi  t ret),
+	List.cons t rest => build_pi_chain rest (pt_pi Option.none t ret),
 }
 
 #[partial]
@@ -3509,12 +3512,24 @@ def instance_method_finish (input : String) (name : Identifier) (params : List P
 /// Fold a `List Param` (already in left-to-right declaration order — the
 /// `def_params_loop` result, same as `def` itself consumes) into a Pi
 /// chain with the return type.
+///
+/// The parameter's NAME is threaded through (R2a'). A `ParseParam` has
+/// always carried one; what was missing was a `Term.pi` field to hold it,
+/// so this folded an anonymous chain and every parameter type and the
+/// return type lowered at the SAME depth. A mention of an earlier
+/// parameter therefore resolved to `sentinel` -- a free variable -- and
+/// `elaborate_type` auto-generalized it into an unrelated implicit. This
+/// is sigma-types' deferred step A4: `Eq.rec` and the body-less cubical
+/// primitives are the four declarations in the corpus whose signature the
+/// old discipline made a lie. Left-to-right with the head outermost gives
+/// the same depth discipline `lam_parsed_params` already gives the body's
+/// lambda chain.
 #[partial]
 def build_param_pi_chain (params : List ParseParam) (ret : ParseTerm) : ParseTerm := match params {
 	List.empty => ret,
 	List.cons p rest =>
 		match p {
-			ParseParam.mk pname typ mult default _attrs => pt_pi  typ (build_param_pi_chain rest ret)
+			ParseParam.mk pname typ mult default _attrs => pt_pi (Option.some pname) typ (build_param_pi_chain rest ret)
 		},
 }
 
@@ -5007,6 +5022,65 @@ def dep_pi_var_idx (a : Term) (want : I64) : Bool :=
 		Term.var i _ => I64.beq i want,
 		_ => false,
 	}
+
+/// R2a' — a `def`'s DECLARED signature is dependent when it says it is.
+/// `build_param_pi_chain` folds `def pick (A : Type) (a : A) : A` into
+/// `Term.pi A (Sort Type) (Term.pi a (var 0) (var 1))`: the first
+/// parameter is bound by the OUTER pi, so the return type refers to it at
+/// index 1 from inside the inner pi's body, and the second parameter's own
+/// type at index 0 from its own domain. Before R2a' the fold had no names
+/// to pass — `pt_pi` hardcoded `Option.none` — so every parameter type and
+/// the return type lowered at depth 0 and this mention resolved to
+/// `sentinel`, a free variable that `elaborate_type` then auto-generalized
+/// into an unrelated implicit.
+///
+/// This is sigma-types A4, and it is the half of R2 whose evidence cannot
+/// be "the error counts are unchanged": it changes RESOLUTION, so it needs
+/// a pin that fails when the name is dropped. Reverting
+/// `Option.some pname` to `Option.none` in `build_param_pi_chain` makes
+/// this pin report `sentinel` instead of 1.
+#[test]
+def test_param_pi_chain_binds_earlier_params : Bool :=
+    match def_parser "def pick (A : Type) (a : A) : A := a" {
+        success _ d => def_sig_ret_var_idx (lower_parse_decl lower_ctx_bare d) 1,
+        fail _ => false,
+    }
+
+/// The return type of a lowered `def`'s signature chain, reached as
+/// `Term.pi _ _ (Term.pi _ _ ret)`. No field ACCESS on the `Def` inside a
+/// `#[test]` def — that form miscompiles (the def takes the field's own
+/// LLVM type); the struct pattern is what the neighbouring
+/// destructured-param test uses for the same reason. All seven fields are
+/// spelled rather than left to `..`, which would bind each discarded
+/// field's name into scope.
+def def_sig_ret_var_idx (d : Decl) (want : I64) : Bool :=
+    match d {
+        Decl.def_d def_ =>
+            match def_ {
+                Def.mk {
+                    name := _dname,
+                    typ := sig,
+                    term := _dterm,
+                    constraints := _dcons,
+                    attrs := _dattrs,
+                    vis := _dvis,
+                    params := _dparams,
+                } => sig_inner_ret_var_idx sig want,
+            },
+        _ => false,
+    }
+
+def sig_inner_ret_var_idx (t : Term) (want : I64) : Bool :=
+    match t {
+        Term.pi _b1 _arg1 inner => sig_ret_var_idx inner want,
+        _ => false,
+    }
+
+def sig_ret_var_idx (t : Term) (want : I64) : Bool :=
+    match t {
+        Term.pi _b2 _arg2 ret => dep_pi_var_idx ret want,
+        _ => false,
+    }
 
 /// The dependent arrow's span must start at its own `(`, not at the
 /// inner type after `(n : `. A span that starts mid-construct is not

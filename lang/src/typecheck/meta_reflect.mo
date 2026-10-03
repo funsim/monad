@@ -644,8 +644,11 @@ def pair_names (ps : List (Pair String Term)) : List String :=
     }
 
 /// `Term.pi p1_typ (Term.pi p2_typ (... ret))` -- mirrors
-/// `lang/parser.mo`'s own `build_param_pi_chain` exactly (non-dependent:
-/// no param's type ever references an earlier one).
+/// `lang/parser.mo`'s own `build_param_pi_chain` in SHAPE, which is all
+/// this needs to be: its inputs are already-built `Term`s whose de Bruijn
+/// indices were fixed when they were lowered, and a binder name changes
+/// no index. The binders are therefore anonymous here, where the parser's
+/// chain has carried real names since R2a'.
 #[partial]
 def build_pi_chain (ps : List (Pair String Term)) (ret : Term) : Term :=
     match ps {
