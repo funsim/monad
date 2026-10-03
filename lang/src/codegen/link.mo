@@ -4,7 +4,8 @@
 // file stays in lang because it speaks Term.
 
 use lang::types {
-  Def, NamePath, app, concrete, i64, id, lam, lit, named, num, package_private,
+  Def, NamePath, app, binder_named, concrete, i64, id, lam, lit, named, num,
+  package_private,
   sort, var,
 }
 use llvm::ir {emit_module}
@@ -31,7 +32,7 @@ def test_link_compile_defs_to_ir : Bool :=
     let x_var := Term.var 0 (DebugName.named x_id) in
     let add_var := Term.var 0 (DebugName.named (Identifier.id "I64_add")) in
     let body := Term.app (Term.app add_var x_var) two in
-    let term_ := Term.lam (DebugName.named x_id) (Term.sort (SortLevel.concrete 1)) body in
+    let term_ := Term.lam (binder_named x_id) (Term.sort (SortLevel.concrete 1)) body in
     let def_ := Def.mk (NamePath.npath [id_val]) (Term.sort (SortLevel.concrete 1)) term_ List.empty List.empty Visibility.package_private List.empty in
     let text := compile_defs_to_ir (List.cons def_ List.empty) in
     check_contains text "add i64"

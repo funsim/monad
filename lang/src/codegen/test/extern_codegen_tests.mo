@@ -1,5 +1,6 @@
 use lang::types {
-  Term, TypeConstraint, group, hole, lam, named, npath, package_private, sort_n,
+  Term, TypeConstraint, binder_named, group, hole, lam, named, npath,
+  package_private, sort_n,
   str, var,
 }
 use lib::module {}
@@ -34,7 +35,7 @@ def mk_puts_def : Def :=
     let attrs := List.cons (Attribute.mk (id "extern") (List.cons (AttrArg.str "c") List.empty)) List.empty in
     Def.mk (NamePath.npath (List.cons (id "puts_ffi") List.empty))
         (Term.var 0 (named (id "I32")))
-        (Term.lam (DebugName.named s_id) string_term Term.hole)
+        (Term.lam (binder_named s_id) string_term Term.hole)
         ([] : List TypeConstraint) attrs Visibility.package_private List.empty
 
 /// `puts_ffi` (String → I32) compiles to:
@@ -78,7 +79,7 @@ def mk_strlen_def : Def :=
     let attrs := List.cons (Attribute.mk (id "extern") ext_args) List.empty in
     Def.mk (NamePath.npath (List.cons (id "strlen") List.empty))
         (Term.var 0 (named (id "I64")))
-        (Term.lam (DebugName.named s_id) string_term Term.hole)
+        (Term.lam (binder_named s_id) string_term Term.hole)
         ([] : List TypeConstraint) attrs Visibility.package_private List.empty
 
 /// `#[extern "c" { link_name := "strlen" }]` must emit `declare i64 @strlen(i8*)`
@@ -110,7 +111,7 @@ def mk_sin_def : Def :=
     let attrs := List.cons (Attribute.mk (id "extern") ext_args) List.empty in
     Def.mk (NamePath.npath (List.cons (id "sin") List.empty))
         (Term.var 0 (named (id "F64")))
-        (Term.lam (DebugName.named x_id) (Term.var 0 (named (id "F64"))) Term.hole)
+        (Term.lam (binder_named x_id) (Term.var 0 (named (id "F64"))) Term.hole)
         ([] : List TypeConstraint) attrs Visibility.package_private List.empty
 
 #[test]
@@ -137,7 +138,7 @@ def mk_abs_def : Def :=
     let attrs := List.cons (Attribute.mk (id "extern") ext_args) List.empty in
     Def.mk (NamePath.npath (List.cons (id "abs") List.empty))
         (Term.var 0 (named (id "I32")))
-        (Term.lam (DebugName.named x_id) (Term.var 0 (named (id "I32"))) Term.hole)
+        (Term.lam (binder_named x_id) (Term.var 0 (named (id "I32"))) Term.hole)
         ([] : List TypeConstraint) attrs Visibility.package_private List.empty
 
 #[test]
@@ -172,7 +173,7 @@ def mk_sin_def_grouped : Def :=
     let attrs := List.cons (Attribute.mk (id "extern") ext_args) List.empty in
     Def.mk (NamePath.npath (List.cons (id "sin") List.empty))
         (Term.var 0 (named (id "F64")))
-        (Term.lam (DebugName.named x_id) (Term.var 0 (named (id "F64"))) Term.hole)
+        (Term.lam (binder_named x_id) (Term.var 0 (named (id "F64"))) Term.hole)
         ([] : List TypeConstraint) attrs Visibility.package_private List.empty
 
 #[test]

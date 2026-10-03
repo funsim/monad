@@ -1222,6 +1222,17 @@ pub struct Binder {
     info : BinderInfo,
 }
 
+/// A binder from a `DebugName` the caller already holds, under the
+/// behaviour `lam` always wants. `binder_anon` and `binder_named` below
+/// are its two shorthand spellings -- they cover the construction site
+/// that has no name to give and the one that has an `Identifier` -- and
+/// this is the one for a `DebugName` in hand, which is what a `Term.lam`
+/// carries and why R2c needed it.
+pub def binder_explicit (d : DebugName) : Binder := {
+    name := d,
+    info := BinderInfo.explicit,
+}
+
 /// The binder an anonymous construction site wants: nothing for the error
 /// message, an ordinary explicit parameter. A named def rather than an
 /// inline literal because a bare struct literal in argument position is a
@@ -1345,7 +1356,13 @@ pub def binder_name (b : Binder) : DebugName :=
 // by the type checker or module resolver.
 pub type Term {
     var (idx: I64) (dbg: DebugName),
-    lam (dbg: DebugName) (typ: Term) (body: Term),
+    /// The lambda, and the ONLY binder over a term. Its binder is an
+    /// ANNOTATION, exactly as `pi`'s below is, and its `info` is ALWAYS
+    /// `explicit` -- a lambda's argument is written, never implicit -- so
+    /// nothing discriminates on it. R2c gave it the `Binder` `pi` already
+    /// had, for uniformity; `binder_is_explicit` answering `true` for a
+    /// lambda is the contract that buys.
+    lam (b: Binder) (typ: Term) (body: Term),
     /// A function type, and the ONLY binder over a type. `forall` used to sit
     /// beside it as a second spelling; R2b folded it in, so `b`'s `info` is
     /// now what tells a quantified type variable (`binder`), a universe level
@@ -2510,6 +2527,10 @@ def similar_term_go (a : Term) (b : Term) : Bool :=
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
+            // R2c: `d1`/`d2` are `Binder`s now, so this compares `info` and
+            // NOT the name, where it compared names before -- the arm's text
+            // never changed, the type under it did. The one widening R2c
+            // makes; `test_lam_similarity_ignores_the_name` pins it.
             lam d1 t1 bd1 => match b {
                 lam d2 t2 bd2 => Similar.similar d1 d2 && Similar.similar t1 t2 && Similar.similar bd1 bd2,
                 var _ _ => false, pi _ _ _ => false,
@@ -2614,8 +2635,67 @@ def test_term_var : Bool :=
 #[test]
 def test_term_lam : Bool :=
     let body : Term := Term.var 0 (DebugName.unnamed) in
-    let l : Term := Term.lam DebugName.unnamed body body in
+    let l : Term := Term.lam binder_anon body body in
     true
+
+/// R2c's contract, and the whole of what a walker merging `lam` and `pi`
+/// arms is allowed to assume: a lambda's binder is ALWAYS `explicit`,
+/// whether it was given a name or not. Mutating `binder_explicit` to any
+/// other `BinderInfo` -- or `binder_anon`/`binder_named` off it -- fails
+/// this and nothing else, because nothing else in the corpus reads a
+/// lambda's `info`.
+#[test]
+def test_lam_binder_is_always_explicit : Bool :=
+    let n : Binder := binder_named (Identifier.id "x") in
+    let named_lam : Term := Term.lam n Term.hole Term.hole in
+    let anon_lam : Term := Term.lam binder_anon Term.hole Term.hole in
+    let d_lam : Term := Term.lam (binder_explicit DebugName.unnamed) Term.hole Term.hole in
+    let named_ok : Bool := match named_lam {
+        Term.lam b _ _ => binder_is_explicit b,
+        _ => false,
+    } in
+    let anon_ok : Bool := match anon_lam {
+        Term.lam b _ _ => binder_is_explicit b,
+        _ => false,
+    } in
+    let d_ok : Bool := match d_lam {
+        Term.lam b _ _ => binder_is_explicit b,
+        _ => false,
+    } in
+    named_ok && anon_ok && d_ok
+
+/// The other half of R2c: the name a lambda is built with survives as
+/// `name`, which is what the printer reads (`test_show_lam_named` in
+/// `pretty_tests.mo` pins the printed consequence). `binder_explicit` is
+/// the lift every `DebugName`-carrying call site goes through, so a
+/// mutation that drops `d` on the floor fails here first.
+#[test]
+def test_lam_binder_keeps_its_name : Bool :=
+    let d : DebugName := DebugName.named (Identifier.id "x") in
+    let l : Term := Term.lam (binder_explicit d) Term.hole Term.hole in
+    match l {
+        Term.lam b _ _ => match binder_name b {
+            DebugName.named id => show_identifier id == "x",
+            DebugName.unnamed => false,
+        },
+        _ => false,
+    }
+
+/// R2c's one semantic consequence, and it is a widening. `similar_term_go`'s
+/// `lam` arm compared `Similar DebugName` and now compares `Similar Binder`,
+/// so two lambdas whose binders differ only in name are similar -- exactly as
+/// the `pi` pin below has it. Only a binder the body never mentions is
+/// affected, because a `var` carries its own name and the body is still
+/// compared. Mutating that arm to compare `binder_name` restores the old
+/// rejection and fails the first conjunct.
+#[test]
+def test_lam_similarity_ignores_the_name : Bool :=
+    let body : Term := Term.var 0 DebugName.unnamed in
+    let x_lam : Term := Term.lam (binder_named (Identifier.id "x")) Term.hole body in
+    let y_lam : Term := Term.lam (binder_named (Identifier.id "y")) Term.hole body in
+    let renamed : Term := Term.var 0 (DebugName.named (Identifier.id "y")) in
+    let z_lam : Term := Term.lam (binder_named (Identifier.id "x")) Term.hole renamed in
+    Similar.similar x_lam y_lam && Bool.not (Similar.similar x_lam z_lam)
 
 /// A level binder is not similar to an explicit binder even when their
 /// domains coincide -- and they CAN coincide, which is why this pin exists.

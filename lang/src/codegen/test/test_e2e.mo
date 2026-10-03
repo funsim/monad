@@ -1,5 +1,6 @@
 use lang::types {
-  Def, Identifier, TypeConstraint, app, empty_attrs, i64, lam, lit, named, npath,
+  Def, Identifier, TypeConstraint, app, binder_named, empty_attrs, i64, lam, lit,
+  named, npath,
   num, package_private, sort_n, var,
 }
 use llvm::ir {emit_module}
@@ -31,7 +32,7 @@ def test_e2e_simple_literal : Bool :=
 def test_e2e_function_with_param : Bool :=
     let id := Identifier.id "add5" in
     let body := Term.lit (Literal.num 99 NumSuffix.i64) in
-    let term_ := Term.lam (DebugName.named (Identifier.id "x")) (sort_n 1) body in
+    let term_ := Term.lam (binder_named (Identifier.id "x")) (sort_n 1) body in
     let def_ := Def.mk
         (NamePath.npath (List.cons id empty_ids))
         (sort_n 1)

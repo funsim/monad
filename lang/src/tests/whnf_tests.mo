@@ -1,6 +1,7 @@
 use lang::types {
   DebugName, Identifier, Literal, LocalScope, LocalVar, Location, MatchCase,
-  ModulePath, Scope, ScopeData, Similar, Term, binder_anon, cub_i0, cub_i1, cub_ijoin,
+  ModulePath, Scope, ScopeData, Similar, Term, binder_anon, binder_explicit, cub_i0,
+  cub_i1, cub_ijoin,
   cub_imeet, cub_ineg, many, sentinel, sort_n,
 }
 use lib::module {parse_all_decls}
@@ -62,14 +63,14 @@ def idt_scope : Scope := scope_of "type P { p0 }\ndef idt (x : Type) : Type := x
 #[test]
 def test_whnf_beta_identity_lambda : Bool :=
     // `(fn x : Type => x) Prop` reduces to `Prop`.
-    let redex : Term := Term.app (Term.lam dbg_x (sort_n 1) (Term.var 0 dbg_x)) (sort_n 0) in
+    let redex : Term := Term.app (Term.lam (binder_explicit dbg_x) (sort_n 1) (Term.var 0 dbg_x)) (sort_n 0) in
     Similar.similar (whnf idt_scope empty_locals redex) (sort_n 0)
 
 #[test]
 def test_whnf_beta_constant_lambda_drops_argument : Bool :=
     // `(fn x : Type => Type) Prop` reduces to `Type`, and the discarded
     // argument must not leak into the result.
-    let redex : Term := Term.app (Term.lam dbg_x (sort_n 1) (sort_n 1)) (sort_n 0) in
+    let redex : Term := Term.app (Term.lam (binder_explicit dbg_x) (sort_n 1) (sort_n 1)) (sort_n 0) in
     Similar.similar (whnf idt_scope empty_locals redex) (sort_n 1)
 
 // --- delta ---

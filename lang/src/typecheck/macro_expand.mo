@@ -12,7 +12,8 @@
 /// `Decl.def_macro_d`s and threading the whole thing through the
 /// pipeline.
 use lang::types {
-  Con, Identifier, Literal, MatchCase, Native, StructLitField, Term, concrete,
+  Con, Identifier, Literal, MatchCase, Native, StructLitField, Term, binder_anon,
+  concrete,
   id_eq, level_const, named, sentinel, term_peel, unnamed,
 }
 use lib::typecheck::macro_apply {apply_term_macro}
@@ -175,7 +176,7 @@ def term_type_level (t : Term) : I64 :=
 
 /// `defmacro double x := x` -- the one real `lang/parser.mo` test
 /// fixture shape this whole module is built to expand correctly.
-def double_body : Term := Term.lam DebugName.unnamed Term.hole (Term.var 0 DebugName.unnamed)
+def double_body : Term := Term.lam binder_anon Term.hole (Term.var 0 DebugName.unnamed)
 
 def no_macros_lookup (id : Identifier) : Option Term := Option.none
 
@@ -245,7 +246,7 @@ def test_expand_term_passes_through_unknown_macro_name : Bool :=
 #[test]
 def test_expand_term_recurses_under_lambda : Bool :=
     let call : Term := Term.app (Term.var_macro (0 - 1) (DebugName.named double_ident)) (Term.sort (SortLevel.concrete 6)) in
-    let t : Term := Term.lam DebugName.unnamed Term.hole call in
+    let t : Term := Term.lam binder_anon Term.hole call in
     match expand_term double_lookup t {
         Term.lam _ _ body => I64.beq (term_type_level body) 6,
         _ => false,

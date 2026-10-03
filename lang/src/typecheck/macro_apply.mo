@@ -12,7 +12,8 @@
 /// work-queue) is responsible for finding which macro a given call
 /// site's name actually refers to.
 use lang::types {
-  Decl, Identifier, Param, Term, concrete, level_const, many, named, sentinel,
+  Decl, Identifier, Param, Term, binder_anon, concrete, level_const, many, named,
+  sentinel,
   unnamed,
 }
 use lib::typecheck::subst {beta_reduce}
@@ -121,7 +122,7 @@ def test_apply_term_macro_single_param_substitutes : Bool :=
     // `defmacro double x := x` (real `lang/parser.mo` test fixture
     // shape) applied to one arg -- `Term.lam _ _ (Term.var 0 _)`
     // beta-reduces straight to the supplied arg.
-    let body : Term := Term.lam DebugName.unnamed Term.hole (Term.var 0 DebugName.unnamed) in
+    let body : Term := Term.lam binder_anon Term.hole (Term.var 0 DebugName.unnamed) in
     let arg : Term := Term.sort (SortLevel.concrete 5) in
     I64.beq (term_type_level (apply_term_macro body (List.cons arg List.empty))) 5
 
@@ -140,7 +141,7 @@ def test_apply_term_macro_two_params_curried : Bool :=
     // second beta_reduce, `y` (index 0) is discarded entirely since
     // the body never references it.
     let body : Term :=
-        Term.lam DebugName.unnamed Term.hole (Term.lam DebugName.unnamed Term.hole (Term.var 1 DebugName.unnamed)) in
+        Term.lam binder_anon Term.hole (Term.lam binder_anon Term.hole (Term.var 1 DebugName.unnamed)) in
     let arg1 : Term := Term.sort (SortLevel.concrete 7) in
     let arg2 : Term := Term.sort (SortLevel.concrete 8) in
     I64.beq (term_type_level (apply_term_macro body (List.cons arg1 (List.cons arg2 List.empty)))) 7
@@ -150,7 +151,7 @@ def test_apply_term_macro_over_application_falls_back_to_app : Bool :=
     // More args than the macro declares params -- the leftover arg
     // becomes an ordinary `Term.app` on the (already fully-applied)
     // result, rather than being silently dropped.
-    let body : Term := Term.lam DebugName.unnamed Term.hole (Term.var 0 DebugName.unnamed) in
+    let body : Term := Term.lam binder_anon Term.hole (Term.var 0 DebugName.unnamed) in
     let arg1 : Term := Term.sort (SortLevel.concrete 3) in
     let arg2 : Term := Term.sort (SortLevel.concrete 4) in
     match apply_term_macro body (List.cons arg1 (List.cons arg2 List.empty)) {

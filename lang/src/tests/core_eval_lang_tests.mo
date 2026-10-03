@@ -7,7 +7,8 @@ use lang::core_value {
 use lib::lower_core_ir {LowerCtx, lower_ctx_from_decls, lower_root}
 use lang::types {
   Attribute, DebugName, Decl, InductConstructor, ModulePath, NamePath, Param,
-  Term, def_d, i64, id, ident, if_, inductive_d, many, match_, mc, mk, num,
+  Term, binder_explicit, def_d, i64, id, ident, if_, inductive_d, many, match_, mc, mk,
+  num,
   open_d, open_only, package_private,
 }
 
@@ -105,8 +106,8 @@ def opt_value_num_is (ov : Option Value) (expected : I64) : Bool :=
 
 def const_fn_term : Term :=
   // fn x => fn y => x
-  Term.lam (named "x") Term.hole
-    (Term.lam (named "y") Term.hole
+  Term.lam (binder_explicit (named "x")) Term.hole
+    (Term.lam (binder_explicit (named "y")) Term.hole
       (Term.var 1 (named "x")))
 
 def closure_main_term : Term :=
@@ -141,8 +142,8 @@ def mynat_s (n : Term) : Term := Term.con (Con.mk (Identifier.id "s") mynat_path
 
 /// def my_add (a b : MyNat) : MyNat := match a { z => b, s n => s (my_add n b) }
 def my_add_term : Term :=
-  Term.lam (named "a") Term.hole
-    (Term.lam (named "b") Term.hole
+  Term.lam (binder_explicit (named "a")) Term.hole
+    (Term.lam (binder_explicit (named "b")) Term.hole
       (Term.lit (Literal.match_
         (Term.var 1 (named "a"))
         [
@@ -249,7 +250,7 @@ def mylist_decl : Decl :=
 /// constructor -- exactly the shape a `List.map`/`List.filter`-style
 /// function's own empty-input case takes.
 def empty_case_term : Term :=
-  Term.lam (named "n") Term.hole (free_var "MyList.mynil")
+  Term.lam (binder_explicit (named "n")) Term.hole (free_var "MyList.mynil")
 
 def point_free_ctor_test_decls : List Decl :=
   [mylist_decl, def_decl "empty_case" empty_case_term, def_decl "main" (Term.app (free_var "empty_case") (num 0))]
@@ -278,7 +279,7 @@ def is_con_with_tag_and_arity (v : Value) (expected_tag : I64) (expected_arity :
 
 def native_attr : List Attribute := [Attribute.mk (Identifier.id "native") [AttrArg.ident (Identifier.id "i64_add")]]
 
-def add_native_term : Term := Term.lam (named "a") Term.hole (Term.lam (named "b") Term.hole Term.hole)
+def add_native_term : Term := Term.lam (binder_explicit (named "a")) Term.hole (Term.lam (binder_explicit (named "b")) Term.hole Term.hole)
 def add_native_decl : Decl := Decl.def_d (Def.mk (np1 "add_native") Term.hole add_native_term List.empty native_attr Visibility.package_private List.empty)
 
 def native_stub_main_term : Term :=
@@ -308,7 +309,7 @@ def test_native_attributed_stub_def_referenced_as_free_var_end_to_end : Bool :=
 def open_mynil_decl : Decl := Decl.open_d mylist_path (OpenFilter.open_only [Identifier.id "mynil"])
 
 def bare_ctor_global_test_decls : List Decl :=
-  [mylist_decl, open_mynil_decl, def_decl "empty_case" (Term.lam (named "n") Term.hole (free_var "mynil")), def_decl "main" (Term.app (free_var "empty_case") (num 0))]
+  [mylist_decl, open_mynil_decl, def_decl "empty_case" (Term.lam (binder_explicit (named "n")) Term.hole (free_var "mynil")), def_decl "main" (Term.app (free_var "empty_case") (num 0))]
 
 #[test]
 def test_bare_open_aliased_constructor_reference_as_global_end_to_end : Bool :=
@@ -337,7 +338,7 @@ def triple_con (x y z : Term) : Term :=
 
 /// `def get_b (t : Triple) : I64 := match t { triple_mk a b c => b }`
 def get_b_term : Term :=
-  Term.lam (named "t") Term.hole
+  Term.lam (binder_explicit (named "t")) Term.hole
     (Term.lit (Literal.match_
       (Term.var 0 (named "t"))
       [MatchCase.mc (Identifier.id "triple_mk") [Identifier.id "a", Identifier.id "b", Identifier.id "c"] (Term.var 1 (named "b")) Option.none]))

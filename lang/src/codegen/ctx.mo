@@ -15,6 +15,7 @@ use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
 use std::list {List.length}
 use lang::types {
   DebugName, Def, Identifier, Location, ModulePath, Param, Term, binder_is_explicit,
+  binder_name,
   param_many, term_peel,
 }
 use llvm::ir {DbgLoc, LLVMInstruction, LLVMValue}
@@ -272,7 +273,7 @@ def lookup_binding (bindings : List LocalBinding) (name : Identifier) : Option L
 #[partial]
 def collect_db_params (term_ : Term) : List Param := match term_peel term_ {
     Term.lam dbg typ body =>
-        let name : Identifier := match dbg {
+        let name : Identifier := match binder_name dbg {
             DebugName.named id => id,
             DebugName.unnamed => Identifier.id "x",
         } in

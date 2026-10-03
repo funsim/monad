@@ -74,8 +74,8 @@
 
 use lang::types {
   AttrArg, Attribute, DebugName, Decl, Def, Identifier, MatchCase, Term,
-  attr_args, has_attr, if_, match_, mk, npath, package_private, show_identifier,
-  show_name_path,
+  attr_args, binder_name, binder_named, has_attr, if_, match_, mk, npath,
+  package_private, show_identifier, show_name_path,
 }
 use lib::pretty {show_term}
 
@@ -280,7 +280,7 @@ def drop_leading_dict_args (args : List Term) : List Term :=
 #[partial]
 def collect_lam_params (t : Term) : List String :=
     match strip_ctx t {
-        Term.lam dbg _typ inner => List.cons (debug_name_key dbg) (collect_lam_params inner),
+        Term.lam dbg _typ inner => List.cons (debug_name_key (binder_name dbg)) (collect_lam_params inner),
         _ => List.empty,
     }
 
@@ -626,7 +626,7 @@ pub def check_termination_all (decls : List Decl) : List String :=
 def t_var (s : String) : Term := Term.var (0 - 1) (DebugName.named (Identifier.id s))
 
 def t_lam (s : String) (body : Term) : Term :=
-    Term.lam (DebugName.named (Identifier.id s)) Term.hole body
+    Term.lam (binder_named (Identifier.id s)) Term.hole body
 
 def t_app (f : Term) (a : Term) : Term := Term.app f a
 

@@ -27,7 +27,7 @@ def free_names_of_term (bound : List Identifier) (t : Term) : List Identifier :=
     Term.var_macro _idx dbg => free_names_of_dbg bound dbg,
     Term.lam dbg typ_ body_ =>
         List.append (free_names_of_term bound typ_)
-            (free_names_of_term (add_bound_name bound dbg) body_),
+            (free_names_of_term (add_bound_name bound (binder_name dbg)) body_),
     // One arm, two flavours, and the guard is load-bearing: a quantifier
     // binds its own name over its body and an arrow does not, so merging
     // the old `Term.forall` arm verbatim would report a quantified type

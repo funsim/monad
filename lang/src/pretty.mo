@@ -4,7 +4,8 @@ use lang::types {
   FieldPattern, Identifier, InductConstructor, Inductive, Instance, Literal,
   MatchCase, ModulePath, Multiplicity, NamePath, Native, NumSuffix, OpenFilter,
   Operator, Param, SortLevel, Struct, StructField, StructLitField, Term, UseFilter,
-  UseItem, Visibility, binder_anon, binder_is_explicit, binder_name, char_to_string,
+  UseItem, Visibility, binder_anon, binder_explicit, binder_is_explicit, binder_name,
+  binder_named, char_to_string,
   cubical_prim_name, level_const,
   package_private, priv_, pub_, show_identifier, show_module_path, show_name_path,
   show_operator,
@@ -81,7 +82,7 @@ def show_param (p : Param) : String := match p {
 pub def show_term (t : Term) : String := match t {
     var idx dbg => show_debug_name dbg,
     lam dbg typ body =>
-        let name_str := show_debug_name dbg in
+        let name_str := show_debug_name (binder_name dbg) in
         let type_str := show_term typ in
         let body_str := show_term body in
         let fn_name := String.concat "(fn " name_str in
@@ -641,7 +642,7 @@ def test_show_var_unnamed : Bool :=
 def test_show_lam_unnamed : Bool :=
     let dbg := DebugName.unnamed in
     let body := Term.var 0 DebugName.unnamed in
-    let t := Term.lam dbg Term.hole body in
+    let t := Term.lam (binder_explicit dbg) Term.hole body in
     show_term t == "(fn _ : _ => _)"
 
 #[test]
@@ -649,7 +650,7 @@ def test_show_lam_named : Bool :=
     let id := Identifier.id "x" in
     let dbg := DebugName.named id in
     let body := Term.var 0 dbg in
-    let t := Term.lam dbg (Term.sort (SortLevel.concrete 1)) body in
+    let t := Term.lam (binder_explicit dbg) (Term.sort (SortLevel.concrete 1)) body in
     show_term t == "(fn x : Type => x)"
 
 #[test]
@@ -893,7 +894,7 @@ def test_show_decl_def : Bool :=
     let name := NamePath.npath (List.cons (Identifier.id "id") List.empty) in
     let path := Identifier.id "x" in
     let var_t := Term.var 0 (DebugName.named path) in
-    let lam := Term.lam (DebugName.named path) (Term.sort (SortLevel.concrete 1)) var_t in
+    let lam := Term.lam (binder_named path) (Term.sort (SortLevel.concrete 1)) var_t in
     let d := Def.mk name (Term.sort (SortLevel.concrete 1)) lam List.empty List.empty Visibility.package_private List.empty in
     let decl := Decl.def_d d in
     show_decl decl == "def id : Type := (fn x : Type => x)"

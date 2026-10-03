@@ -26,7 +26,7 @@
 /// more directly) — a different module, not this one.
 use lang::types {
   Con, Cubical, FieldPattern, Literal, MatchCase, Native, StructLitField, Term,
-  concrete, cub_ineg, id, level_const, sentinel, unnamed,
+  binder_anon, concrete, cub_ineg, id, level_const, sentinel, unnamed,
 }
 
 use lib::typecheck::traverse {term_map_children_at_depth}
@@ -210,7 +210,7 @@ def test_term_shift_bound_var_under_lam_untouched : Bool :=
     // `Term.var 0` inside a `Term.lam`'s own body refers to that
     // lambda's own binder (cutoff becomes 1 there) -- it must NOT be
     // shifted, regardless of `d`.
-    let t : Term := Term.lam DebugName.unnamed (Term.sort (SortLevel.concrete 1)) (Term.var 0 DebugName.unnamed) in
+    let t : Term := Term.lam binder_anon (Term.sort (SortLevel.concrete 1)) (Term.var 0 DebugName.unnamed) in
     match term_shift 5 t {
         Term.lam _ _ body => I64.beq (term_var_idx body) 0,
         _ => false,
@@ -220,7 +220,7 @@ def test_term_shift_bound_var_under_lam_untouched : Bool :=
 def test_term_shift_free_var_under_lam_shifted : Bool :=
     // `Term.var 1` inside that same lambda's body refers to something
     // OUTSIDE it (cutoff 1, idx 1 >= cutoff) -- this one must shift.
-    let t : Term := Term.lam DebugName.unnamed (Term.sort (SortLevel.concrete 1)) (Term.var 1 DebugName.unnamed) in
+    let t : Term := Term.lam binder_anon (Term.sort (SortLevel.concrete 1)) (Term.var 1 DebugName.unnamed) in
     match term_shift 5 t {
         Term.lam _ _ body => I64.beq (term_var_idx body) 6,
         _ => false,
@@ -260,7 +260,7 @@ def test_term_subst_shifts_replacement_under_binder : Bool :=
     // come out shifted by that same depth, so it stays correctly
     // scoped relative to the lambda it now sits inside.
     let s : Term := Term.var 0 DebugName.unnamed in
-    let t : Term := Term.lam DebugName.unnamed (Term.sort (SortLevel.concrete 1)) (Term.var 1 DebugName.unnamed) in
+    let t : Term := Term.lam binder_anon (Term.sort (SortLevel.concrete 1)) (Term.var 1 DebugName.unnamed) in
     match term_subst 0 s t {
         Term.lam _ _ body => I64.beq (term_var_idx body) 1,
         _ => false,
@@ -380,7 +380,7 @@ def test_beta_reduce_curried_lam_partial_application : Bool :=
     // `Term.lam` structure itself intact (ready for the next arg).
     let arg : Term := Term.sort (SortLevel.concrete 42) in
     let peeled_body : Term :=
-        Term.lam DebugName.unnamed (Term.sort (SortLevel.concrete 1)) (Term.app (Term.var 1 DebugName.unnamed) (Term.var 0 DebugName.unnamed)) in
+        Term.lam binder_anon (Term.sort (SortLevel.concrete 1)) (Term.app (Term.var 1 DebugName.unnamed) (Term.var 0 DebugName.unnamed)) in
     match beta_reduce peeled_body arg {
         Term.lam _ _ inner =>
             match inner {
@@ -419,7 +419,7 @@ def test_term_shift_through_cubical_arg_is_depth_zero : Bool :=
 #[test]
 def test_term_shift_cubical_under_lam_respects_the_binder : Bool :=
     let inner : Term := cub_ineg (Term.var 0 DebugName.unnamed) in
-    let t : Term := Term.lam DebugName.unnamed (Term.sort (SortLevel.concrete 1)) inner in
+    let t : Term := Term.lam binder_anon (Term.sort (SortLevel.concrete 1)) inner in
     match term_shift 5 t {
         Term.lam _ _ body => match body {
             Term.cubical c => match c {

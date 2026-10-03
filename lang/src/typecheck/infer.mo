@@ -1,11 +1,12 @@
 use std::map {HashMap.to_list}
 use lang::types {
-  Class, Con, Cubical, CubicalPrim, DebugName, Def, FieldPattern,
+  Binder, Class, Con, Cubical, CubicalPrim, DebugName, Def, FieldPattern,
   FieldPatternEntry, Identifier, InductConstructor, Inductive, Literal,
   LocalScope, LocalVar, Location, MatchCase, ModulePath, NamePath, NameRef,
   Native, NumSuffix, Param, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, Similar, SortLevel, StructLitField, Term, TypeConstraint,
-  TypeError, binder_anon, binder_is_explicit, binder_is_level,
+  TypeError, binder_anon, binder_is_explicit, binder_is_level, binder_name,
+  binder_named,
   concrete, cub_hcomp, cub_i0, cub_i1, cub_interval, cub_is_one,
   cub_pathp, cubical_arity,
   cubical_prim_eq, cubical_prim_name, field_access_chain,
@@ -2499,8 +2500,12 @@ def is_hole (t : Term) : Bool :=
 /// a strict subterm of the lambda being checked); it is just not
 /// structurally measurable, so it is asserted here rather than gamed
 /// into scrutinee position.
+/// R2c: the parameter is the lambda's own `Binder`, not a bare `DebugName`
+/// -- mirroring `type_check_pi`, which has taken a `Binder` since R2a. A
+/// name is only needed where a local is bound, and `binder_name` peels it
+/// there.
 #[terminating]
-def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+def type_check_lam (bnd : Binder) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match expected_type {
         // An explicit binder is a real function type, so the lambda is
         // checked against it. Anything else (`BinderInfo.binder` -- a
@@ -2509,8 +2514,8 @@ def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : T
         // arm below is skipped and the chain is stripped instead.
         Term.pi b _ _ =>
             if binder_is_explicit b
-            then type_check_lam_explicit dbg t body expected_type scope local_types locals
-            else type_check_lam_strip dbg t body expected_type scope local_types locals,
+            then type_check_lam_explicit bnd t body expected_type scope local_types locals
+            else type_check_lam_strip bnd t body expected_type scope local_types locals,
         // Stage 2: a path ABSTRACTION. `fn i => body` checked against a
         // `PathP A a b` binds the binder at the interval, checks the body
         // against the line applied to the fresh dimension, and requires
@@ -2518,15 +2523,15 @@ def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : T
         // `body[i:=i0] ≡ a`, `body[i:=i1] ≡ b`. Matched BEFORE the
         // inferring arm below because that arm discards the expected
         // type, and the boundary is the whole content of this rule.
-        Term.cubical _c => check_path_lam dbg t body expected_type scope local_types locals,
-        _ => type_check_lam_inferring dbg t body scope local_types locals,
+        Term.cubical _c => check_path_lam bnd t body expected_type scope local_types locals,
+        _ => type_check_lam_inferring bnd t body scope local_types locals,
     }
 
 /// The explicit-arrow arm of `type_check_lam`. Split out so the merged
 /// `Term.pi` arm above can dispatch on the binder without re-indenting the
 /// whole rule.
 #[terminating]
-def type_check_lam_explicit (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+def type_check_lam_explicit (bnd : Binder) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match expected_type {
         Term.pi _b arg_typ ret_typ =>
             // Prefer the lambda's OWN written param type `t` over `arg_typ`
@@ -2550,7 +2555,7 @@ def type_check_lam_explicit (dbg : DebugName) (t : Term) (body : Term) (expected
             let bound_typ : Term := if is_hole t then arg_typ else t in
             let extended_types : List Term := List.cons bound_typ local_types in
             let lv : LocalVar := {
-                name := debug_name_to_id dbg,
+                name := debug_name_to_id (binder_name bnd),
                 typ := bound_typ,
                 multiplicity := Multiplicity.many,
             } in
@@ -2559,7 +2564,7 @@ def type_check_lam_explicit (dbg : DebugName) (t : Term) (body : Term) (expected
                 ok body_tt =>
                     let checked_body : Term := body_tt.term in
                     let body_typ : Term := body_tt.typ in
-                    let lam_term : Term := Term.lam dbg bound_typ checked_body in
+                    let lam_term : Term := Term.lam bnd bound_typ checked_body in
                     // The ambient Pi wins whenever its RETURN carries
                     // real information -- that is the bidirectional
                     // precision this arm exists for, and it is
@@ -2595,9 +2600,9 @@ def type_check_lam_explicit (dbg : DebugName) (t : Term) (body : Term) (expected
 /// `locals_with_def_typevars`, `lang/module.mo`), not a de Bruijn index
 /// into this binder -- so removing the binder renumbers nothing.
 #[terminating]
-def type_check_lam_strip (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+def type_check_lam_strip (bnd : Binder) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match expected_type {
-        Term.pi _b _dom cod => type_check_lam dbg t body cod scope local_types locals,
+        Term.pi _b _dom cod => type_check_lam bnd t body cod scope local_types locals,
         _ => err (TypeError.custom "type_check_lam_strip: expected a binder"),
     }
 
@@ -2606,14 +2611,14 @@ def type_check_lam_strip (dbg : DebugName) (t : Term) (body : Term) (expected_ty
 /// body. No expected type to check against: the binder's type is the
 /// written annotation (checked on its own), and the result is the Pi
 /// built from it and the body's inferred type.
-def type_check_lam_inferring (dbg : DebugName) (t : Term) (body : Term) (scope : Scope)
+def type_check_lam_inferring (bnd : Binder) (t : Term) (body : Term) (scope : Scope)
     (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match type_check t Term.hole scope local_types locals {
         ok t_tt =>
             let inferred_typ : Term := t_tt.typ in
             let extended_types : List Term := List.cons t local_types in
             let lv : LocalVar := {
-                name := debug_name_to_id dbg,
+                name := debug_name_to_id (binder_name bnd),
                 typ := t,
                 multiplicity := Multiplicity.many,
             } in
@@ -2623,7 +2628,7 @@ def type_check_lam_inferring (dbg : DebugName) (t : Term) (body : Term) (scope :
                     let checked_body : Term := body_tt.term in
                     let body_typ : Term := body_tt.typ in
                     let pi_typ : Term := Term.pi binder_anon t body_typ in
-                    let lam_term : Term := Term.lam dbg t checked_body in
+                    let lam_term : Term := Term.lam bnd t checked_body in
                     ok (mk_typed lam_term pi_typ),
                 err e => err e,
             },
@@ -2659,14 +2664,14 @@ def type_check_lam_inferring (dbg : DebugName) (t : Term) (body : Term) (scope :
 /// decrease to show. The recursion it feeds descends into a strict
 /// subterm of the lambda being checked.
 #[terminating]
-def check_path_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term)
+def check_path_lam (bnd : Binder) (t : Term) (body : Term) (expected_type : Term)
     (scope : Scope) (local_types : List Term) (locals : LocalScope)
     : Result TypeError TypedTerm :=
     match path_parts_of expected_type {
         // A cubical expected type that is not a saturated PathP is not a
         // binder shape; the same inferring fallback as `type_check_lam`'s
         // `_` arm is the honest answer for it.
-        Option.none => type_check_lam_inferring dbg t body scope local_types locals,
+        Option.none => type_check_lam_inferring bnd t body scope local_types locals,
         Option.some parts =>
             match type_check t Term.hole scope local_types locals {
                 err e => err e,
@@ -2678,20 +2683,20 @@ def check_path_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : T
                             let binder_typ : Term := cub_interval in
                             let extended_types : List Term := List.cons binder_typ local_types in
                             let lv : LocalVar := {
-                                name := debug_name_to_id dbg,
+                                name := debug_name_to_id (binder_name bnd),
                                 typ := binder_typ,
                                 multiplicity := Multiplicity.many,
                             } in
                             let extended_locals : LocalScope := scope_push_local lv locals in
                             let body_expected : Term :=
-                                Term.app (term_shift 1 parts.line) (Term.var 0 dbg) in
+                                Term.app (term_shift 1 parts.line) (Term.var 0 (binder_name bnd)) in
                             match type_check body body_expected scope extended_types extended_locals {
                                 err e => err e,
                                 ok body_tt =>
                                     match check_path_boundary body_tt.term parts scope local_types locals {
                                         err e => err e,
                                         ok _ =>
-                                            let lam_term : Term := Term.lam dbg binder_typ body_tt.term in
+                                            let lam_term : Term := Term.lam bnd binder_typ body_tt.term in
                                             ok (mk_typed lam_term expected_type),
                                     },
                             },
@@ -6080,8 +6085,8 @@ def scale_module_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "s
 def scale_def_name : NamePath := NamePath.npath (List.cons (Identifier.id "scale") List.empty)
 
 def scale_def_body : Term :=
-    Term.lam (DebugName.named (Identifier.id "factor")) (Term.sort (SortLevel.concrete 2))
-        (Term.lam (DebugName.named (Identifier.id "p")) (Term.sort (SortLevel.concrete 2)) (Term.sort (SortLevel.concrete 1)))
+    Term.lam (binder_named (Identifier.id "factor")) (Term.sort (SortLevel.concrete 2))
+        (Term.lam (binder_named (Identifier.id "p")) (Term.sort (SortLevel.concrete 2)) (Term.sort (SortLevel.concrete 1)))
 
 def scale_def : Def := {
     name := scale_def_name,

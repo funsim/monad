@@ -6,8 +6,10 @@ use lang::types {
   Operator, Param, QualifiedName, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, ScopeInstance, Similar, SortLevel, Struct, StructField,
   StructLitField, Term, TypeConstraint, UseFilter, UseItem, Visibility,
-  attr_args, binder_anon, binder_binder, binder_is_explicit, binder_is_level,
-  binder_level, binder_name, cubical_prim_of_name, f32, f64, i16, i32, i64, i8, id_member,
+  attr_args, binder_anon, binder_binder, binder_explicit, binder_is_explicit,
+  binder_is_level,
+  binder_level, binder_name, binder_named, cubical_prim_of_name, f32, f64, i16, i32,
+  i64, i8, id_member,
   many, mk, name_path_similar, open_all, open_only, package_private, param_many,
   priv_, pub_, show_identifier, show_module_path, show_name_path, show_operator,
   term_peel, u16, u32, u64, u8, union_ids, use_bare, use_glob, use_items,
@@ -603,7 +605,7 @@ def cubical_marker_prim_args (args : List AttrArg) : Option CubicalPrim :=
 def def_params_of_term (t : Term) : List Param :=
     match t {
         Term.lam dbg typ body =>
-            List.cons (param_many (scope_debug_name_to_id dbg) typ) (def_params_of_term body),
+            List.cons (param_many (scope_debug_name_to_id (binder_name dbg)) typ) (def_params_of_term body),
         _ => List.empty,
     }
 
@@ -2081,7 +2083,7 @@ def resolve_open_alias_term_scoped (names : HashMap String String) (bound : List
                 DebugName.unnamed => t,
             },
         Term.lam dbg typ body =>
-            Term.lam dbg (resolve_open_alias_term_scoped names bound typ) (resolve_open_alias_term_scoped names (push_bound_dbg bound dbg) body),
+            Term.lam dbg (resolve_open_alias_term_scoped names bound typ) (resolve_open_alias_term_scoped names (push_bound_dbg bound (binder_name dbg)) body),
         // The quantifier's own name enters scope only inside its BODY --
         // which is what the old `Term.forall` arm did and the old `Term.pi`
         // arm deliberately did not, since an arrow's binder name is
@@ -2885,7 +2887,7 @@ def prepend_dict_lams (constraints : List TypeConstraint) (term_ : Term) : Term 
             match c {
                 TypeConstraint.mk cls _ =>
                     let dbg := DebugName.named (Identifier.id (dict_param_name cls)) in
-                    Term.lam dbg (dict_param_type_placeholder c) (prepend_dict_lams rest term_),
+                    Term.lam (binder_explicit dbg) (dict_param_type_placeholder c) (prepend_dict_lams rest term_),
             },
     }
 
@@ -4021,8 +4023,8 @@ def uninformative_carriers (cs : List Term) : List Term :=
 /// `body`'s, not `T`, so reading `T` for it would hand a call site a
 /// carrier its argument does not have.
 #[partial]
-def ann_lambda_carrier (dbg : DebugName) (typ : Term) (body : Term) : Option Term :=
-    match dbg {
+def ann_lambda_carrier (bnd : Binder) (typ : Term) (body : Term) : Option Term :=
+    match binder_name bnd {
         DebugName.named id =>
             match body {
                 Term.var _ bdbg =>
@@ -6158,7 +6160,7 @@ def resolve_class_call_term_go (classes : List Class) (instances : List Instance
         Term.ctx loc inner =>
             Term.ctx loc (resolve_class_call_term_go classes instances ctor_owners def_constraints def_types ctor_field_types env dict_env def_carrier expect inner),
         Term.lam dbg typ body =>
-            match dbg {
+            match binder_name dbg {
                 DebugName.named id =>
                     let bound_typ : Term := lam_binder_type typ expect in
                     let dict_class := dict_binding_class_of id in
@@ -6382,7 +6384,7 @@ def let_binder_type (env : List LocalTypeBinding) (ctor_owners : List CtorOwner)
 def let_binder_rewrite (env : List LocalTypeBinding) (ctor_owners : List CtorOwner) (def_types : HashMap String Term) (ctor_field_types : List CtorFieldTypes) (head : Term) (args : List Term) : Term :=
     match head {
         Term.lam ldbg ltyp lbody =>
-            match ldbg {
+            match binder_name ldbg {
                 DebugName.named _ =>
                     match args {
                         List.cons v rest =>
@@ -8062,7 +8064,7 @@ def name_path_to_str_scope (np : NamePath) : String :=
 def test_add_constraint_dict_params_adds_pi_and_lam : Bool :=
     // def show_twice [Show A] (x : A) : String := Show.show x
     let show_call := Term.app (Term.var 1 (DebugName.named (Identifier.id "Show.show"))) (Term.var 0 (DebugName.named (Identifier.id "x"))) in
-    let orig_term := Term.lam (DebugName.named (Identifier.id "x")) Term.hole show_call in
+    let orig_term := Term.lam (binder_named (Identifier.id "x")) Term.hole show_call in
     let orig_typ := Term.pi binder_anon Term.hole (Term.sort (SortLevel.concrete 1)) in
     let constraint := TypeConstraint.mk (NamePath.npath (List.cons (Identifier.id "Show") List.empty)) (List.cons (Identifier.id "A") List.empty) in
     let d := Def.mk (NamePath.npath (List.cons (Identifier.id "show_twice") List.empty)) orig_typ orig_term

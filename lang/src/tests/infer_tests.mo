@@ -3,7 +3,8 @@ use lang::types {
   Attribute, Binder, BinderInfo, DebugName, Decl, FieldPattern, FieldPatternEntry,
   Identifier, CubicalPrim, InductConstructor, Inductive, MatchCase, ModulePath,
   NamePath, Param, Scope, ScopeClassDef, ScopeData, Similar, Term, TypeError,
-  binder_anon, binder_binder, char, cub_i0, cub_i1, cub_ijoin, cub_imeet, cub_ineg,
+  binder_anon, binder_binder, binder_explicit, char, cub_i0, cub_i1, cub_ijoin,
+  cub_imeet, cub_ineg,
   cub_interval, if_, many, match_, package_private, sentinel, sort_n,
 }
 use lib::scope {build_scope_from_decls, scope_find_inductive}
@@ -223,7 +224,7 @@ def test_lam_check_mode : Bool :=
     let body : Term := Term.var 0 dbg in
     let arg_typ : Term := sort_n 1 in
     let expected : Term := Term.pi binder_anon arg_typ arg_typ in
-    let lam : Term := Term.lam dbg arg_typ body in
+    let lam : Term := Term.lam (binder_explicit dbg) arg_typ body in
     match run_check lam expected {
         ok tt =>
             match tt { mk _ typ => Similar.similar typ expected },
@@ -235,7 +236,7 @@ def test_lam_infer_mode : Bool :=
     let dbg : DebugName := DebugName.named (Identifier.id "x") in
     let body : Term := Term.var 0 dbg in
     let arg_typ : Term := sort_n 1 in
-    let lam : Term := Term.lam dbg arg_typ body in
+    let lam : Term := Term.lam (binder_explicit dbg) arg_typ body in
     match run_check lam Term.hole {
         ok tt =>
             match tt { mk _ typ =>
@@ -252,7 +253,7 @@ def test_lam_unnamed : Bool :=
     let body : Term := Term.var 0 dbg in
     let arg_typ : Term := sort_n 1 in
     let expected : Term := Term.pi binder_anon arg_typ arg_typ in
-    let lam : Term := Term.lam dbg arg_typ body in
+    let lam : Term := Term.lam (binder_explicit dbg) arg_typ body in
     match run_check lam expected {
         ok _ => true,
         err _ => false,
@@ -265,7 +266,7 @@ def test_app_id : Bool :=
     let x_dbg : DebugName := DebugName.named (Identifier.id "x") in
     let arg_typ : Term := sort_n 1 in
     let id_body : Term := Term.var 0 x_dbg in
-    let id_lam : Term := Term.lam x_dbg arg_typ id_body in
+    let id_lam : Term := Term.lam (binder_explicit x_dbg) arg_typ id_body in
     // The lambda is `Sort 1 -> Sort 1`, so its argument must have type
     // `Sort 1` -- which `Sort 0` does (`Sort 0 : Sort 1`). This used to
     // be applied to `Sort 1`, which is `Sort 1 : Sort 1` -- true only
@@ -281,7 +282,7 @@ def test_app_with_hole_return : Bool :=
     let x_dbg : DebugName := DebugName.named (Identifier.id "x") in
     let arg_typ : Term := sort_n 1 in
     let id_body : Term := Term.var 0 x_dbg in
-    let id_lam : Term := Term.lam x_dbg arg_typ id_body in
+    let id_lam : Term := Term.lam (binder_explicit x_dbg) arg_typ id_body in
     let result : Term := Term.app id_lam (sort_n 0) in
     match run_check result Term.hole {
         ok _ => true,
@@ -941,8 +942,8 @@ def test_lam_app_chain : Bool :=
     let arg_a : Term := sort_n 1 in
     let arg_b : Term := sort_n 1 in
     let ret_typ : Term := sort_n 1 in
-    let inner_lam : Term := Term.lam y_dbg arg_b (Term.var 0 y_dbg) in
-    let outer_lam : Term := Term.lam x_dbg arg_a inner_lam in
+    let inner_lam : Term := Term.lam (binder_explicit y_dbg) arg_b (Term.var 0 y_dbg) in
+    let outer_lam : Term := Term.lam (binder_explicit x_dbg) arg_a inner_lam in
     // Both lambdas are `Sort 1 -> ...`, so both arguments must have type
     // `Sort 1` -- `Sort 0` does. See `test_app_id` above: passing
     // `Sort 1` here asserted `Sort 1 : Sort 1`.
@@ -1137,7 +1138,7 @@ def quantifier_pin_expected : Term :=
 /// reached the body.
 #[test]
 def test_quantifier_expected_still_rejects_bad_body : Bool :=
-    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) quantifier_pin_expected {
+    match run_check (Term.lam binder_anon (sort_n 1) (sort_n 1)) quantifier_pin_expected {
         ok _ => false,
         err _ => true,
     }
@@ -1146,7 +1147,7 @@ def test_quantifier_expected_still_rejects_bad_body : Bool :=
 /// the pin above would also pass if the arm simply rejected everything.
 #[test]
 def test_quantifier_expected_still_accepts_good_body : Bool :=
-    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 0)) quantifier_pin_expected {
+    match run_check (Term.lam binder_anon (sort_n 1) (sort_n 0)) quantifier_pin_expected {
         ok _ => true,
         err _ => false,
     }
@@ -1156,7 +1157,7 @@ def test_quantifier_expected_still_accepts_good_body : Bool :=
 /// than being special.
 #[test]
 def test_plain_pi_expected_rejects_bad_body : Bool :=
-    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) quantifier_pin_pi {
+    match run_check (Term.lam binder_anon (sort_n 1) (sort_n 1)) quantifier_pin_pi {
         ok _ => false,
         err _ => true,
     }

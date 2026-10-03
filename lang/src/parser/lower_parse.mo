@@ -575,7 +575,7 @@ def lower_parse_kind (ctx : ParseLowerCtx) (k : ParseTermKind) : Term :=
         // `lam`/`forall`/`pi` bind over their BODY only, never over their
         // own type/argument -- the type is lowered in the OUTER ctx.
         ParseTermKind.lam name typ body =>
-            Term.lam (DebugName.named name)
+            Term.lam (binder_named name)
                      (lower_parse_term_bare ctx typ)
                      (lower_parse_term (lower_ctx_bind name ctx) body),
         // R2b folded `Term.forall` into `Term.pi`; a parse-stage `forall`
@@ -827,11 +827,11 @@ def lower_parse_do_stmt (ctx : ParseLowerCtx) (s : DoStmt) (ss : List DoStmt) (r
         // continuation is lowered one binder deeper.
         DoStmt.bind_s name typ expr =>
             Term.app (Term.app monad_bind_term (lower_parse_term ctx expr))
-                     (Term.lam (DebugName.named name)
+                     (Term.lam (binder_named name)
                                (lower_parse_term_bare ctx typ)
                                (lower_parse_do_inner (lower_ctx_bind name ctx) ss rest)),
         DoStmt.let_s name typ expr =>
-            Term.app (Term.lam (DebugName.named name)
+            Term.app (Term.lam (binder_named name)
                                (lower_parse_term_bare ctx typ)
                                (lower_parse_do_inner (lower_ctx_bind name ctx) ss rest))
                      (lower_parse_term ctx expr),
@@ -867,7 +867,7 @@ def lower_parse_do_expr_stmt (ctx : ParseLowerCtx) (expr : ParseTerm) (ss : List
         List.empty => lower_parse_term ctx expr,
         List.cons _ _ =>
             Term.app (Term.app monad_bind_term (lower_parse_term ctx expr))
-                     (Term.lam DebugName.unnamed
+                     (Term.lam binder_anon
                                Term.hole
                                (lower_parse_do_inner (lower_ctx_bind (Identifier.id "") ctx) ss rest)),
     }

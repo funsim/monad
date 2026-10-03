@@ -34,7 +34,8 @@ use std::list {List.length}
 use lang::types {
   AttrArg, Attribute, Class, ClassDef, Decl, Def, Identifier, InductConstructor,
   Inductive, Instance, ModulePath, NamePath, Param, Struct, StructField, Term,
-  TypeConstraint, concrete, empty_attrs, id_eq, level_const, many, named, npath,
+  TypeConstraint, binder_anon, concrete, empty_attrs, id_eq, level_const, many,
+  named, npath,
   package_private, sentinel, show_identifier, unnamed,
 }
 use lib::typecheck::macro_apply {expand_decl_gen_call}
@@ -557,7 +558,7 @@ def test_expand_decls_drops_term_macro_definitions : Bool :=
     // `defmacro double x := x` on its own -- consumed into the
     // registry, produces zero output decl_list.
     let double_name : NamePath := NamePath.npath (List.cons (Identifier.id "double") List.empty) in
-    let body : Term := Term.lam DebugName.unnamed Term.hole (Term.var 0 DebugName.unnamed) in
+    let body : Term := Term.lam binder_anon Term.hole (Term.var 0 DebugName.unnamed) in
     let macro_def : Decl := Decl.def_macro_d (Def.mk double_name Term.hole body empty_constraints empty_attrs Visibility.package_private List.empty) in
     match expand_decls (List.cons macro_def List.empty) {
         List.empty => true,
@@ -570,7 +571,7 @@ def test_expand_decls_expands_term_position_macro_call_inside_a_def : Bool :=
     // ordinary def's own `term` field gets its macro call resolved,
     // and the macro definition itself is dropped from the output.
     let double_name : NamePath := NamePath.npath (List.cons (Identifier.id "double") List.empty) in
-    let body : Term := Term.lam DebugName.unnamed Term.hole (Term.var 0 DebugName.unnamed) in
+    let body : Term := Term.lam binder_anon Term.hole (Term.var 0 DebugName.unnamed) in
     let macro_def : Decl := Decl.def_macro_d (Def.mk double_name Term.hole body empty_constraints empty_attrs Visibility.package_private List.empty) in
     let call : Term := Term.app (Term.var_macro (0 - 1) (DebugName.named (Identifier.id "double"))) (Term.sort (SortLevel.concrete 9)) in
     let y_def : Decl := Decl.def_d (Def.mk dummy_path Term.hole call empty_constraints empty_attrs Visibility.package_private List.empty) in

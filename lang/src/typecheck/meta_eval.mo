@@ -30,7 +30,8 @@ use lang::core_value {
 }
 use lib::lower_core_ir {LowerCtx, LowerError, lower_ctx_from_decls, lower_root}
 use lang::types {
-  DebugName, Decl, Identifier, ModulePath, NamePath, Term, app, hole, i64, lam,
+  DebugName, Decl, Identifier, ModulePath, NamePath, Term, app, binder_explicit, hole,
+  i64, lam,
   lit, mk, named, ntv, num, package_private, show_name_path, var,
 }
 
@@ -182,7 +183,7 @@ def irlit_num_is (l : IrLit) (expected : I64) : Bool :=
 /// `def const_answer (x : Hole) : I64 := 42` -- ignores its argument
 /// entirely, proving the basic lower+eval+apply plumbing works even
 /// when the meta-def never touches `arg`.
-def const_answer_term : Term := Term.lam (named_ "x") Term.hole (num_ 42)
+def const_answer_term : Term := Term.lam (binder_explicit (named_ "x")) Term.hole (num_ 42)
 def const_answer_decls : List Decl := List.cons (def_decl_ "const_answer" const_answer_term) List.empty
 
 #[test]
@@ -196,7 +197,7 @@ def test_meta_eval_invoke_ignores_arg_returns_literal : Bool :=
 /// proving `apply` really threads the supplied `Value` through, not
 /// just that a constant body evaluates.
 def add_one_term : Term :=
-    Term.lam (named_ "n") Term.hole (Term.ntv (Native.mk (Identifier.id "i64_add") 2 (List.cons (Option.some (Term.var 0 (named_ "n"))) (List.cons (Option.some (num_ 1)) List.empty))))
+    Term.lam (binder_explicit (named_ "n")) Term.hole (Term.ntv (Native.mk (Identifier.id "i64_add") 2 (List.cons (Option.some (Term.var 0 (named_ "n"))) (List.cons (Option.some (num_ 1)) List.empty))))
 def add_one_decls : List Decl := List.cons (def_decl_ "add_one" add_one_term) List.empty
 
 #[test]
@@ -213,9 +214,9 @@ def test_meta_eval_invoke_applies_arg_through_native : Bool :=
 /// `std/derive.mo` meta-def actually needs: `derive_lens_meta` calls
 /// `lens_decls_for_ctor` calls `lens_field_decl` calls ...).
 def double_term : Term :=
-    Term.lam (named_ "n") Term.hole (Term.ntv (Native.mk (Identifier.id "i64_add") 2 (List.cons (Option.some (Term.var 0 (named_ "n"))) (List.cons (Option.some (Term.var 0 (named_ "n"))) List.empty))))
+    Term.lam (binder_explicit (named_ "n")) Term.hole (Term.ntv (Native.mk (Identifier.id "i64_add") 2 (List.cons (Option.some (Term.var 0 (named_ "n"))) (List.cons (Option.some (Term.var 0 (named_ "n"))) List.empty))))
 def quadruple_term : Term :=
-    Term.lam (named_ "n") Term.hole (Term.app (free_var_ "double") (Term.app (free_var_ "double") (Term.var 0 (named_ "n"))))
+    Term.lam (binder_explicit (named_ "n")) Term.hole (Term.app (free_var_ "double") (Term.app (free_var_ "double") (Term.var 0 (named_ "n"))))
 def quadruple_decls : List Decl :=
     List.cons (def_decl_ "double" double_term) (List.cons (def_decl_ "quadruple" quadruple_term) List.empty)
 

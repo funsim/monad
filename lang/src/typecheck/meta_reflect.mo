@@ -39,7 +39,8 @@ use lib::core_value {Value}
 use lib::scope {struct_fields_to_params}
 use lang::types {
   Attribute, Decl, Def, Identifier, InductConstructor, Inductive, MatchCase,
-  NamePath, Param, Struct, Term, TypeConstraint, binder_anon, i64, if_, many, match_, mk,
+  NamePath, Param, Struct, Term, TypeConstraint, binder_anon, binder_named, i64, if_,
+  many, match_, mk,
   named, no_attrs, npath, num, package_private, sentinel, show_name_path, str,
   unnamed,
 }
@@ -424,7 +425,7 @@ def reify_e_lam (locals : List String) (args : List Value) : Result String Term 
                                             match reify_expr_value (push_locals (List.cons pname List.empty) locals) body_val {
                                                 Result.err e => Result.err e,
                                                 Result.ok body_term =>
-                                                    Result.ok (Term.lam (DebugName.named (Identifier.id pname)) ptyp_term body_term),
+                                                    Result.ok (Term.lam (binder_named (Identifier.id pname)) ptyp_term body_term),
                                             },
                                     },
                             },
@@ -664,7 +665,7 @@ def build_lam_chain (ps : List (Pair String Term)) (body : Term) : Term :=
     match ps {
         List.empty => body,
         List.cons p rest =>
-            match p { Pair.pair name typ => Term.lam (DebugName.named (Identifier.id name)) typ (build_lam_chain rest body) },
+            match p { Pair.pair name typ => Term.lam (binder_named (Identifier.id name)) typ (build_lam_chain rest body) },
     }
 
 def no_constraints : List TypeConstraint := List.empty

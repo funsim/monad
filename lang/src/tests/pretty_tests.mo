@@ -1,8 +1,8 @@
 use lang::types {
   Attribute, Class, ClassDef, Con, Decl, Def, Identifier, InductConstructor,
   Inductive, Instance, Literal, MatchCase, ModulePath, NamePath, Native, Operator,
-  Param, Struct, StructField, Term, TypeConstraint, affine, binder_anon, binder_binder, f64,
-  i32, i64, i8,
+  Param, Struct, StructField, Term, TypeConstraint, affine, binder_anon, binder_binder,
+  binder_named, f64, i32, i64, i8,
   linear, many, named, open_all, package_private, show_identifier,
   show_module_path, sort_n, u32, unnamed, use_bare, zero,
 }
@@ -165,7 +165,7 @@ def test_show_term_sort_type : Bool :=
 #[test]
 def test_show_term_lam_simple : Bool :=
     let body : Term := Term.var 0 (DebugName.named test_id_x) in
-    let lam : Term := Term.lam (DebugName.named test_id_x) (sort_n 1) body in
+    let lam : Term := Term.lam (binder_named test_id_x) (sort_n 1) body in
     let result : String := show_term lam in
     String.beq result "(fn x : Type => x)"
 
@@ -303,7 +303,7 @@ def test_show_term_con_with_args : Bool :=
 def test_show_decl_def : Bool :=
     let name : NamePath := NamePath.npath (List.cons (Identifier.id "id") List.empty) in
     let typ : Term := Term.pi binder_anon (sort_n 1) (Term.pi binder_anon (Term.var 2 (DebugName.named test_id_A)) (Term.var 0 (DebugName.named test_id_A))) in
-    let body : Term := Term.lam (DebugName.named test_id_x) (Term.var 1 (DebugName.named test_id_A)) (Term.var 0 (DebugName.named test_id_x)) in
+    let body : Term := Term.lam (binder_named test_id_x) (Term.var 1 (DebugName.named test_id_A)) (Term.var 0 (DebugName.named test_id_x)) in
     let def_ : Def := Def.mk name typ body empty_constraints empty_attrs Visibility.package_private List.empty in
     let decl : Decl := Decl.def_d def_ in
     let result : String := show_decl decl in

@@ -9,11 +9,12 @@ use std::map {HashMap}
 use std::list {List.any, List.intercalate, List.length}
 use lang::mote {Mote.toolchain_root}
 use lang::types {
-  AttrArg, Attribute, Con, DebugName, Decl, Def, Identifier, InductConstructor,
+  AttrArg, Attribute, Binder, Con, DebugName, Decl, Def, Identifier, InductConstructor,
   Inductive, Literal, LocalScope, Location, MatchCase, ModulePath, Multiplicity,
   NamePath, Native, Operator, Param, Scope, ScopeData, Struct, StructField,
   StructLitField, Term, TypeConstraint, UseFilter, UseItem, Visibility,
-  binder_is_explicit, char_to_string, concrete, empty_attrs, group, i64, id_eq,
+  binder_is_explicit, binder_name, binder_named, char_to_string, concrete, empty_attrs,
+  group, i64, id_eq,
   ident, param_many, sentinel, show_identifier, show_module_path, term_peel,
 }
 use llvm::ir {
@@ -1683,10 +1684,10 @@ def prepend_loc_marker_go (d : Option DbgLoc) (instrs : List LLVMInstruction) : 
     }
 
 #[partial]
-def compile_db_lam_ir (c : CodegenCtx) (dbg : DebugName) (typ : Term) (body : Term) : CompileResult :=
+def compile_db_lam_ir (c : CodegenCtx) (bnd : Binder) (typ : Term) (body : Term) : CompileResult :=
     match fresh_label c "lambda" {
         CtxStrPair.mk ctx1 lam_name =>
-            let name : Identifier := match dbg {
+            let name : Identifier := match binder_name bnd {
                 named id => id,
                 unnamed => Identifier.id "x",
             } in
@@ -2507,7 +2508,7 @@ def compile_db_app_ir (c : CodegenCtx) (fun : Term) (arg : Term) : CompileResult
 def try_compile_let_beta_db (c : CodegenCtx) (fun : Term) (arg : Term) : Option CompileResult :=
     match fun {
         Term.lam dbg _typ body =>
-            let name : Identifier := match dbg {
+            let name : Identifier := match binder_name dbg {
                 named id => id,
                 unnamed => Identifier.id "_",
             } in
@@ -5348,8 +5349,8 @@ def native_attr (target : String) : List Attribute :=
 /// this, not a bare `Term.hole`.
 #[partial]
 def native_def_fixture (name : String) (target : String) : Def :=
-    let body := Term.lam (DebugName.named (Identifier.id "a")) Term.hole
-        (Term.lam (DebugName.named (Identifier.id "b")) Term.hole Term.hole) in
+    let body := Term.lam (binder_named (Identifier.id "a")) Term.hole
+        (Term.lam (binder_named (Identifier.id "b")) Term.hole Term.hole) in
     Def.mk (NamePath.npath (List.cons (Identifier.id name) List.empty)) Term.hole body
         List.empty (native_attr target) Visibility.package_private List.empty
 
@@ -5612,9 +5613,9 @@ def test_compile_db_decls_ir_default_has_no_debug_info : Bool :=
 #[partial]
 def native_bool_over_branching_fixture_def : Def :=
     Def.mk (NamePath.npath [Identifier.id "spbeq"]) (Term.sort (SortLevel.concrete 1))
-        (Term.lam (DebugName.named (Identifier.id "b")) (Term.sort (SortLevel.concrete 1))
-            (Term.lam (DebugName.named (Identifier.id "x")) (Term.sort (SortLevel.concrete 1))
-                (Term.lam (DebugName.named (Identifier.id "y")) (Term.sort (SortLevel.concrete 1))
+        (Term.lam (binder_named (Identifier.id "b")) (Term.sort (SortLevel.concrete 1))
+            (Term.lam (binder_named (Identifier.id "x")) (Term.sort (SortLevel.concrete 1))
+                (Term.lam (binder_named (Identifier.id "y")) (Term.sort (SortLevel.concrete 1))
                     (Term.app
                         (Term.app (Term.var 3 (DebugName.named (Identifier.id "I64.beq")))
                             (Term.lit (Literal.if_

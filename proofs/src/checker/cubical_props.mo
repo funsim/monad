@@ -29,7 +29,7 @@ use lang::typecheck::cubical {peels_to_bare_interval}
 use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
 use lang::typecheck::whnf {whnf}
 use lang::types {
-  CubicalPrim, ModulePath, Scope, ScopeData, SortLevel, Similar, Term,
+  CubicalPrim, ModulePath, Scope, ScopeData, SortLevel, Similar, Term, binder_named,
   cub, cub_face_eq0, cub_face_eq1, cub_hcomp, cub_i0, cub_i1, cub_imeet,
   cub_ijoin, cub_ineg, cub_interval, cub_is_one, cub_pathp, cub_transp,
   cubical_prim_eq, sentinel, sort_n,
@@ -298,7 +298,7 @@ def test_cubical_call_rejects_non_interval_argument : Bool :=
 /// formation rule INFERS the line, and a hole domain is exactly the
 /// shape `path_line_dom_ok` accepts.
 def const_line : Term :=
-    Term.lam (DebugName.named (Identifier.id "i")) Term.hole (free_var "I")
+    Term.lam (binder_named (Identifier.id "i")) Term.hole (free_var "I")
 
 /// The saturated source spine `PathP line left right`, with the
 /// endpoints in their SOURCE spelling so the pins exercise the rewrite
@@ -368,7 +368,7 @@ def test_pathp_rejects_a_line_not_out_of_the_interval : Bool :=
     // line rule accepts -- a sort domain is not the interval.
     check_fails_in cubical_scope
         (pathp_call
-            (Term.lam (DebugName.named (Identifier.id "i")) (sort_n 1) (free_var "I"))
+            (Term.lam (binder_named (Identifier.id "i")) (sort_n 1) (free_var "I"))
             "i0" "i1")
 
 #[test]
@@ -377,7 +377,7 @@ def test_pathp_rejects_a_line_not_into_a_sort : Bool :=
     // is read off the line's codomain -- there is none to read.
     check_fails_in cubical_scope
         (pathp_call
-            (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (free_var "i0"))
+            (Term.lam (binder_named (Identifier.id "i")) Term.hole (free_var "i0"))
             "i0" "i1")
 
 #[test]
@@ -387,7 +387,7 @@ def test_pathp_rejects_an_endpoint_not_in_the_line : Bool :=
     // endpoints are checked AGAINST `A i0`/`A i1`, not merely collected.
     check_fails_in cubical_scope
         (Term.app (Term.app (Term.app (free_var "PathP") const_line)
-            (Term.lam (DebugName.named (Identifier.id "j")) Term.hole (free_var "i0")))
+            (Term.lam (binder_named (Identifier.id "j")) Term.hole (free_var "i0")))
             (free_var "i1"))
 
 // ─── Stage 2: path abstraction (check_path_lam) ──────────────────────────
@@ -415,7 +415,7 @@ def test_path_abstraction_checks_with_an_interval_binder : Bool :=
     // accepted -- and the checked binder is the interval itself, not
     // the hole the source wrote.
     checks_with_interval_binder cubical_scope empty_local_types
-        (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (free_var "i0"))
+        (Term.lam (binder_named (Identifier.id "i")) Term.hole (free_var "i0"))
         (cub_pathp const_line (cub_i0) (cub_i0))
 
 #[test]
@@ -424,7 +424,7 @@ def test_path_abstraction_rejects_a_wrong_i1_boundary : Bool :=
     // constantly `i0`, so at `i1` it disagrees with the type's right
     // endpoint.
     check_fails_against cubical_scope
-        (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (free_var "i0"))
+        (Term.lam (binder_named (Identifier.id "i")) Term.hole (free_var "i0"))
         (cub_pathp const_line (cub_i0) (cub_i1))
 
 #[test]
@@ -433,7 +433,7 @@ def test_path_abstraction_rejects_a_wrong_i0_boundary : Bool :=
     // that disagrees this time -- both directions of the rule are
     // pinned, not just the first one the walk hits.
     check_fails_against cubical_scope
-        (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (free_var "i1"))
+        (Term.lam (binder_named (Identifier.id "i")) Term.hole (free_var "i1"))
         (cub_pathp const_line (cub_i0) (cub_i1))
 
 #[test]
@@ -442,7 +442,7 @@ def test_path_abstraction_rejects_a_non_interval_binder : Bool :=
     // interval; a sort is not a dimension, even though both boundaries
     // would otherwise agree.
     check_fails_against cubical_scope
-        (Term.lam (DebugName.named (Identifier.id "i")) (sort_n 1) (free_var "i0"))
+        (Term.lam (binder_named (Identifier.id "i")) (sort_n 1) (free_var "i0"))
         (cub_pathp const_line (cub_i0) (cub_i0))
 
 // ─── Stage 2: path application and the stuck-endpoint mitigation ──────────
@@ -500,7 +500,7 @@ def test_path_applied_at_a_stuck_dimension_stays_an_application : Bool :=
 /// `fn i => p (ineg i)` with `p` one binder out: the body is a path
 /// application at the negated dimension.
 def sym_body : Term :=
-    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
+    Term.lam (binder_named (Identifier.id "i")) Term.hole
         (Term.app (local_at 1 "p")
             (cub_ineg (local_at 0 "i")))
 
@@ -594,7 +594,7 @@ def test_transp_rejects_a_line_not_out_of_the_interval : Bool :=
     // the interval can have.
     check_fails_in cubical_scope
         (transp_call
-            (Term.lam (DebugName.named (Identifier.id "i")) (sort_n 1) (free_var "I"))
+            (Term.lam (binder_named (Identifier.id "i")) (sort_n 1) (free_var "I"))
             (free_var "i0"))
 
 #[test]
@@ -604,7 +604,7 @@ def test_transp_rejects_a_line_not_into_a_sort : Bool :=
     // is read off the line's codomain, and there is none.
     check_fails_in cubical_scope
         (transp_call
-            (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (free_var "i0"))
+            (Term.lam (binder_named (Identifier.id "i")) Term.hole (free_var "i0"))
             (free_var "i0"))
 
 #[test]
@@ -619,7 +619,7 @@ def test_transp_rejects_a_line_into_a_non_sort_family : Bool :=
     check_fails_against_with cubical_scope
         (List.cons path_typ (List.cons (local_at 0 "p") empty_local_types))
         (transp_call
-            (Term.lam (DebugName.named (Identifier.id "i")) Term.hole (local_at 1 "p"))
+            (Term.lam (binder_named (Identifier.id "i")) Term.hole (local_at 1 "p"))
             (local_at 1 "q"))
         Term.hole
 
@@ -630,7 +630,7 @@ def test_transp_rejects_an_element_not_in_the_line : Bool :=
     // not a dimension.
     check_fails_in cubical_scope
         (transp_call const_line
-            (Term.lam (DebugName.named (Identifier.id "j")) Term.hole (free_var "i0")))
+            (Term.lam (binder_named (Identifier.id "j")) Term.hole (free_var "i0")))
 
 // ─── Stage 3: the direction of the endpoint reads ───────────────────────
 //
@@ -643,7 +643,7 @@ def test_transp_rejects_an_element_not_in_the_line : Bool :=
 /// over the varying family below carries this inner line, and the
 /// pin's expected type must spell it the same way to unify.
 def inner_line_checked : Term :=
-    Term.lam (DebugName.named (Identifier.id "j")) Term.hole cub_interval
+    Term.lam (binder_named (Identifier.id "j")) Term.hole cub_interval
 
 /// A genuinely varying line into a sort, in its SOURCE spelling so the
 /// pin exercises the rewrites on the way through:
@@ -651,7 +651,7 @@ def inner_line_checked : Term :=
 /// (De Morgan folds `ineg i0` to `i1`); `A i1` is a path `i0 -> i0`.
 /// The endpoints differ, which is exactly what the direction pin needs.
 def dependent_line : Term :=
-    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
+    Term.lam (binder_named (Identifier.id "i")) Term.hole
         (Term.app (Term.app (Term.app (free_var "PathP") inner_line_checked)
             (cub_i0))
             (Term.app (free_var "ineg")
@@ -661,7 +661,7 @@ def dependent_line : Term :=
 /// boundaries are the endpoints themselves -- and of no OTHER member of
 /// the family.
 def id_path : Term :=
-    Term.lam (DebugName.named (Identifier.id "j")) Term.hole
+    Term.lam (binder_named (Identifier.id "j")) Term.hole
         (Term.var 0 (DebugName.named (Identifier.id "j")))
 
 /// Does `t` peel to a lambda? The varying family's element is a path
@@ -717,7 +717,7 @@ def test_transp_in_a_constant_family_reduces_to_the_element : Bool :=
 /// through `type_check`: `fn i => PathP (fn j => I) i0 (ineg i)`, the
 /// same family the direction pin checks through.
 def varying_line : Term :=
-    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
+    Term.lam (binder_named (Identifier.id "i")) Term.hole
         (cub_pathp inner_line_checked (cub_i0)
             (cub_ineg (Term.var 0 (DebugName.named (Identifier.id "i")))))
 
@@ -990,8 +990,8 @@ def test_whnf_leaves_a_face_of_a_meet_stuck : Bool :=
 /// well-typed system over `phi`, spelled the way the checker itself
 /// builds one (a lambda chain, both binder types bound).
 def system_over (phi : Term) : Term :=
-    Term.lam (DebugName.named (Identifier.id "i")) cub_interval
-        (Term.lam (DebugName.named (Identifier.id "h")) (cub_is_one phi) cub_i0)
+    Term.lam (binder_named (Identifier.id "i")) cub_interval
+        (Term.lam (binder_named (Identifier.id "h")) (cub_is_one phi) cub_i0)
 
 /// Is `t` the checked system `fn (i : I) => fn (h : is_one φ) => base`?
 /// The INNER BINDER TYPE is the pin: the rule must build `is_one` over
@@ -1062,8 +1062,8 @@ def hcomp_call_with (a_typ : Term) (phi : Term) (sys : Term) (base : Term) : Ter
 /// takes them from the expected Pi it is checked against -- which is the
 /// path the acceptance pin exists to exercise.
 def good_system : Term :=
-    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
-        (Term.lam (DebugName.named (Identifier.id "h")) Term.hole (free_var "i0"))
+    Term.lam (binder_named (Identifier.id "i")) Term.hole
+        (Term.lam (binder_named (Identifier.id "h")) Term.hole (free_var "i0"))
 
 /// `hcomp I φ (fn i => fn h => i0) i0` -- the acceptance and reducer
 /// pins' shared spine, varying only the cofibration.
@@ -1076,8 +1076,8 @@ def hcomp_call_over (phi : Term) : Term :=
 /// pin built from one would stay green against a rule that never built
 /// the Pi at all.
 def non_system : Term :=
-    Term.lam (DebugName.named (Identifier.id "i")) Term.hole
-        (Term.lam (DebugName.named (Identifier.id "h")) Term.hole (sort_n 1))
+    Term.lam (binder_named (Identifier.id "i")) Term.hole
+        (Term.lam (binder_named (Identifier.id "h")) Term.hole (sort_n 1))
 
 /// The four checked arguments of `hcomp_call_over (free_var "i0")`: the
 /// interval, the empty face, the checked system over it, and the base.
