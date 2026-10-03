@@ -5787,12 +5787,13 @@ def desugar_struct_lit_lit (scope : Scope) (l : Literal) : Term := match l {
 /// exactly as it would for a hand-written `Point.mk 1 2`.
 /// `Option.none` = unresolvable (no head name / not registered / no
 /// constructors): leave the literal for the checker and the
-/// `validate_no_undesugared_struct_lits` gate. `term_peel` on the
-/// annotation: under `--debug` the located parser wraps it in
-/// `Term.ctx`, and `type_head_name` is ctx-blind.
+/// `validate_no_undesugared_struct_lits` gate. Under `--debug` the located
+/// parser wraps the annotation in `Term.ctx`; `type_head_name` peels that
+/// itself since R10, so this call site no longer has to -- the peel that
+/// used to sit here was the per-site obligation R10 removes.
 #[partial]
 def desugar_struct_lit_con (scope : Scope) (fields : List StructLitField) (tn : Term) : Option Con :=
-    match type_head_name (term_peel tn) {
+    match type_head_name tn {
         Option.none => Option.none,
         Option.some sname =>
             let typ_np : NamePath := NamePath.npath (List.cons sname List.empty) in

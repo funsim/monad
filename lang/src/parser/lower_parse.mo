@@ -495,8 +495,7 @@ def lower_parse_term (ctx : ParseLowerCtx) (pt : ParseTerm) : Term :=
 
 /// Lower a term WITHOUT recording a position.
 ///
-/// Used at the two positions where a wrapper would be read as structure
-/// rather than annotation:
+/// Used at the two positions where a wrapper is not worth recording:
 ///
 ///   - **R1, type position.** `type_head_name` (`lang/typecheck/infer.mo`),
 ///     `type_head_name_local` (`lang/scope.mo`), `con_spine_result_typ`,
@@ -508,6 +507,16 @@ def lower_parse_term (ctx : ParseLowerCtx) (pt : ParseTerm) : Term :=
 ///     (`lang/scope.mo`) and `spine_head`, and it is also the right
 ///     granularity for codegen: a call spine emits one call, so it wants
 ///     one position.
+///
+/// R1/R3 are no longer what makes the type position SAFE -- every one of
+/// those five probes peels `Term.ctx` itself since R10 (the `infer.mo` and
+/// `scope.mo` sites listed above; `term_matches_carrier` and
+/// `flatten_call_spine`/`spine_head` for R3 were already peeling, each
+/// carrying the measured regression that motivated it). What is left here
+/// is the smaller, honest reason: a type's own position is not a position
+/// worth emitting, so recording one is dead debug info. Keeping the
+/// placement rules matters for the IR the transparency oracle compares;
+/// correctness no longer rests on them.
 #[partial]
 def lower_parse_term_bare (ctx : ParseLowerCtx) (pt : ParseTerm) : Term :=
     lower_parse_kind ctx pt.kind

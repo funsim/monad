@@ -735,8 +735,21 @@ def validate_match_constructors (cases : List MatchCase) (scrutinee_term : Term)
 /// (`List`) and an applied generic (`List Identifier`). `Option.none`
 /// for anything else (`Term.hole`, a bound/unnamed var, ...) -- those
 /// cases fall back to `find_inductive_for_cases_by_constructor` below.
+///
+/// A location wrapper is transparent here, and the `Term.ctx` arm is what
+/// makes that structural rather than a per-call-site obligation (R10,
+/// plans/type-system/core-term-simplification.md). It matters because
+/// this function's `Option.none` is not an error -- it is a fallback to
+/// an ambiguous constructor-name scan -- so a wrapper that stops the
+/// match does not crash or fail to type: it makes an inductive resolve by
+/// the WRONG path. Placement rule R1 keeps wrappers out of type position
+/// (`lower_parse_term_bare`), which is why this has not been seen live;
+/// `class FromListLiteral` (`term_matches_carrier`'s own doc comment) is
+/// the measured regression from the one site that did not have that
+/// guarantee. The arm is the guarantee.
 def type_head_name (t : Term) : Option Identifier :=
     match t {
+        Term.ctx _loc inner => type_head_name inner,
         Term.var _ dbg =>
             match dbg {
                 DebugName.named id => Option.some id,
@@ -3108,9 +3121,21 @@ def sig_tvars_go (t : Term) (n : I64) (params : List Term) : SigInfo :=
 /// Never fails -- a shape mismatch just stops collecting (the argument
 /// was already checked successfully; this walk only recovers the
 /// type-variable instantiation, it is not the correctness gate).
+///
+/// BOTH trees are peeled at the entry (R10), and each peel fixes a
+/// different silent loss. A wrapper on the PARAMETER stops the walk at the
+/// `_ => subst` arm, so a type variable simply never gets solved. A
+/// wrapper on the ACTUAL does the same thing one level deeper -- and there
+/// it also defeats the `Term.hole` guard above, which is the guard's whole
+/// job: an actual this walk cannot see through is recorded as if it were
+/// informative, and the poison the guard exists to prevent comes back
+/// through a wrapper. Peeling cannot make the walk collect MORE than the
+/// unwrapped term would, so this can only remove wrong answers.
 #[partial]
 def solve_typevars (scope : Scope) (param : Term) (actual : Term) (subst : List (Pair Identifier Term)) : List (Pair Identifier Term) :=
-    match param {
+    let param_p : Term := term_peel param in
+    let actual_p : Term := term_peel actual in
+    match param_p {
         Term.var idx dbg =>
             if not (I64.beq idx sentinel) then subst
             else
@@ -3132,7 +3157,7 @@ def solve_typevars (scope : Scope) (param : Term) (actual : Term) (subst : List 
                         // `(List _)` -- confirmed live via a minimal
                         // probe (match-arm shape only; the annotated
                         // top-level form masked it).
-                        match actual {
+                        match actual_p {
                             Term.hole => subst,
                             // A free var that RESOLVES in scope is a
                             // concrete type name, not one of the def's
@@ -3154,20 +3179,24 @@ def solve_typevars (scope : Scope) (param : Term) (actual : Term) (subst : List 
                     DebugName.unnamed => subst,
                 },
         Term.pi p_arg p_ret =>
-            match actual {
+            match actual_p {
                 Term.pi a_arg a_ret => solve_typevars scope p_ret a_ret (solve_typevars scope p_arg a_arg subst),
                 Term.forall _ _ body => solve_typevars scope param body subst,
                 _ => subst,
             },
-        Term.forall _dbg _kind body => solve_typevars scope body actual subst,
+        Term.forall _dbg _kind body => solve_typevars scope body actual_p subst,
         Term.app p_f p_a =>
-            match actual {
+            match actual_p {
                 Term.app a_f a_a => solve_typevars scope p_f a_f (solve_typevars scope p_a a_a subst),
                 _ => subst,
             },
+        // `actual_p`, already peeled at the entry above: the peel sits at
+        // ONE entry rather than at every helper's, so the tail helpers
+        // below take their `actual` peeled by construction and carry no
+        // unreachable peel of their own.
         Term.con p_con =>
             match p_con {
-                Con.mk _name _typ_name _num_args p_args => con_solve_typevars scope p_args actual subst,
+                Con.mk _name _typ_name _num_args p_args => con_solve_typevars scope p_args actual_p subst,
             },
         _ => subst,
     }
@@ -3912,9 +3941,16 @@ def extract_non_pi_ret (f_term : Term) (a_term : Term) (expected_type : Term)
 /// itself is being inferred. Walking back to the spine head recovers the
 /// type that was known all along. Returns `fallback` for any spine whose
 /// head is not a typed constructor reference, so nothing else changes.
+///
+/// A location wrapper is transparent (R10). Both ends of the spine matter:
+/// the head is where the wrapper would hide the constructor reference, and
+/// an inner `app` is where one would end the walk early -- either way the
+/// spine falls back, which is a silent downgrade to the inferred hole type
+/// rather than an error.
 #[partial]
 def con_spine_result_typ (f_term : Term) (fallback : Term) (scope : Scope) : Term :=
     match f_term {
+        Term.ctx _loc inner => con_spine_result_typ inner fallback scope,
         Term.app g _ => con_spine_result_typ g fallback scope,
         Term.var _ dbg => qualified_con_ref_typ dbg fallback scope,
         _ => fallback,

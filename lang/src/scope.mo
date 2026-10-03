@@ -3164,9 +3164,17 @@ def return_type_after_n_args (typ : Term) (n : I64) : Term :=
 /// import it: `infer.mo` already `use`s `lang.scope`, so importing back
 /// would be a module cycle. Same dodge as this module's other small,
 /// deliberately-duplicated helpers.
+///
+/// The `Term.ctx` arm is part of the contract, not a local nicety: this
+/// function has to agree with its `infer.mo` twin on every input, and a
+/// wrapper the twin sees through but this one does not would make a
+/// carrier resolve on one side of the pipeline and not the other. R10
+/// (plans/type-system/core-term-simplification.md) is what makes that
+/// agreement structural.
 #[partial]
 def type_head_name_local (t : Term) : Option Identifier :=
     match t {
+        Term.ctx _loc inner => type_head_name_local inner,
         Term.var _ dbg =>
             match dbg {
                 DebugName.named id => Option.some id,
