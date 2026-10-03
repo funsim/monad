@@ -7,6 +7,21 @@
 # because the self-hosted reader (lang/src/toml.mo) supports headers and
 # not inline tables. Both spellings mean the same thing to the Rust host.
 
+# Every member is NAMED, and `motes/*` is deliberately not used here even
+# though the glob is supported (`Mote.expand_one_member`, lang/src/mote.mo;
+# core/src/term/mote.rs has tests pinning it, and docs/src/bootstrap-host.md
+# documents it -- this is a choice about THIS manifest, not a deprecation).
+#
+# Two reasons, and the first is the load-bearing one:
+#
+#   * The glob expands through `IO.list_dir`, so the member ORDER is whatever
+#     the filesystem returns. This repo links every mote into one whole-program
+#     scope, and it has a documented history of two same-named declarations
+#     breaking codegen elaboration with the failure flipping on load order. A
+#     written list is a deterministic one.
+#   * A new directory under motes/ joins the build by existing, which is
+#     convenient until an abandoned or half-written mote does it. Adding a line
+#     here is the review step that a glob skips.
 [workspace]
 members = [
   "init",
@@ -19,5 +34,12 @@ members = [
   "slow_tests",
   "bench",
   "proofs",
-  "motes/*",
+  "motes/demo",
+  "motes/example",
+  "motes/ffi_example",
+  "motes/http",
+  "motes/lsp",
+  "motes/moon",
+  "motes/moose",
+  "motes/toolkit",
 ]

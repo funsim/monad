@@ -221,7 +221,9 @@
       enable = true;
       name = "commit-msg-format";
       description = ''
-        Enforce "scope: msg", "scope/sub: msg", or "scope/sub(type): msg"
+        Enforce "scope: msg", "scope/sub: msg", or "scope/sub(type): msg".
+        Git's own generated messages are exempt: "Merge"/"Revert" and the
+        "fixup!"/"squash!"/"amend!" prefixes `git commit --fixup` writes
         (see scripts/check-commit-msg.sh).
       '';
       entry = "${config.devenv.root}/scripts/check-commit-msg.sh";
