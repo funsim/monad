@@ -69,10 +69,10 @@ anywhere inside the directory:
 cd game
 monad check              # check the mote containing the working directory
 monad test               # build and run its #[test] defs
-monad build . -o "$PWD/game"   # build the mote's [bin] target
+monad build . -o "$PWD/game"   # build the mote's binary target
 ```
 
-Two more tables are worth having. `[bin]` is what `monad build .` reads to
+Two more tables are worth having. `[[bin]]` is what `monad build .` reads to
 decide which file is the program and what to call it; `[dependencies.X]` is a
 `path` to another mote — the form to reach for when you have a **compiler
 checkout** rather than an install, and want `init`/`std` out of it:
@@ -81,7 +81,7 @@ checkout** rather than an install, and want `init`/`std` out of it:
 [mote]
 name = "game"
 
-[bin]
+[[bin]]
 name = "game"
 path = "src/main.mo"
 
@@ -100,6 +100,22 @@ them. If you installed the compiler with `monadup`, you do not need those
 three entries at all: an install ships the `init`, `std`, `llvm` and `runtime`
 sources beside the binary, and the compiler finds them there. Nothing in your
 `mote.toml` has to mention the standard library.
+
+Both target tables have defaults, so a mote that follows the conventions never
+declares either one:
+
+- **`[lib] path`** defaults to `src/lib.mo`, the file that makes `use game`
+  resolve from another mote. Write `lib.mo` for a library, skip it for a
+  binary-only mote.
+- **`[[bin]]`** is a list of targets, each with a `name` (defaulting to the
+  mote's own name) and a `path` (defaulting to `src/main.mo`). With no bin
+  table at all, a mote has exactly one target: `src/main.mo`, named after the
+  mote. Several targets are how one mote ships several programs —
+  `monad build <mote> --bin <name>` picks between them, and `monad build`
+  refuses rather than guessing when more than one is there.
+
+A mote needs **at least one target that exists on disk** — a library root, or
+a binary — and `monad check` says so if it has neither.
 
 A single file outside any mote still works — that is a **script module**, and
 it names its own dependencies with a file-level annotation:

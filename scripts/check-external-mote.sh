@@ -11,7 +11,7 @@
 #
 # So this script builds a mote in a temporary directory *outside* the
 # checkout and runs the compiled self-hosted binary from inside it, in the
-# six configurations an external user can be in:
+# seven configurations an external user can be in:
 #
 #   1. declared path dependencies, explicit path -- `monad check src/lib.mo`.
 #      The filed repro: everything resolves except `runtime.c`, which had no
@@ -43,6 +43,13 @@
 #      error, and only one of them was right under the hardcoded `../<head>`
 #      this replaced. Each layout ends by writing the hint's own path into the
 #      manifest and asserting the check goes green.
+#   7. A mote naming no target that exists -- no `src/lib.mo`, no
+#      `src/main.mo`, and no `[lib]`/`[[bin]]` saying otherwise. Configuration
+#      6 asserts the DECLARED-dependency gate; this asserts its sibling target
+#      gate. It is also the one configuration with no `[workspace]` anywhere
+#      above it: an external mote is a workspace of one, so the member half of
+#      that gate has nothing to say and the loaded-module half is the only
+#      thing that can report it. Ends by creating the file the error named.
 #
 # Configuration 3 also compiles and RUNS a binary, which is the only
 # assertion that covers the C runtime end to end: the program prints through
@@ -486,4 +493,58 @@ MONAD_ROOT="$toolchain" "$monad" check > "$work/undeclared-sibling-fixed.log" 2>
   || { cat "$work/undeclared-sibling-fixed.log" >&2; die "config 6: the sibling hint's path did not fix the check"; }
 ok "config 6: the sibling hint's path, written into the manifest, makes the check pass"
 
-echo "check-external-mote: an external mote loads, checks, tests and compiles in all six configurations"
+# ---------------------------------------------------------------------------
+# 7. A mote that names no target at all
+# ---------------------------------------------------------------------------
+#
+# The gate that arrived with the `[lib]`/`[[bin]]` defaults. Both target tables
+# default -- `src/lib.mo` for a library, `src/main.mo` for a binary -- so a mote
+# never has to write either one, and the gate is what keeps the defaults from
+# becoming an invention: the paths are recorded whether or not the files are
+# there, and this mote has neither.
+
+targetless="$work/nested/targetless"
+mkdir -p "$targetless/src"
+cat > "$targetless/src/probe.mo" <<'MONAD'
+// Nothing but a file for the load to have something to do with. The mote
+// around it has no target, which is the whole point.
+def answer : I64 := 42
+MONAD
+cat > "$targetless/mote.toml" <<TOML
+[mote]
+name = "targetless"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies.init]
+path = "${root}/init"
+
+[dependencies.std]
+path = "${root}/std"
+
+[dependencies.runtime]
+path = "${root}/runtime"
+TOML
+
+cd "$targetless"
+tgt_rc=0
+MONAD_ROOT="$toolchain" "$monad" check > "$work/targetless.log" 2>&1 || tgt_rc=$?
+[ "$tgt_rc" -ne 0 ] \
+  || { cat "$work/targetless.log" >&2; die "config 7: a mote with no target at all was not reported"; }
+grep -q 'has no target that exists' "$work/targetless.log" \
+  || { cat "$work/targetless.log" >&2; die "config 7: the failure was not the target gate's"; }
+# Which paths were tried depends on the manifest, so the error names them --
+# and both defaults have to be in that list, or the reader cannot tell what
+# the gate looked for.
+grep -q 'src/lib.mo' "$work/targetless.log" \
+  || { cat "$work/targetless.log" >&2; die "config 7: the error did not name the default library root"; }
+grep -q 'src/main.mo' "$work/targetless.log" \
+  || { cat "$work/targetless.log" >&2; die "config 7: the error did not name the default binary target"; }
+# A gate that cannot be satisfied is worse than none: the file the error
+# named has to be the fix.
+printf 'pub def answer : I64 := 42\n' > "$targetless/src/lib.mo"
+MONAD_ROOT="$toolchain" "$monad" check > "$work/targetless-fixed.log" 2>&1 \
+  || { cat "$work/targetless-fixed.log" >&2; die "config 7: creating the library root the error named did not make the check pass"; }
+ok "config 7: a mote naming no target that exists is reported, naming both defaults, and creating one fixes it"
+
+echo "check-external-mote: an external mote loads, checks, tests and compiles in all seven configurations"

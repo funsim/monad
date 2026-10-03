@@ -201,6 +201,15 @@ First hit wins. `init` and `std` need their own cases because their module
 *names* no longer match their *file* names — both resolve to a `lib.mo`
 re-export hub.
 
+A mote's library root is `src/lib.mo`, and every mote has one in the sense
+that `use <mote>` resolves there. The manifest's `[lib] path` is read into
+`MoteManifest.lib_path` and `monad check` requires a mote to name at least
+one target that exists on disk — a library root, or a `[[bin]]` — but
+**resolution still hardcodes `src/lib.mo`**, so a `[lib] path` pointing
+somewhere else is recorded and checked, not yet followed. Binary targets are
+the build's business rather than resolution's; see
+[Compiling and Running](./compiling.md) for `[[bin]]` and `--bin`.
+
 Every one of those is anchored at the working directory or at the importing
 file, so all of them miss for a mote in its **own** repository, standing
 somewhere that is not a compiler checkout. That is what the rest of the search

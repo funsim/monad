@@ -87,8 +87,9 @@ monad build /tmp/hello.mo -o "$PWD/hello"
 ## Commands
 
 ```text
-monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]
-        Parse, type-check and compile a source file, or a mote, to a native binary.
+monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release]
+        Parse, type-check and compile a source file, or a mote's [[bin]] target,
+        to a native binary. --bin picks one of several.
 
 monad run <path> [--verbose/-v] [--debug/-g] [--release]
         Compile and execute. The program's exit code becomes monad's.

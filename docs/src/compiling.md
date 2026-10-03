@@ -103,11 +103,15 @@ monad build hello.mo -o "$PWD/hello"
 ## The Commands
 
 ```text
-monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]
+monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]
         Parse, type-check and compile a .mo source file to a native binary.
-        <path> may also be a mote DIRECTORY, in which case its [bin] target is
-        built: `monad build cli` builds cli/src/main.mo as `monad`, the name
-        that mote's [bin] declares.
+        <path> may also be a mote DIRECTORY, in which case one of its [[bin]]
+        targets is built: `monad build cli` builds cli/src/main.mo as `monad`,
+        the name that mote's [[bin]] declares. A mote that declares no [[bin]]
+        table has one target anyway -- src/main.mo, named after the mote --
+        and a library mote that declares none and has no src/main.mo is
+        refused rather than guessed at.
+        `--bin <name>` picks one when a mote declares several [[bin]] targets.
         With NO <path>, builds the mote containing the working directory --
         the same default `check` and `test` have. `monad build` and
         `monad build .` are one code path.

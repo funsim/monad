@@ -22,7 +22,7 @@ use lib::parser {
 use parsec::core {ParseError, ParseResult}
 use lib::parser::diagnostic {parse_error_location, render_parse_error}
 use lang::mote {
-  Mote.discover, Mote.manifest_of_attr, Mote.mote_attr_unknown_keys,
+  BinTarget, Mote.discover, Mote.manifest_of_attr, Mote.mote_attr_unknown_keys,
   Mote.parse_manifest, Mote.toolchain_candidates, Mote.toolchain_missing_hint,
   Mote.toolchain_root, Mote.workspace_members, MoteManifest,
 }
@@ -60,7 +60,7 @@ use lib::typecheck::infer {empty_local_types, empty_locals, type_check}
 // for why the helpers gate themselves and why `bench_step` below prints
 // through `timing_line`).
 use std::log {module_line, timing_line}
-use std::list {List.any, List.contains_by, List.length, Show}
+use std::list {List.any, List.contains_by, List.intercalate, List.length, Show}
 use std::show {Show}
 // `ScopeData.def_refs` is a `std.map` `HashMap ModulePath ScopeDef` (see
 // `lang/scope.mo`'s own `use std.map {}` doc comment for why the import
@@ -4549,6 +4549,174 @@ def gate_declared_deps (r : Result String LoadedModules) : IO (Result String Loa
     }
 }
 
+// ─── Mote targets (package-system.md 2a, `[lib]`/`[[bin]]`) ──────────
+//
+// Every mote must have at least one target that is actually there. The model
+// in `lang/mote.mo` records where a target WOULD be -- `lib_path` is
+// `src/lib.mo` when the manifest declares no `[lib] path`, and a manifest
+// with no bin table still gets one `src/main.mo` target -- because
+// `Mote.manifest_of_table` is pure and cannot probe the filesystem. This is
+// the half that probes, so a mote whose library root was never written is
+// reported as the missing file it is rather than as whatever name happens to
+// go missing during elaboration.
+
+/// Does at least one of this mote's targets exist on disk?
+#[partial]
+def mote_has_a_target (m : MoteManifest) : IO Bool := do {
+    match m.lib_path {
+        Option.none => first_bin_on_disk m.bins,
+        Option.some p => do {
+            let there <- file_exists (Path.path p);
+            if there then return true else first_bin_on_disk m.bins
+        }
+    }
+}
+
+/// The first of `bs` whose `path` is a file; `false` when there is none.
+#[partial]
+def first_bin_on_disk (bs : List BinTarget) : IO Bool := do {
+    match bs {
+        List.empty => return false,
+        List.cons b rest => do {
+            let there <- file_exists (Path.path (BinTarget.target_path b));
+            if there then return true else first_bin_on_disk rest
+        }
+    }
+}
+
+def option_target_paths (p : Option String) : List String :=
+    match p { Option.none => List.empty, Option.some s => List.cons s List.empty }
+
+def bin_target_paths (bs : List BinTarget) : List String :=
+    match bs {
+        List.empty => List.empty,
+        List.cons b rest => List.cons (BinTarget.target_path b) (bin_target_paths rest)
+    }
+
+/// Every path the gate tried for this mote, in the order it tried them.
+def mote_target_paths (m : MoteManifest) : List String :=
+    List.append (option_target_paths m.lib_path) (bin_target_paths m.bins)
+
+/// The target-less message. Which paths were tried depends on the manifest,
+/// so they are NAMED: "none of these is a file" is only actionable if the
+/// reader can see which files were tried.
+def targetless_mote_error (m : MoteManifest) : String :=
+    let named : String :=
+        List.intercalate " and "
+            (List.map (fn (p : String) => String.concat "`" (String.concat p "`"))
+                (mote_target_paths m)) in
+    String.concat_all [
+        "error: mote `", m.name, "` has no target that exists\n",
+        "  ", raw_path_join m.dir "mote.toml", " names ", named,
+        " as its targets, and none of those is a file\n",
+        "  hint: create `", raw_path_join m.dir "src/lib.mo",
+        "` for a library mote, or add a [[bin]] table naming the file a binary mote builds",
+    ]
+
+/// `acc` with `m` added, unless a mote rooted at the same directory is
+/// already there. Directory rather than name: `dir` is what every target path
+/// is spelled from, and two spellings of one directory (`""` and `"."`) name
+/// the same tree.
+def push_mote (m : MoteManifest) (acc : List MoteManifest) : List MoteManifest :=
+    if List.any (fn (x : MoteManifest) => String.beq x.dir m.dir) acc
+    then acc
+    else List.cons m acc
+
+def push_maybe (found : Option MoteManifest) (acc : List MoteManifest) : List MoteManifest :=
+    match found { Option.none => acc, Option.some m => push_mote m acc }
+
+/// Every mote named by `dirs`, consed onto `acc`.
+#[partial]
+def motes_of_dirs (dirs : List String) (acc : List MoteManifest) : IO (List MoteManifest) := do {
+    match dirs {
+        List.empty => return acc,
+        List.cons d rest => do {
+            let found <- Mote.discover d;
+            let next : List MoteManifest := push_maybe found acc;
+            motes_of_dirs rest next
+        }
+    }
+}
+
+/// Every mote owning one of the loaded modules, consed onto `acc`.
+#[partial]
+def motes_of_infos (infos : List ModuleInfo) (acc : List MoteManifest) : IO (List MoteManifest) := do {
+    match infos {
+        List.empty => return acc,
+        List.cons info rest => do {
+            let found <- Mote.discover (extract_directory info.file_path);
+            let next : List MoteManifest := push_maybe found acc;
+            motes_of_infos rest next
+        }
+    }
+}
+
+/// The motes `gate_mote_targets` checks: the workspace's declared members,
+/// then the motes owning this load's modules.
+///
+/// BOTH halves are load-bearing, and each covers the other's hole. Members
+/// alone miss a standalone mote: `Mote.workspace_members` answers
+/// `List.empty` for a manifest with no `[workspace] members` -- a workspace
+/// of one, which is exactly the external fixture
+/// `scripts/check-external-mote.sh` builds -- so the gate would be silently
+/// absent there. Loaded modules alone miss the motes the compiler never
+/// imports: this closure reaches twelve of the twenty-one members -- `init`,
+/// `std`, `lang`, `cli`, `llvm`, `runtime`, `build`, `lsp`, `toolkit`, `json`,
+/// `parsec` and `toml` (`json` by way of `cli` -> `lsp::server` ->
+/// `toolkit::jsonrpc`) -- and reaches neither `slow_tests`, `bench`, `proofs`,
+/// `motes/demo`, `motes/example`, `motes/ffi_example`, `motes/http`,
+/// `motes/moon` nor `motes/moose`. Nothing in the tree writes `use
+/// slow_tests` at all.
+///
+/// Members come first and in manifest order, so the first error names the
+/// first offender a reader would find in the root `mote.toml`. Both walks
+/// cons, so the union is reversed once at the end.
+///
+/// Inline `#![mote { ... }]` motes are exempt by construction rather than by
+/// an exemption list: an inline file's nearest `mote.toml` is the virtual
+/// workspace root above it, which has no `[mote]`, so `Mote.discover` answers
+/// `none` for its directory.
+#[partial]
+def mote_target_candidates (infos : List ModuleInfo) : IO (List MoteManifest) := do {
+    let root <- find_workspace_root "" 32;
+    let member_dirs : List String <- match root {
+        Option.none => return List.empty,
+        Option.some d => Mote.workspace_members d
+    };
+    let members <- motes_of_dirs member_dirs List.empty;
+    let all <- motes_of_infos infos members;
+    return (List.reverse all)
+}
+
+/// The first of `motes` that has no target on disk, if any.
+#[partial]
+def first_targetless_mote (motes : List MoteManifest) : IO (Option MoteManifest) := do {
+    match motes {
+        List.empty => return Option.none,
+        List.cons m rest => do {
+            let ok <- mote_has_a_target m;
+            if ok then first_targetless_mote rest else return (Option.some m)
+        }
+    }
+}
+
+/// Turn the first target-less mote, if any, into the load's own failure. One
+/// error, not all of them, matching `gate_declared_deps`.
+#[partial]
+def gate_mote_targets (r : Result String LoadedModules) : IO (Result String LoadedModules) := do {
+    match r {
+        Result.err e => return (Result.err e),
+        Result.ok loaded => do {
+            let motes <- mote_target_candidates (get_loaded_all loaded);
+            let bad <- first_targetless_mote motes;
+            match bad {
+                Option.none => return (Result.ok loaded),
+                Option.some m => return (Result.err (targetless_mote_error m))
+            }
+        }
+    }
+}
+
 // --- Native link libraries (package-system.md 2a, `[link] libs`) -----
 
 /// The C libraries a whole program links against: the union of every
@@ -5360,11 +5528,16 @@ pub def elaborate_loaded_modules_cached (file_path : String) (check_deps : Bool)
 def elaborate_loaded_modules_cached_go (file_path : String) (check_deps : Bool) (source : Option String) (cache : ModuleInfoCache) (verbose : Bool) : IO ElaboratedAndCache := do {
     let t_load : I64 <- Bench.now;
     let lc <- load_file_modules_cached_go file_path source cache verbose;
-    // Declared-dependency enforcement (package-system.md 5d) before any
-    // elaboration work: a mote reaching into one it never declared is a
-    // manifest error, and saying so beats letting it surface as whatever
-    // name happens to go missing first.
-    let loaded_result <- gate_declared_deps lc.loaded;
+    // Manifest enforcement (package-system.md 2a/5d) before any elaboration
+    // work: a mote reaching into one it never declared, or one that names no
+    // target that exists, is a manifest error -- and saying so beats letting
+    // it surface as whatever name happens to go missing first.
+    //
+    // Two sibling gates rather than one, each first-error-wins and each
+    // independently revertable, so a bisect separates a bad dependency check
+    // from a bad target check.
+    let checked_deps <- gate_declared_deps lc.loaded;
+    let loaded_result <- gate_mote_targets checked_deps;
     let out_cache : ModuleInfoCache := lc.cache;
     let _t_load_done : I64 <- bench_step verbose "  elab: load_file_modules (read+parse)" t_load 0;
     // Annotated local, never a bare literal in `return` position -- see

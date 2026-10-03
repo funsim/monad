@@ -192,6 +192,28 @@ directory convention (`<name>/src/...`), and only a mote's reference to
 ITSELF is resolved through the manifest (`Mote.discover`,
 `lang/src/mote.mo`), which is what lets `motes/demo` work.
 
+### Every mote has at least one target that exists
+
+Two target tables, both with defaults, so a mote that follows the
+conventions declares neither (`plans/packaging/package-system.md` §2a):
+
+- `[lib] path` defaults to `src/lib.mo` -- the file `use <mote>` resolves
+  to. A binary-only mote needs no library root.
+- `[[bin]]` is a LIST of targets, each `name` (defaulting to the mote's
+  own name) and `path` (defaulting to `src/main.mo`). With no bin table a
+  mote has exactly one target, `src/main.mo`. `monad build <mote>` refuses
+  when more than one exists; `--bin <name>` picks one. A library-only mote
+  needs no bin table, but `monad build` still refuses if `src/main.mo` is
+  not there -- the default is a path, not an invention.
+
+`MoteManifest.lib_path`/`.bins` (`lang/src/mote.mo`) record where a target
+WOULD be, because `Mote.manifest_of_table` is pure. `gate_mote_targets`
+(`lang/src/module.mo`) is the half that probes, over the union of the
+workspace's `[workspace] members` and the motes owning the loaded modules
+-- members alone miss a standalone mote, loaded modules alone miss the
+motes the compiler never imports. Both gates are self-hosted only: the
+Rust host's manifest consumers all swallow `[lib]`/`[[bin]]`.
+
 
 ### Visibility: `pub`, `priv`, and the default
 

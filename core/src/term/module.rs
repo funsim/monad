@@ -2396,9 +2396,12 @@ fn prelude_import_error(file: Option<&std::path::Path>, path: &ModulePath) -> St
 
 /// Reject a `use` whose first segment names no mote, and any import of the
 /// ambient prelude. Only ONE-segment paths are judged here: a multi-segment
-/// head is a mote reference, which the declared-dependency gate already
-/// validates (`validate_declared_deps`, lang/src/module.mo, and its Rust
-/// counterpart).
+/// head is a mote reference, which the self-hosted declared-dependency gate
+/// already validates (`validate_declared_deps`, lang/src/module.mo). That
+/// gate has no Rust counterpart -- like `gate_mote_targets` beside it, it is
+/// self-hosted-only by design (the host's manifest consumers all swallow or
+/// downgrade to a warning), so this is the one per-file hook that
+/// propagates.
 fn validate_use_qualification(
   decls: &[SourceContext<Decl>],
   file: Option<&std::path::Path>,
