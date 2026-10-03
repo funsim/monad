@@ -20,7 +20,7 @@
 /// read them. That single field is the difference between a squiggle under the
 /// right characters and a squiggle that drifts one column per non-ASCII character
 /// before it, in a corpus whose comments are full of em dashes and curly quotes.
-use lang::json {Json}
+use json::json {Json}
 use toolkit::docstore {docstore_path_of_uri}
 use toolkit::jsonrpc {rpc_field, rpc_object}
 use toolkit::position {

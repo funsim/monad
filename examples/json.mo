@@ -4,7 +4,7 @@
 #![mote { name := "json", deps := [lang] }]
 
 
-use lang::json {Json}
+use json::json {Json}
 
 def print_parse_error (e : Json.ParseError) : IO Unit :=
   IO.println (String.concat "Parse error: " (Json.ParseError.to_string e))

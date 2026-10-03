@@ -34,7 +34,7 @@
 /// hazard. The `dt_` prefix is collision-avoiding because whole-program scope is
 /// shared with every other mote's tests, and `position_tests.mo` already holds
 /// `pt_`.
-use lang::json {Json}
+use json::json {Json}
 use lang::module {Diagnostic}
 use lang::types {Location, SourceRange}
 use toolkit::diagnostic {

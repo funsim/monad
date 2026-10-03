@@ -20,7 +20,7 @@
 /// the same module serve MCP's newline-delimited transport, and it is what makes
 /// every test below runnable without a socket.
 
-use lang::json {Json}
+use json::json {Json}
 // `BTreeMap` IS NAMED, and the warning that costs is the right trade.
 //
 // `std/src/map.mo` has no `pub` decls at all, so naming `BTreeMap` here raises

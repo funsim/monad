@@ -38,9 +38,11 @@ members = [
   "motes/example",
   "motes/ffi_example",
   "motes/http",
+  "motes/json",
   "motes/lsp",
   "motes/moon",
   "motes/moose",
   "motes/parsec",
+  "motes/toml",
   "motes/toolkit",
 ]

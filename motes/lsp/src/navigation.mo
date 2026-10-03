@@ -46,7 +46,7 @@
 /// composed -- a signature for a def, the whole declaration for a type or a class --
 /// in a markdown fence, because a type's rendering is multi-line and a client that
 /// reflowed it would destroy the layout that carries the meaning.
-use lang::json {Json}
+use json::json {Json}
 use lang::module {
   DeclRange, RangedFileCheck, decl_range_kind, decl_range_name, decl_range_span,
   decl_ranges_of_source, ranged_file_ranges,

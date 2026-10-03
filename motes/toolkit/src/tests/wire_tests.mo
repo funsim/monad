@@ -31,7 +31,7 @@
 /// `#[test]` def, per this repo's recorded `#[test]` plus struct-field codegen
 /// hazard. The `wt_` prefix is collision-avoiding: whole-program scope is shared
 /// with every other mote's tests.
-use lang::json {Json}
+use json::json {Json}
 use lang::types {Location, SourceRange}
 use toolkit::position {
   LineIndex, PositionEncoding, WirePosition, WireRange, line_index_of_source,

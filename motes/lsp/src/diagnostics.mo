@@ -18,7 +18,7 @@
 ///
 /// THE VERSION IS THE CLIENT'S, and it is sent when the client has one. See
 /// `lsp_publish_notification`.
-use lang::json {Json}
+use json::json {Json}
 use lang::module {Diagnostic, ranged_file_diagnostics}
 use lsp::checks {Check, check_result, check_text}
 use toolkit::diagnostic {WireDiagnostic, wire_diagnostic_of_lang, wire_diagnostics_json}

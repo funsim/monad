@@ -21,3 +21,6 @@ path = "../llvm"
 path = "../runtime"
 [dependencies.parsec]
 path = "../motes/parsec"
+
+[dependencies.toml]
+path = "../motes/toml"

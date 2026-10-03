@@ -1,0 +1,29 @@
+# The json reader and writer, parsing with `parsec` rather than with the
+# compiler.
+#
+# Extracted from `lang/src/json.mo`, and a pure leaf: unlike its sibling
+# `toml` -- which `lang/src/mote.mo` needs to read manifests, and which was
+# therefore the cycle `parsec` exists to break -- NOTHING in `lang` uses
+# `Json`. Its consumers are `motes/toolkit` and `motes/lsp`, which speak
+# JSON-RPC.
+#
+# Sub-table headers rather than inline tables, which the self-hosted reader
+# in THIS mote does not support -- an unparseable manifest makes
+# `Mote.discover` return none and SILENTLY disables the declared-dependency
+# check. A manifest this mote cannot read is the one bug it must not ship.
+#
+# `init` and `std` are ambient; declared anyway, as every manifest here
+# does. No `lang`, no `llvm`, no `runtime`: not needing them is the point.
+[mote]
+name = "json"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies.init]
+path = "../../init"
+
+[dependencies.std]
+path = "../../std"
+
+[dependencies.parsec]
+path = "../parsec"

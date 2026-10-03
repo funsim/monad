@@ -31,10 +31,11 @@
 # debug-oracle.sh -- each had their own copy of this check with a narrower
 # or wider input set. This is the single definition, at the widest coverage:
 # every tree the compiler is built FROM (init, std, lang, cli, llvm, runtime,
-# build, and the motes cli imports -- motes/lsp and motes/toolkit, which reach
-# the binary through cli/mote.toml's [dependencies.lsp]), their .mo/.c/.h
-# sources, and each one's mote.toml -- a manifest that carries `[link] libs`,
-# so it decides how the mote is compiled.
+# build, and the motes it imports -- motes/lsp, motes/toolkit and motes/json,
+# which reach the binary through cli/mote.toml's [dependencies.lsp], and
+# motes/parsec and motes/toml through lang), their .mo/.c/.h sources, and each
+# one's mote.toml -- a manifest that carries `[link] libs`, so it decides how
+# the mote is compiled.
 #
 # This list must match nix/monad.nix's `compilerSrc` fileset, which cites this
 # scan as authoritative. A mote missing HERE is the quiet half of the failure:
@@ -88,7 +89,8 @@ out="$(cd -- "$out" && pwd)"
 if [ ! -x "$out/monad" ]; then
   needs_build=1
 else
-  newer="$(find init std lang cli llvm runtime build motes/lsp motes/parsec motes/toolkit \
+  newer="$(find init std lang cli llvm runtime build \
+    motes/json motes/lsp motes/parsec motes/toml motes/toolkit \
     \( -name '*.mo' -o -name '*.c' -o -name '*.h' -o -name mote.toml \) \
     -newer "$out/monad" -print -quit)" || {
     echo "build-self-hosted.sh: cannot scan the ladder's inputs from $PWD" >&2

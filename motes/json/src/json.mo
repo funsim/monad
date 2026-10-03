@@ -15,7 +15,6 @@ use parsec::combinators {
   take_while, terminated_by, utf8_char_width,
 }
 use parsec::number {number}
-use lib::types {list_reverse}
 
 open ParseResult {fail, success}
 open Json {
@@ -557,7 +556,7 @@ def Json.escape_string (input : String) : String :=
 #[partial]
 def escape_string_pieces (input : String) (acc : List String) : List String :=
   if is_empty input
-  then list_reverse acc
+  then List.reverse acc
   else
     let width : I64 := utf8_char_width input in
     let ch : String := String.slice input 0 width in

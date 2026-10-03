@@ -12,7 +12,7 @@
 /// serialize/deserialize class machinery.
 
 use std::list {List.filter_map}
-use lang::toml {
+use toml::toml {
   Toml.Value, Toml.parse, Toml.table_get, array, integer, string, table,
 }
 use lang::types {AttrArg, Attribute, id, show_identifier}

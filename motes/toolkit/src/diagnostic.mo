@@ -48,7 +48,7 @@
 /// `Location` field is read here at all -- and a module that cannot read a field
 /// cannot be the next home of the accessors that read it.
 
-use lang::json {Json}
+use json::json {Json}
 use lang::module {Diagnostic, diagnostic_message, diagnostic_range}
 use toolkit::bytes {byte_lf}
 use toolkit::jsonrpc {rpc_object}

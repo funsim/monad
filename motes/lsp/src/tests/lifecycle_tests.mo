@@ -34,7 +34,7 @@
 /// hazard. The `lc_` prefix is collision-avoiding: whole-program scope is shared with
 /// every other mote's tests, and a sibling helper of the same name is a documented
 /// miscompile.
-use lang::json {Json}
+use json::json {Json}
 use lsp::lifecycle {
   lsp_capabilities_json, lsp_choose_encoding, lsp_initialize_result, lsp_offered_encodings,
   lsp_root_path, lsp_server_info_json,

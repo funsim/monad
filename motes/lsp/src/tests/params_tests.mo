@@ -32,7 +32,7 @@
 /// hazard. The `lp_` prefix is collision-avoiding: whole-program scope is shared with
 /// every other mote's tests, and a sibling test file's helper of the same name is a
 /// documented miscompile.
-use lang::json {Json}
+use json::json {Json}
 use lsp::params {
   lsp_param_i64, lsp_param_index, lsp_param_nested, lsp_param_nested_i64, lsp_param_nested_str,
   lsp_param_str, lsp_param_str_list,

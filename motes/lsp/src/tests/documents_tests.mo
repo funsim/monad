@@ -31,7 +31,7 @@
 /// `#[test]` def, per this repo's recorded `#[test]` plus struct-field codegen hazard.
 /// The `ld_` prefix is collision-avoiding: whole-program scope is shared with every
 /// other mote's tests.
-use lang::json {Json}
+use json::json {Json}
 use lsp::documents {
   DocumentEdit, document_change, document_close, document_edit_changed, document_edit_store,
   document_edit_uri, document_open, document_uri,

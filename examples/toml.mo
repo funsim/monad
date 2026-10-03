@@ -9,7 +9,7 @@
 // std/map_tests.mo for why (a pre-existing latent instance/dictionary-
 // resolution bug this explicit filter exposes).
 use std::map {BTreeMap}
-use lang::toml {
+use toml::toml {
   Toml.ParseError, Toml.ParseError.to_string, Toml.Value, Toml.parse,
   Toml.to_string,
 }

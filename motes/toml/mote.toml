@@ -1,0 +1,29 @@
+# The toml reader and writer, parsing with `parsec` rather than with the
+# compiler.
+#
+# Extracted from `lang/src/toml.mo`. For `toml` that extraction was the
+# whole reason `parsec` exists: `lang/src/mote.mo` reads every `mote.toml`
+# through this module, so `lang` depends on `toml` -- and while `toml`
+# parsed with `lang::parser::*` that was a cycle. It now depends on the
+# substrate instead, and the edge runs one way: lang -> toml -> parsec.
+#
+# Sub-table headers rather than inline tables, which the self-hosted reader
+# in THIS mote does not support -- an unparseable manifest makes
+# `Mote.discover` return none and SILENTLY disables the declared-dependency
+# check. A manifest this mote cannot read is the one bug it must not ship.
+#
+# `init` and `std` are ambient; declared anyway, as every manifest here
+# does. No `lang`, no `llvm`, no `runtime`: not needing them is the point.
+[mote]
+name = "toml"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies.init]
+path = "../../init"
+
+[dependencies.std]
+path = "../../std"
+
+[dependencies.parsec]
+path = "../parsec"

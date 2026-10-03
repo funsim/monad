@@ -38,6 +38,9 @@ path = "../../std"
 [dependencies.lang]
 path = "../../lang"
 
+[dependencies.json]
+path = "../json"
+
 # `llvm` and `runtime` are declared because `lang::module` -- where `Diagnostic`
 # lives -- is not self-contained the way `lang::json` is: the compiler's own
 # modules reach into codegen, codegen reaches into `llvm`, and the IR type names

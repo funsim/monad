@@ -18,7 +18,7 @@
 /// change to what this server puts on the wire whether or not anything here
 /// intended it. The strings below are the observed output, not a guess --
 /// alphabetical, because the object is a `BTreeMap`.
-use lang::json {Json}
+use json::json {Json}
 use toolkit::jsonrpc {
   RpcMessage, rpc_code_internal, rpc_code_invalid_params, rpc_code_invalid_request,
   rpc_code_method_not_found, rpc_code_parse_error, rpc_encode_error,

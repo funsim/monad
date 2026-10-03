@@ -20,7 +20,7 @@
 /// -- rather than as a path string split on dots. The set of paths is small, the
 /// specification fixes each one, and a path string is a place a typo is a silently
 /// absent field instead of a call that does not compile.
-use lang::json {Json}
+use json::json {Json}
 use toolkit::jsonrpc {rpc_field}
 
 /// A string field, absent if the field is absent or is not a string.

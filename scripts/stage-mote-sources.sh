@@ -72,7 +72,7 @@ cat > "$staging/mote.toml" <<'TOML'
 # directory beside the binary. See scripts/stage-mote-sources.sh.
 #
 # Written with a `[workspace]` header rather than an inline table because
-# the self-hosted reader (lang/src/toml.mo) supports headers only.
+# the self-hosted reader (motes/toml/src/toml.mo) supports headers only.
 
 [workspace]
 members = ["init", "std", "llvm", "runtime"]

@@ -28,7 +28,7 @@
 /// stated one, and an absent one keeps whatever the document already had
 /// (`document_version` has the argument and names the one value that is a
 /// fallback).
-use lang::json {Json}
+use json::json {Json}
 use lsp::params {lsp_param_index, lsp_param_nested_i64, lsp_param_nested_str, lsp_param_str}
 use toolkit::docstore {
   DocStore, docstore_change, docstore_close, docstore_open, docstore_text, docstore_version,

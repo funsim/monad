@@ -123,16 +123,18 @@
       # for it, and a header added later must not silently fall outside the
       # hash that is supposed to cover it.
       #
-      # THE RULE, because this list has been wrong once: every mote the
+      # THE RULE, because this list has been wrong twice: every mote the
       # compiler's own sources IMPORT is a compiler input. `cli/mote.toml`
       # declares `[dependencies.lsp]` and `cli/src/main.mo` has
       # `use lsp::server`, so rung 1 -- which compiles `cli/src/main.mo` --
-      # needs `motes/lsp`, and `motes/lsp` needs `motes/toolkit`. Adding a mote
-      # to `cli/mote.toml` without adding it here fails the buildPhase with
+      # needs `motes/lsp`, and `motes/lsp` needs `motes/toolkit` (its own
+      # `[dependencies]`) and `motes/json` (`use json::json`). Adding a mote to
+      # `cli/mote.toml` without adding it here fails the buildPhase with
       # `module not found: <mote>.<module>`: the import that could not resolve,
       # never the missing input that caused it. (Measured both ways on a tree
-      # assembled by exactly this filter: without the two motes it is exactly
-      # that error, with them `1 file(s) checked, 0 error(s)`.)
+      # assembled by exactly this filter: without a mote it is exactly that
+      # error -- most recently `json`, which `6424aacb` moved out of `lang` and
+      # added only as `toml` -- and with them `1 file(s) checked, 0 error(s)`.)
       #
       # Three things outside the scan are kept because the build needs them:
       #
@@ -179,13 +181,17 @@
             "runtime"
             "build"
             # Compiler inputs -- see THE RULE above. `lsp`/`toolkit` arrive
-            # through `cli` (its `lsp` subcommand); `parsec` arrives through
-            # `lang` itself, which parses with it. Not the rest of `motes/`:
-            # those are consumers of the compiler, not part of it, and keeping
-            # them out is what stops an unrelated mote's edit from
-            # invalidating a 20-minute interpretation.
+            # through `cli` (its `lsp` subcommand), and `json` through `lsp`,
+            # which speaks JSON-RPC; `parsec` and `toml` arrive through `lang`
+            # itself, which parses with one and reads every manifest with the
+            # other. Not the rest of `motes/`: those are consumers of the
+            # compiler, not part of it, and keeping them out is what stops an
+            # unrelated mote's edit from invalidating a 20-minute
+            # interpretation.
+            "motes/json"
             "motes/lsp"
             "motes/parsec"
+            "motes/toml"
             "motes/toolkit"
           ]
         );

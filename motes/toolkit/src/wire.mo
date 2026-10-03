@@ -25,7 +25,7 @@
 /// removes is a module boundary, not a second spelling of the same four lines,
 /// and a `wire_*` prefix is what keeps them out of the way of the rest of
 /// whole-program scope.
-use lang::json {Json}
+use json::json {Json}
 use lang::types {Location, SourceRange}
 use toolkit::jsonrpc {rpc_object}
 use toolkit::position {
