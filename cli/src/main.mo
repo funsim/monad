@@ -13,7 +13,7 @@ use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, Elabora
 use lang::scope {resolve_class_calls_decls}
 use lang::mote {
   Mote.discover, Mote.discover_config_target_dir, Mote.workspace_members,
-  MoteManifest,
+  MoteManifest, BinTarget,
 }
 use build::closure {Build.input_hash}
 use build::store {
@@ -128,7 +128,7 @@ def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir
 // get them. That second parse was 76029ms of a 172143ms debug self-compile;
 // it is now simply absent.)
 
-/// The output name a mote's `[bin]` target is built as, given what the
+/// The output name a mote's `[[bin]]` target is built as, given what the
 /// caller asked for. Split out of `build_target` because a `let … in`
 /// inside a do-block does not parse (see that def), and this is the
 /// value it needs there.
@@ -136,16 +136,17 @@ def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir
 /// `"source"` is the literal `Command.from_args` substitutes when
 /// neither `-o`/`--output` nor a positional name was given; anything
 /// else is the caller's own choice, which always wins.
-/// With no name of the manifest's own either, the source file's own
-/// stem is used -- `cli/src/main.mo` -> `main`, the same rule a
-/// file compile has always applied via
-/// `module_name_from_path`.
-def compile_out_name (requested : String) (manifest : MoteManifest) (src : String) : String :=
+///
+/// `BinTarget.name` is always there -- an entry that declares no name
+/// defaults to the mote's own -- so `module_name_from_path`'s
+/// source-stem rule (`cli/src/main.mo` -> `main`) is now reached only by
+/// a FILE compile, which has no manifest to ask. A mote whose single
+/// target declares no name therefore produces the MOTE's name rather than
+/// the source stem, which is the point of §2a's "defaults to the mote
+/// name".
+def compile_out_name (requested : String) (target : BinTarget) : String :=
     if Bool.not (String.beq requested "source") then requested
-    else match manifest.bin_name {
-        Option.some n => n,
-        Option.none => module_name_from_path src,
-    }
+    else BinTarget.target_name target
 
 /// `monad build [<path>]` with a mote-aware path. The one build verb --
 /// `monad compile` was removed rather than kept as an alias, because two
@@ -153,25 +154,30 @@ def compile_out_name (requested : String) (manifest : MoteManifest) (src : Strin
 /// remember.
 ///
 /// Three input forms, one mechanism. A FILE compiles directly. A
-/// DIRECTORY is read as a mote and its `[bin]` target decides what is
-/// built -- `monad build cli` from the workspace root, or `monad build .`
-/// from inside `cli/`, builds `cli/src/main.mo` as `monad`, which is what
-/// `cli/mote.toml`'s `[bin] path`/`[bin] name` declare that binary to be.
+/// DIRECTORY is read as a mote and one of its `[[bin]]` targets decides
+/// what is built -- `monad build cli` from the workspace root, or
+/// `monad build .` from inside `cli/`, builds `cli/src/main.mo` as
+/// `monad`, which is what `cli/mote.toml`'s `[[bin]] path`/`[[bin]] name`
+/// declare that binary to be. `--bin <name>` picks between several.
 /// NO path is the third, and it is just `.`: `Command.from_args` supplies
 /// it, so the mote containing the working directory gets built, matching
 /// `check`/`test`'s own "with no paths" default instead of printing usage.
 ///
-/// `manifest.bin_path` arrives already joined onto the mote's own `dir`
-/// (`Mote.bin_target_path`), so it is a path relative to the working
+/// A target's `path` arrives already joined onto the mote's own `dir`
+/// (`Mote.bin_target_of`), so it is a path relative to the working
 /// directory exactly as stored -- which is what `compile_file` wants,
 /// and what makes `monad build cli` work from the workspace root.
 ///
-/// A directory that is not a mote, or is one with no `[bin]` target, is
-/// an error rather than a guess: `[bin]` is the manifest's own statement
-/// of what this mote's binary is, and inventing one (`src/main.mo`, say)
-/// would build something the mote never declared. Note that only a mote
-/// with a binary target needs a `[bin]` table at all -- `lang`, `std`,
-/// `llvm`, `init` and `runtime` are libraries and correctly have none.
+/// A directory that is not a mote, or one whose targets do not
+/// distinguish themselves, is an error rather than a guess -- and the
+/// guess this rules out is subtler than it used to be. `MoteManifest.bins`
+/// supplies a CONVENTIONAL target (`src/main.mo`, named after the mote)
+/// for a manifest that declares no bin table, so "declares no `[bin]`" is
+/// no longer the same question as "has nothing to build". Both are
+/// answered by the same test: a target is built only if its file exists.
+/// A library mote -- `lang`, `std`, `llvm`, `init`, `runtime` -- declares
+/// no `[[bin]]` and has no `src/main.mo`, so `monad build lang` still
+/// refuses, and it refuses for the reason that is actually true.
 #[partial]
 /// The triple everything is compiled for today. One value, named rather
 /// than repeated: phase 4 of packaging/mote-build-deps-artifacts-targets.md
@@ -389,7 +395,112 @@ def build_cached_keyed (src : String) (target_dir : String) (h : String) (ir : O
     }
 }
 
-def build_target (path : String) (out_name : String) (verbose : Bool) (debug : Bool) (no_cache : Bool) : IO I64 := do {
+/// The declared target whose `name` is `wanted`, or `none`. Linear rather
+/// than `List.filter` because this file has no `Option`-returning finder,
+/// and a name is unique by convention anyway.
+def bin_named (bs : List BinTarget) (wanted : String) : Option BinTarget :=
+    match bs {
+        List.empty => Option.none,
+        List.cons b rest =>
+            if String.beq (BinTarget.target_name b) wanted
+            then Option.some b
+            else bin_named rest wanted
+    }
+
+/// The targets whose files actually EXIST, in declaration order, appended
+/// onto `acc`. This is the half `MoteManifest.bins` cannot do: the parser
+/// is pure, so it records where a target would be, and this asks the
+/// filesystem.
+def existing_bin_targets (bs : List BinTarget) (acc : List BinTarget) : IO (List BinTarget) := do {
+    match bs {
+        List.empty => do { return acc },
+        List.cons b rest => do {
+            let there <- IO.file_exists (Path.path (BinTarget.target_path b));
+            if there
+            then existing_bin_targets rest (List.append acc (List.cons b List.empty))
+            else existing_bin_targets rest acc
+        }
+    }
+}
+
+/// The targets' names, comma-separated, for an error that has to say what
+/// it found rather than only that it failed.
+def bin_names_joined (bs : List BinTarget) : String :=
+    match bs {
+        List.empty => "",
+        List.cons b rest =>
+            if List.is_empty rest
+            then BinTarget.target_name b
+            else String.concat (BinTarget.target_name b) (String.concat ", " (bin_names_joined rest))
+    }
+
+/// Which target a `monad build <mote>` builds, or the message saying why
+/// there is not exactly one.
+///
+/// `--bin <name>` selects by name, and the named target is checked against
+/// the filesystem too -- a name that matches nothing, and a name that
+/// matches a file that is not there, are different errors and both are
+/// errors. With no flag the rule is "exactly ONE target exists": zero is a
+/// library mote (or a binary mote whose declared file has gone missing),
+/// and several need `--bin` to say which.
+///
+/// Nothing here builds a file that is not on disk, which is what keeps the
+/// conventional `src/main.mo` default honest -- see `build_target`'s own
+/// comment.
+def choose_bin_target (manifest : MoteManifest) (path : String) (wanted : String) : IO (Result String BinTarget) := do {
+    if Bool.not (String.is_empty wanted) then do {
+        match bin_named manifest.bins wanted {
+            Option.none => do {
+                return (Result.err (String.concat_all [
+                    "error: mote `", manifest.name, "` declares no [bin] target named `", wanted, "`",
+                    "\n  declared: ", bin_names_joined manifest.bins,
+                    "\nhint: `monad build ", path, " --bin <name>` names one of those",
+                ]))
+            },
+            Option.some b => do {
+                let there <- IO.file_exists (Path.path (BinTarget.target_path b));
+                if there then do { return (Result.ok b) }
+                else do {
+                    return (Result.err (String.concat_all [
+                        "error: mote `", manifest.name, "`'s [bin] target `", wanted, "` names a file that is not there",
+                        "\n  ", BinTarget.target_path b,
+                        "\nhint: create it, or fix `path` in ", path, "/mote.toml",
+                    ]))
+                }
+            }
+        }
+    }
+    else do {
+        let existing <- existing_bin_targets manifest.bins List.empty;
+        match existing {
+            List.empty => do {
+                let declared : String := bin_names_joined manifest.bins;
+                let named : String :=
+                    if String.is_empty declared
+                    then "declares no [bin] table"
+                    else String.concat "names " declared;
+                return (Result.err (String.concat_all [
+                    "error: mote `", manifest.name, "` has no [bin] target to build",
+                    "\n  it ", named, ", and none of those files exist",
+                    "\nhint: a library mote needs no [bin] table -- `monad build <path>",
+                    "/src/<file>.mo` still builds one file directly",
+                ]))
+            },
+            List.cons b rest => do {
+                if List.is_empty rest then do { return (Result.ok b) }
+                else do {
+                    return (Result.err (String.concat_all [
+                        "error: mote `", manifest.name, "` has several [bin] targets and no way to pick",
+                        "\n  buildable: ", bin_names_joined existing,
+                        "\nhint: `monad build ", path, " --bin <name>` picks one",
+                    ]))
+                }
+            }
+        }
+    }
+}
+
+def build_target (path : String) (out_name : String) (bin : String) (verbose : Bool) (debug : Bool) (no_cache : Bool) : IO I64 := do {
     let is_a_dir : Bool <- IO.is_dir (Path.path path);
     if Bool.not is_a_dir
     then build_cached path (Path.path out_name) verbose debug no_cache
@@ -402,15 +513,19 @@ def build_target (path : String) (out_name : String) (verbose : Bool) (debug : B
                 return 1
             },
             Option.some manifest => do {
-                match manifest.bin_path {
-                    Option.none => do {
-                        println ("error: mote `" ++ manifest.name ++ "` declares no [bin] target, so there is nothing to build");
-                        println ("hint: add a [bin] table to " ++ path ++ "/mote.toml, naming `path` and (optionally) `name`");
+                let chosen <- choose_bin_target manifest path bin;
+                match chosen {
+                    Result.err msg => do {
+                        println msg;
                         return 1
                     },
-                    Option.some src => do {
-                        let name : String := compile_out_name out_name manifest src;
-                        println ("building mote `" ++ manifest.name ++ "`'s [bin] target: " ++ src);
+                    Result.ok target => do {
+                        let src := BinTarget.target_path target;
+                        let name : String := compile_out_name out_name target;
+                        println (String.concat_all [
+                            "building mote `", manifest.name, "`'s [bin] target `",
+                            BinTarget.target_name target, "`: ", src,
+                        ]);
                         build_cached src (Path.path name) verbose debug no_cache
                     }
                 }
@@ -1566,7 +1681,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
 // helpers with the macro-derived demo in cli/src/tests/cli_derive_tests.mo,
 // though — same argv-munging primitives either way.
 type Command {
-    build (file: Path) (out_name: Path) (verbose: Bool) (debug: Bool) (no_cache: Bool),
+    build (file: Path) (out_name: Path) (bin: String) (verbose: Bool) (debug: Bool) (no_cache: Bool),
     run (file: Path) (verbose: Bool) (debug: Bool),
     eval (file: Path) (verbose: Bool),
     pretty (file: String),
@@ -1622,7 +1737,15 @@ def Command.from_args (args : List String) : Command :=
                                         // filename.
                                         match Cli.take_flag "no-cache" "" rest1b {
                                             Cli.FlagResult.flag_result no_cache rest1c =>
-                                        match Cli.take_opt "output" "o" "" rest1c {
+                                        // `--bin <name>` selects among a mote's
+                                        // `[[bin]]` targets. Peeled with the
+                                        // other flags, for the same reason:
+                                        // left in the list, `--bin` would be
+                                        // handed to the positional reader as a
+                                        // path and its NAME as the output name.
+                                        match Cli.take_opt "bin" "" "" rest1c {
+                                            Cli.OptResult.opt_result bin_name rest1d =>
+                                        match Cli.take_opt "output" "o" "" rest1d {
                                     Cli.OptResult.opt_result opt_out_name rest2 =>
                                         match Cli.take_positional rest2 {
                                             Cli.PosResult.pos_result path_opt rest3 =>
@@ -1653,13 +1776,14 @@ def Command.from_args (args : List String) : Command :=
                                                             err _ => Command.help,
                                                             ok p => match Path.of out_name {
                                                                 err _ => Command.help,
-                                                                ok o => Command.build p o verbose debug no_cache,
+                                                                ok o => Command.build p o bin_name verbose debug no_cache,
                                                             },
                                                         },
                                                 },
                                         },
                                             },
                                 },
+                                            },
                         },
                 },
                 }
@@ -1803,10 +1927,10 @@ def Command.from_args (args : List String) : Command :=
 def main (args : List String) : IO I64 {
     let cmd : Command := Command.from_args args;
     match cmd {
-        build file_path out_name verbose debug no_cache => do {
+        build file_path out_name bin verbose debug no_cache => do {
             // A directory is a mote to build (`build_target`); a file goes
             // straight to `compile_file`.
-            build_target (Path.to_string file_path) (Path.to_string out_name) verbose debug no_cache
+            build_target (Path.to_string file_path) (Path.to_string out_name) bin verbose debug no_cache
         },
         run file_path verbose debug => do {
             run_file (Path.to_string file_path) default_output_dir verbose debug
@@ -1874,10 +1998,13 @@ def print_help : IO I64 {
     println "Monad is in alpha mode and under heavy development.";
     println "Expect breaking changes, bugs, and incomplete features.";
     println "";
-    println "Usage: monad build [<path>] [name] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]";
+    println "Usage: monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]";
     println "         Compile a .mo source file, or a mote, to a native binary";
-    println "         <path> may be a mote DIRECTORY, in which case its [bin] target is built";
+    println "         <path> may be a mote DIRECTORY, in which case its [[bin]] target is built";
     println "           (`monad build cli` builds cli/src/main.mo as `monad`)";
+    println "         --bin <name> picks one of a mote's several [[bin]] targets";
+    println "           (a mote declares none, but builds `src/main.mo` as its own name, when";
+    println "            `src/main.mo` exists and no [[bin]] table does)";
     println "         With no <path>, builds the mote containing the working directory";
     println "         --verbose/-v prints each module as it loads and one line per pipeline stage";
     println "         --debug/-g emits DWARF debug info (one source location per top-level def)";

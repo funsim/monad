@@ -136,7 +136,7 @@ edition = "2026"
 [lib]
 path = "src/lib.mo"
 
-[bin]
+[[bin]]
 name = "game"
 path = "src/main.mo"
 TOML

@@ -13,7 +13,7 @@
 
 use std::list {List.filter_map}
 use toml::toml {
-  Toml.Value, Toml.parse, Toml.table_get, array, integer, string, table,
+  Toml.Value, Toml.parse, Toml.table_get, Toml.array_at, array, integer, string, table,
 }
 use lang::types {AttrArg, Attribute, id, show_identifier}
 use std::io {}
@@ -50,17 +50,51 @@ pub struct MoteManifest {
     /// but what the linker is handed is the mote's, the same way Cargo
     /// keeps `-l` flags out of `extern "C"` blocks.
     link_libs : List String,
-    /// The `[bin]` target's declared source, from `[bin] path = "..."`,
-    /// joined onto `dir` the same way `dep_dirs` entries are -- what
-    /// `monad compile <mote dir>` builds. `none` for a mote with no binary
-    /// target (`lang`, `llvm`, `runtime`) or a manifest with no `[bin]`
-    /// table at all.
-    bin_path : Option String,
-    /// The `[bin]` target's output name, from `[bin] name = "..."`.
-    /// `none` when the manifest declares a `[bin] path` without a name;
-    /// the caller then falls back to the source file's own stem.
-    bin_name : Option String,
+    /// Where this mote's library root would be: `[lib] path`, else the
+    /// conventional `src/lib.mo`. `none` only for an inline mote, which has
+    /// no `src/` tree at all.
+    ///
+    /// A PATH, not a promise that the file is there: `manifest_of_table` is
+    /// pure and cannot probe the filesystem. Whether it exists is
+    /// `gate_mote_targets`' question (lang/module.mo).
+    lib_path : Option String,
+    /// This mote's binary targets, from `[[bin]]` (or the legacy singular
+    /// `[bin]` spelling, which means the same thing here). Empty only for an
+    /// inline mote, whose own file IS its binary.
+    ///
+    /// A manifest with no bin table at all still gets exactly ONE target --
+    /// the conventional `src/main.mo`, named after the mote -- so
+    /// `monad build <mote>` works without a manifest edit. Whether that file
+    /// exists is what `build_target` checks before building it, which is what
+    /// keeps a default from becoming an invention.
+    bins : List BinTarget,
 }
+
+/// One binary target: what `monad build` selects between.
+///
+/// Both fields are already resolved -- a declared value or the conventional
+/// default, joined onto the mote's own `dir` -- so a consumer needs no rule
+/// of its own. `plans/packaging/package-system.md` §2a is the spec.
+pub struct BinTarget {
+    /// `[[bin]] path`, or `src/main.mo` when the entry names none, joined
+    /// onto the mote's own `dir` the same way `dep_dirs` entries are.
+    path : String,
+    /// `[[bin]] name`, or the mote's own name when the entry names none. Not
+    /// optional: it is what `monad build <mote>` names the output after, so
+    /// the fallback to a source file's own stem is the FILE compile's rule
+    /// and no longer this one's.
+    name : String,
+}
+
+/// `BinTarget.path`, and its `name` sibling below. Accessors rather than
+/// bare field reads because a `#[test] def ... : Bool` body reading a field
+/// directly is the shape `test-def-struct-field-access-codegen` warns about
+/// (the def can be emitted with the FIELD's LLVM type as its return type).
+/// A one-line accessor whose return type IS the field's type costs nothing
+/// and sidesteps it.
+def BinTarget.target_path (b : BinTarget) : String := b.path
+
+def BinTarget.target_name (b : BinTarget) : String := b.name
 
 /// The mote's source root -- `<dir>/src`, always.
 ///
@@ -415,17 +449,16 @@ def Mote.manifest_of_table (dir : String) (root : BTreeMap String Toml.Value) : 
                 (Mote.table_dep_dirs dir (Toml.table_get "dependencies" root))
                 (Mote.table_dep_dirs dir (Toml.table_get "dev-dependencies" root)) in
             let libs := Mote.table_string_array (Toml.table_get "link" root) "libs" in
-            let bin := Toml.table_get "bin" root in
-            let bin_path := Mote.bin_target_path dir bin in
-            let bin_name := Mote.table_string bin "name" in
+            let lib_path := Mote.lib_target_path dir root in
+            let bins := Mote.bin_targets dir name root in
             let m : MoteManifest := {
                 name := name,
                 dir := dir,
                 deps := deps,
                 dep_dirs := dep_dirs,
                 link_libs := libs,
-                bin_path := bin_path,
-                bin_name := bin_name,
+                lib_path := lib_path,
+                bins := bins,
             } in
             Option.some m
     }
@@ -454,7 +487,7 @@ def Mote.manifest_of_table (dir : String) (root : BTreeMap String Toml.Value) : 
 /// (where `mote_dir` is `"."`, not `""`) got wrong until
 /// `raw_path_join` grew the rule `Path.join` already had -- `".//home/me/…"`
 /// resolved to nothing and the dependency silently went missing.
-/// `Mote.bin_target_path` below joins `[bin] path` the same way and
+/// `Mote.bin_target_of` below joins `[[bin]] path` the same way and
 /// inherits the same fix.
 def Mote.table_dep_dirs (mote_dir : String) (found : Option Toml.Value) : List (Pair String String) :=
     match found {
@@ -468,16 +501,97 @@ def Mote.table_dep_dirs (mote_dir : String) (found : Option Toml.Value) : List (
 def dep_dir_entries (mote_dir : String) (sub : BTreeMap String Toml.Value) : List (Pair String String) :=
     dep_dir_entries_go mote_dir (BTreeMap.to_list sub)
 
-/// `[bin] path`, joined onto the mote's own directory so the value is a
-/// path usable exactly as stored (see `MoteManifest.bin_path`).
-def Mote.bin_target_path (dir : String) (bin : Option Toml.Value) : Option String :=
-    Mote.joined_table_string dir bin "path"
+/// `[lib] path`, joined onto the mote's own directory, or the conventional
+/// `src/lib.mo` when the table (or its `path`) is absent.
+///
+/// The default is the whole point of the field existing: an undeclared
+/// `[lib]` already resolves to `src/lib.mo` (that filename is hardcoded in
+/// resolution), so a manifest that restates it says nothing. Recording the
+/// resolved path here is what lets the gate below ask the filesystem a
+/// question the pure parser cannot.
+///
+/// `[[bin]]` is deliberately NOT the same shape: a bin table can name
+/// several targets, so those default per ENTRY (see `Mote.bin_targets`),
+/// and an absent table defaults to one target rather than to a filename.
+def Mote.lib_target_path (dir : String) (root : BTreeMap String Toml.Value) : Option String :=
+    match Mote.joined_table_string dir (Toml.table_get "lib" root) "path" {
+        Option.some p => Option.some p,
+        Option.none => Option.some (raw_path_join dir "src/lib.mo"),
+    }
+
+/// The mote's binary targets, in declaration order.
+///
+/// Three cases, and the middle one is a spelling rather than a second
+/// meaning: `[[bin]]` (the canonical form, an array of tables) wins; the
+/// singular `[bin]` table is read as one target (`[bin]` and `[[bin]]` are
+/// the same table read two ways, and `Toml.header_conflict` already refuses
+/// to have both); and with neither, the conventional `src/main.mo` named
+/// after the mote.
+///
+/// `Toml.array_at` is what separates the first two: an array of tables
+/// parses to `Toml.Value.array`, so it answers with the elements, while the
+/// singular table answers with nothing and falls through.
+def Mote.bin_targets (dir : String) (mote_name : String) (root : BTreeMap String Toml.Value) : List BinTarget :=
+    match Toml.array_at "bin" root {
+        List.empty => match Toml.table_get "bin" root {
+            Option.some v => match v {
+                Toml.Value.table sub => List.cons (Mote.bin_target_of dir mote_name sub) List.empty,
+                _ => List.cons (Mote.default_bin_target dir mote_name) List.empty
+            },
+            Option.none => List.cons (Mote.default_bin_target dir mote_name) List.empty
+        },
+        List.cons _ _ => Mote.bin_targets_of_values dir mote_name (Toml.array_at "bin" root)
+    }
+
+def Mote.bin_targets_of_values (dir : String) (mote_name : String) (entries : List Toml.Value) : List BinTarget :=
+    match entries {
+        List.empty => List.empty,
+        List.cons v rest =>
+            match v {
+                Toml.Value.table sub =>
+                    List.cons (Mote.bin_target_of dir mote_name sub)
+                        (Mote.bin_targets_of_values dir mote_name rest),
+                // A `[[bin]]` element that is not a table declares nothing to
+                // build; skipped rather than failing the whole manifest, the
+                // same rule `Mote.strings_of_values` applies to `[link] libs`.
+                _ => Mote.bin_targets_of_values dir mote_name rest
+            }
+    }
+
+/// The one implicit target: `src/main.mo`, named after the mote.
+///
+/// Not a check that the file is there -- this is pure. `build_target` refuses
+/// when it is not (`error: mote \`lang\` has no [bin] target: ... does not
+/// exist`), which is how a library mote keeps needing no `[[bin]]` while a
+/// binary mote keeps building without declaring one.
+def Mote.default_bin_target (dir : String) (mote_name : String) : BinTarget :=
+    let t : BinTarget := {
+        path := raw_path_join dir "src/main.mo",
+        name := mote_name,
+    } in
+    t
+
+/// One `[[bin]]` entry: its own `path` and `name`, each falling back to the
+/// conventional value when the entry names none.
+def Mote.bin_target_of (dir : String) (mote_name : String) (sub : BTreeMap String Toml.Value) : BinTarget :=
+    let declared := Mote.joined_table_string dir (Option.some (Toml.Value.table sub)) "path" in
+    let path : String := match declared {
+        Option.some p => p,
+        Option.none => raw_path_join dir "src/main.mo",
+    } in
+    let named := Mote.string_value (Toml.table_get "name" sub) in
+    let name : String := match named {
+        Option.some n => n,
+        Option.none => mote_name,
+    } in
+    let t : BinTarget := { path := path, name := name } in
+    t
 
 /// A table's string field, joined onto the mote's own directory so the
 /// value is a path usable exactly as stored -- `raw_path_join`'s rules
 /// for an empty `dir` and an absolute value included. Shared by the
-/// manifest's `[bin] path` and the tool config's `[build] target-dir`,
-/// which want it identically.
+/// manifest's `[lib] path` and `[[bin]] path` and the tool config's
+/// `[build] target-dir`, which want it identically.
 def Mote.joined_table_string (dir : String) (table : Option Toml.Value) (key : String) : Option String :=
     match Mote.table_string table key {
         Option.none => Option.none,
@@ -971,10 +1085,13 @@ def Mote.manifest_of_attr (dir : String) (attr : Attribute) : Option MoteManifes
                 // ("declared, resolved by convention").
                 dep_dirs := List.empty,
                 link_libs := Mote.mote_attr_list attr "libs",
-                // An inline mote declares no `[bin]`: the annotation's own
-                // file IS the binary, and `compile` already takes a file.
-                bin_path := Option.none,
-                bin_name := Option.none,
+                // An inline mote declares no targets: the annotation's own
+                // file IS the binary, and `build` already takes a file.
+                // `none`/empty rather than the conventional defaults, for
+                // that reason -- `src/main.mo` would name a path it has no
+                // `src/` tree to hold.
+                lib_path := Option.none,
+                bins := List.empty,
             } in
             Option.some m
     }
@@ -1116,48 +1233,146 @@ def test_manifest_without_dependencies_has_no_dep_dir : Bool :=
         }
     }
 
-/// The `[bin]` target, which is what `monad compile <mote dir>` builds.
-/// Same shape as `cli/mote.toml`.
+/// The `[[bin]]` target, which is what `monad build <mote dir>` builds.
+/// Same shape as `cli/mote.toml` (spelled out as an array of tables).
 def bin_manifest_fixture : String :=
-  "[mote]\nname = \"cli\"\nversion = \"0.1.0\"\n\n[lib]\npath = \"src/lib.mo\"\n\n[bin]\nname = \"monad\"\npath = \"src/main.mo\"\n"
+  "[mote]\nname = \"cli\"\nversion = \"0.1.0\"\n\n[lib]\npath = \"src/lib.mo\"\n\n[[bin]]\nname = \"monad\"\npath = \"src/main.mo\"\n"
+
+/// Two targets, which is what the singular `[bin]` spelling could not say.
+def two_bin_manifest_fixture : String :=
+  "[mote]\nname = \"cli\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"app\"\npath = \"src/main.mo\"\n\n[[bin]]\nname = \"tool\"\npath = \"src/bin/tool.mo\"\n"
+
+/// The `n`th bin target, or `none` past the end. Recursive rather than
+/// `List.get` so the tests need no import this module does not already
+/// carry.
+def bin_target_at (bs : List BinTarget) (n : I64) : Option BinTarget :=
+    match bs {
+        List.empty => Option.none,
+        List.cons b rest =>
+            if I64.beq n 0 then Option.some b
+            else bin_target_at rest (n - 1)
+    }
 
 #[test]
 def test_manifest_reads_the_bin_target : Bool :=
     match Mote.parse_manifest "" bin_manifest_fixture {
         Option.none => false,
         Option.some m =>
-            match m.bin_path {
+            match m.bins {
+                List.empty => false,
+                List.cons b rest =>
+                    if Bool.not (List.is_empty rest) then false
+                    else if String.beq (BinTarget.target_path b) "src/main.mo"
+                        then String.beq (BinTarget.target_name b) "monad"
+                        else false
+            }
+    }
+
+/// `[[bin]]` is an ARRAY: several targets, each with its own name and
+/// path. The old singular model could not express this at all.
+#[test]
+def test_manifest_reads_several_bin_targets : Bool :=
+    match Mote.parse_manifest "" two_bin_manifest_fixture {
+        Option.none => false,
+        Option.some m =>
+            match bin_target_at m.bins 1 {
                 Option.none => false,
-                Option.some p =>
-                    if String.beq p "src/main.mo"
-                    then match m.bin_name {
-                        Option.none => false,
-                        Option.some n => String.beq n "monad"
+                Option.some second =>
+                    if Bool.not (String.beq (BinTarget.target_name second) "tool") then false
+                    else match bin_target_at m.bins 2 {
+                        Option.some _ => false,
+                        Option.none => String.beq (BinTarget.target_path second) "src/bin/tool.mo"
                     }
+            }
+    }
+
+/// A manifest with NO bin table still gets exactly one target -- the
+/// conventional `src/main.mo`, named after the mote. That default is what
+/// makes `monad build <mote>` work without a manifest edit; whether the
+/// file is actually there is `build_target`'s check, not this one's.
+#[test]
+def test_manifest_without_a_bin_table_has_the_default_bin_target : Bool :=
+    match Mote.parse_manifest "lang" mote_manifest_fixture {
+        Option.none => false,
+        Option.some m =>
+            match m.bins {
+                List.empty => false,
+                List.cons b rest =>
+                    if Bool.not (List.is_empty rest) then false
+                    else if String.beq (BinTarget.target_path b) "lang/src/main.mo"
+                        then String.beq (BinTarget.target_name b) "lang"
+                        else false
+            }
+    }
+
+/// A `[[bin]]` entry that names only a target still gets a PATH: the
+/// conventional `src/main.mo`. The name and the path default
+/// independently, which is what `package-system.md` §2a's sketch says.
+#[test]
+def test_bin_entry_without_a_path_defaults_to_main : Bool :=
+    match Mote.parse_manifest "cli" "[mote]\nname = \"cli\"\n\n[[bin]]\nname = \"tool\"\n" {
+        Option.none => false,
+        Option.some m =>
+            match bin_target_at m.bins 0 {
+                Option.none => false,
+                Option.some b =>
+                    if String.beq (BinTarget.target_name b) "tool"
+                    then String.beq (BinTarget.target_path b) "cli/src/main.mo"
                     else false
             }
     }
 
+/// The library root is a PATH like the bin ones, defaulting to the
+/// conventional `src/lib.mo` when `[lib]` is absent -- which is why the 12
+/// motes this change adds a hub to need no manifest edit.
 #[test]
-def test_manifest_without_a_bin_table_has_no_bin_target : Bool :=
-    match Mote.parse_manifest "" mote_manifest_fixture {
+def test_lib_path_defaults_to_src_lib : Bool :=
+    match Mote.parse_manifest "lang" "[mote]\nname = \"lang\"\n" {
         Option.none => false,
-        Option.some m => match m.bin_path {
-            Option.none => true,
-            Option.some _ => false
+        Option.some m => match m.lib_path {
+            Option.none => false,
+            Option.some p => String.beq p "lang/src/lib.mo"
         }
     }
 
-/// `[bin] path` is joined like a dependency path, so `compile` needs no
+/// ...and a declared `[lib] path` wins over that default.
+#[test]
+def test_lib_path_reads_the_declaration : Bool :=
+    match Mote.parse_manifest "lang" mote_manifest_fixture {
+        Option.none => false,
+        Option.some m => match m.lib_path {
+            Option.none => false,
+            Option.some p => String.beq p "lang/src/lib.mo"
+        }
+    }
+
+/// `[[bin]] path` is joined like a dependency path, so `build` needs no
 /// join of its own.
 #[test]
 def test_bin_path_is_joined_onto_the_mote_dir : Bool :=
     match Mote.parse_manifest "cli" bin_manifest_fixture {
         Option.none => false,
         Option.some m =>
-            match m.bin_path {
+            match m.bins {
+                List.empty => false,
+                List.cons b _ => String.beq (BinTarget.target_path b) "cli/src/main.mo"
+            }
+    }
+
+/// The legacy singular `[bin]` spelling still means one target -- the
+/// reader accepts both, so an external mote written against the old
+/// spelling keeps resolving.
+#[test]
+def test_singular_bin_table_is_read_as_one_target : Bool :=
+    match Mote.parse_manifest "cli" "[mote]\nname = \"cli\"\n\n[bin]\nname = \"monad\"\npath = \"src/main.mo\"\n" {
+        Option.none => false,
+        Option.some m =>
+            match bin_target_at m.bins 0 {
                 Option.none => false,
-                Option.some p => String.beq p "cli/src/main.mo"
+                Option.some b =>
+                    if String.beq (BinTarget.target_name b) "monad"
+                    then String.beq (BinTarget.target_path b) "cli/src/main.mo"
+                    else false
             }
     }
 

@@ -13,7 +13,7 @@ use lib::main {*}
 #[test]
 def test_from_args_build_positional_name : Bool :=
     match Command.from_args ["build", "a.mo", "myname"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "myname" && verbose == false && debug == true,
         _ => false,
     }
@@ -21,7 +21,7 @@ def test_from_args_build_positional_name : Bool :=
 #[test]
 def test_from_args_build_default_name : Bool :=
     match Command.from_args ["build", "a.mo"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "source" && verbose == false && debug == true,
         _ => false,
     }
@@ -29,7 +29,7 @@ def test_from_args_build_default_name : Bool :=
 #[test]
 def test_from_args_build_output_flag : Bool :=
     match Command.from_args ["build", "a.mo", "--output", "out", "--verbose"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "out" && verbose == true && debug == true,
         _ => false,
     }
@@ -37,7 +37,7 @@ def test_from_args_build_output_flag : Bool :=
 #[test]
 def test_from_args_build_short_flags : Bool :=
     match Command.from_args ["build", "a.mo", "-o", "out", "-v"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && Path.to_string out_name == "out" && verbose == true && debug == true,
         _ => false,
     }
@@ -45,7 +45,7 @@ def test_from_args_build_short_flags : Bool :=
 #[test]
 def test_from_args_build_debug_flag : Bool :=
     match Command.from_args ["build", "a.mo", "--debug"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == false && debug == true,
         _ => false,
     }
@@ -53,7 +53,7 @@ def test_from_args_build_debug_flag : Bool :=
 #[test]
 def test_from_args_build_debug_short_flag : Bool :=
     match Command.from_args ["build", "a.mo", "-g", "-v"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == true && debug == true,
         _ => false,
     }
@@ -63,7 +63,7 @@ def test_from_args_build_debug_short_flag : Bool :=
 #[test]
 def test_from_args_build_release_opts_out_of_debug : Bool :=
     match Command.from_args ["build", "a.mo", "--release"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == false && debug == false,
         _ => false,
     }
@@ -73,7 +73,7 @@ def test_from_args_build_release_opts_out_of_debug : Bool :=
 #[test]
 def test_from_args_build_debug_beats_release : Bool :=
     match Command.from_args ["build", "a.mo", "--release", "--debug"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "a.mo" && verbose == false && debug == true,
         _ => false,
     }
@@ -85,7 +85,7 @@ def test_from_args_build_debug_beats_release : Bool :=
 #[test]
 def test_from_args_build_with_no_path_defaults_to_the_mote : Bool :=
     match Command.from_args ["build"] {
-        Command.build path out_name verbose debug _no_cache =>
+        Command.build path out_name _bin verbose debug _no_cache =>
             Path.to_string path == "." && Path.to_string out_name == "source" && verbose == false && debug == true,
         _ => false,
     }
@@ -95,8 +95,8 @@ def test_from_args_build_with_no_path_defaults_to_the_mote : Bool :=
 #[test]
 def test_from_args_build_bare_and_dot_agree : Bool :=
     match Command.from_args ["build"] {
-        Command.build p1 o1 _v1 _d1 _n1 => match Command.from_args ["build", "."] {
-            Command.build p2 o2 _v2 _d2 _n2 =>
+        Command.build p1 o1 _b1 _v1 _d1 _n1 => match Command.from_args ["build", "."] {
+            Command.build p2 o2 _b2 _v2 _d2 _n2 =>
                 Path.to_string p1 == Path.to_string p2 && Path.to_string o1 == Path.to_string o2,
             _ => false,
         },
@@ -109,8 +109,30 @@ def test_from_args_build_bare_and_dot_agree : Bool :=
 #[test]
 def test_from_args_build_no_cache_flag : Bool :=
     match Command.from_args ["build", "a.mo", "--no-cache"] {
-        Command.build path _out_name _verbose _debug no_cache =>
+        Command.build path _out_name _bin _verbose _debug no_cache =>
             Path.to_string path == "a.mo" && no_cache == true,
+        _ => false,
+    }
+
+// `--bin <name>` is peeled with the other flags for the same reason: left
+// in the list it would be read as the positional PATH and its name as the
+// positional output name, so `monad build --bin tool .` would build `.` as
+// `tool` -- one argument, two meanings, both wrong.
+#[test]
+def test_from_args_build_bin_flag : Bool :=
+    match Command.from_args ["build", "a.mo", "--bin", "tool"] {
+        Command.build path out_name bin _verbose _debug _no_cache =>
+            Path.to_string path == "a.mo" && bin == "tool" && Path.to_string out_name == "source",
+        _ => false,
+    }
+
+/// Empty, not a name: "no `--bin` was given" is a different state from
+/// "`--bin` named something", and only the empty one lets `build_target`
+/// fall back to "the target that exists".
+#[test]
+def test_from_args_build_without_bin_is_empty : Bool :=
+    match Command.from_args ["build", "a.mo"] {
+        Command.build _path _out_name bin _verbose _debug _no_cache => bin == "",
         _ => false,
     }
 
@@ -120,7 +142,7 @@ def test_from_args_build_no_cache_flag : Bool :=
 #[test]
 def test_from_args_build_without_no_cache_is_false : Bool :=
     match Command.from_args ["build", "a.mo"] {
-        Command.build _path _out_name _verbose _debug no_cache => no_cache == false,
+        Command.build _path _out_name _bin _verbose _debug no_cache => no_cache == false,
         _ => false,
     }
 
