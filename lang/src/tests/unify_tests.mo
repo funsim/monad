@@ -1,7 +1,7 @@
 use lang::types {
   Decl, Def, LocalScope, Location, ModulePath, Scope, Term, TypeError, app,
-  binder_anon, concrete, forall, hole, id, lit, named, pi, result_is_ok, sentinel,
-  sort_n, str, term_loc, unnamed, var,
+  binder_anon, binder_binder, binder_is_explicit, concrete, hole, id, lit, named,
+  pi, result_is_ok, sentinel, sort_n, str, term_loc, unnamed, var,
 }
 use lib::typecheck::unify {unify}
 use lib::typecheck::infer {type_check}
@@ -83,20 +83,25 @@ def test_unify_pi_vs_sort : Bool :=
     let ok : Bool := run_unify p (sort_n 1) in
     Bool.not ok
 
-// --- Forall tests ---
+// --- Quantifier tests ---
+//
+// A quantifier binder is TRANSPARENT to `unify`: stripped and retried, on
+// either side. Before R2b these were built with `Term.forall`; the binder
+// tag is what says so now, and these two pins are what says the stripping
+// still happens on the constructor it moved to.
 
 #[test]
-def test_unify_forall_stripped : Bool :=
+def test_unify_quantifier_stripped : Bool :=
     let body : Term := sort_n 1 in
-    let f : Term := Term.forall (DebugName.named (Identifier.id "A")) (sort_n 1) body in
+    let f : Term := Term.pi (binder_binder (Identifier.id "A")) (sort_n 1) body in
     run_unify f (sort_n 1)
 
 #[test]
-def test_unify_forall_both_sides : Bool :=
+def test_unify_quantifier_both_sides : Bool :=
     let body_left : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
-    let f_left : Term := Term.forall (DebugName.named (Identifier.id "A")) (sort_n 1) body_left in
+    let f_left : Term := Term.pi (binder_binder (Identifier.id "A")) (sort_n 1) body_left in
     let body_right : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
-    let f_right : Term := Term.forall (DebugName.named (Identifier.id "B")) (sort_n 1) body_right in
+    let f_right : Term := Term.pi (binder_binder (Identifier.id "B")) (sort_n 1) body_right in
     run_unify f_left f_right
 
 // --- Literal / structural mismatch ---
@@ -364,7 +369,9 @@ def test_probe_unify_peels_a_nested_operand : Bool :=
 /// depends on `lang.module` -- importing back is a cycle.
 def probe_strip_binders (t : Term) : Term := match t {
     Term.lam _dbg _typ body => probe_strip_binders body,
-    Term.forall _dbg _kind body => probe_strip_binders body,
+    // R2b folded `Term.forall` into `Term.pi`: a quantifier is a non-explicit
+    // binder, and an explicit one is the old `pi` catch-all -- unstripped.
+    Term.pi b _dom body => if binder_is_explicit b then t else probe_strip_binders body,
     _ => t,
 }
 

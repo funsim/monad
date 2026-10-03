@@ -1,10 +1,11 @@
-use lib::typecheck::levels {free_level_vars, is_level_binder_kind}
+use lib::typecheck::levels {free_level_vars}
 use lang::types {
-  Attribute, Class, ClassDef, DebugName, Decl, Def, Identifier, InductConstructor,
-  Inductive, Instance, MatchCase, ModulePath, NamePath, Param, Similar, SortLevel,
-  Struct, StructLitField, Term, TypeConstraint, char, flt, id_eq, id_member, if_,
-  match_, npath, num, package_private, sentinel, show_identifier, str, struct_lit,
-  struct_update, union_ids,
+  Attribute, BinderInfo, Class, ClassDef, DebugName, Decl, Def, Identifier,
+  InductConstructor, Inductive, Instance, MatchCase, ModulePath, NamePath, Param,
+  Similar, SortLevel, Struct, StructLitField, Term, TypeConstraint, binder_binder,
+  binder_info_of, binder_is_level, binder_level, binder_name, char, flt, id_eq,
+  id_member, if_, match_, npath, num, package_private, sentinel, show_identifier,
+  str, struct_lit, struct_update, union_ids,
 }
 // `HashMap` is what this file reaches from `std.map`, named like any
 // other import — see scope.mo's comment on the same line for the history.
@@ -33,10 +34,8 @@ def free_vars (typ : Term) (known_names : List Identifier) : List Identifier :=
             },
         Term.lam dbg typ_ body =>
             union_ids (free_vars typ_ known_names) (free_vars body known_names),
-        Term.forall dbg kind body =>
-            union_ids (free_vars kind known_names) (free_vars body known_names),
-        Term.pi _ arg ret =>
-            union_ids (free_vars arg known_names) (free_vars ret known_names),
+        Term.pi _b dom cod =>
+            union_ids (free_vars dom known_names) (free_vars cod known_names),
         Term.app fun_ arg =>
             union_ids (free_vars fun_ known_names) (free_vars arg known_names),
         Term.lit lit_val => match lit_val {
@@ -184,14 +183,28 @@ def elaborate_type (typ : Term) (constraints : List TypeConstraint) (known_names
 #[partial]
 def bound_level_var_names (typ : Term) : List Identifier :=
     match typ {
-        Term.forall dbg kind body =>
-            if is_level_binder_kind kind
-            then match dbg {
-                DebugName.named id =>
-                    union_ids (List.cons id List.empty) (bound_level_var_names body),
-                DebugName.unnamed => bound_level_var_names body,
-            }
-            else bound_level_var_names body,
+        // Three-way, not two. With `forall` folded in, ONE arm sees all
+        // three binder flavours and each behaves differently: a level
+        // binder contributes its name and keeps walking, a term binder
+        // (`BinderInfo.binder`, yesterday's non-level `forall`) contributes
+        // nothing and also keeps walking, and an ordinary arrow
+        // (`explicit`, which yesterday reached the catch-all) STOPS.
+        //
+        // That last one is the whole reason this needs a three-way test.
+        // Written as "if level then … else walk", an arrow would silently
+        // start descending into a function's domain and codomain, which
+        // this never did -- it has only ever walked a binder CHAIN.
+        Term.pi b _dom body =>
+            match binder_info_of b {
+                BinderInfo.level =>
+                    match binder_name b {
+                        DebugName.named id =>
+                            union_ids (List.cons id List.empty) (bound_level_var_names body),
+                        DebugName.unnamed => bound_level_var_names body,
+                    },
+                BinderInfo.binder => bound_level_var_names body,
+                BinderInfo.explicit => List.empty,
+            },
         _ => List.empty,
     }
 
@@ -215,13 +228,13 @@ def ids_without (a : List Identifier) (b : List Identifier) : List Identifier :=
 /// differently, and a caller that generalizes one must be able to not
 /// generalize the other.
 ///
-/// The binder's KIND is what distinguishes a level binder from a term
-/// binder downstream -- `Term.sort (SortLevel.concrete 0)` here versus
-/// `wrap_forall`'s `Term.sort (SortLevel.concrete 1)`. The two markers
-/// differ only in that level value, and it is readable with
-/// `sort_level_of`. Safe because nothing inspects a `forall`
-/// binder's kind SHAPE: `type_check_forall` type-checks the kind and
-/// pushes it into `local_types`, but never matches on it.
+/// The binder's INFO is what distinguishes a level binder from a term
+/// binder downstream -- `BinderInfo.level` here versus `wrap_forall`'s
+/// `BinderInfo.binder`. Before R2b the same distinction was carried by the
+/// binder's KIND term (`Term.sort (SortLevel.concrete 0)` here,
+/// `Term.sort (SortLevel.concrete 1)` there) and read back with
+/// `sort_level_of`; the fold made it the tag it always was, so the domain
+/// written here is now just the level's type, not a marker.
 ///
 /// Level binders go OUTSIDE the term binders (this wraps
 /// `wrap_forall`'s result), so a signature's levels are bound before the
@@ -230,17 +243,18 @@ def wrap_level_forall (typ : Term) (lvars : List Identifier) : Term :=
     match lvars {
         List.cons hd rest =>
             let kind : Term := Term.sort (SortLevel.concrete 0) in
-            Term.forall (DebugName.named hd) kind (wrap_level_forall typ rest),
+            Term.pi (binder_level hd) kind (wrap_level_forall typ rest),
         List.empty => typ,
     }
 
-/// Wrap a type with Forall binders for each free var (in order).
+/// Wrap a type with `forall` binders for each free var (in order). The
+/// binders are `BinderInfo.binder`; a type variable's domain is a real
+/// type, and `Type` -- `Sort 1` -- is the one it is given here.
 def wrap_forall (typ : Term) (vars : List Identifier) : Term :=
     match vars {
         List.cons hd rest =>
             let typ_ := Term.sort (SortLevel.concrete 1) in
-            let forall_term := Term.forall (DebugName.named hd) typ_ (wrap_forall typ rest) in
-            forall_term,
+            Term.pi (binder_binder hd) typ_ (wrap_forall typ rest),
         List.empty => typ,
     }
 
@@ -557,22 +571,21 @@ def elaborate_decls_map (decl_list : List Decl) (known_names : List Identifier) 
 def test_elaborate_type_binds_a_free_level_var : Bool :=
     let typ : Term := Term.sort (SortLevel.var (Identifier.id "u")) in
     match elaborate_type typ List.empty List.empty {
-        Term.forall _dbg _kind _body => true,
+        Term.pi b _dom _cod => binder_is_level b,
         _ => false,
     }
 
-/// ...and the binder is marked as a LEVEL binder, not a term binder.
-/// `wrap_forall` marks a term binder `Term.sort (SortLevel.concrete 1)`;
-/// this one must be a sort at level 0, which is what `is_level_binder_kind`
-/// (`lang/typecheck/levels.mo`) reads to keep the two apart at the three
-/// sites that open a `forall` chain.
+/// ...and the binder still CARRIES its name. The whole point of the
+/// wrapper is that the level variable is bound by the def rather than left
+/// dangling, and a binder that lost its name binds nothing -- the failure
+/// `ParseTermKind.pi`'s own comment says this branch shipped once.
 #[test]
-def test_level_binder_is_marked_as_a_sort : Bool :=
+def test_level_binder_keeps_its_name : Bool :=
     let typ : Term := Term.sort (SortLevel.var (Identifier.id "u")) in
     match elaborate_type typ List.empty List.empty {
-        Term.forall _dbg kind _body => match kind {
-            Term.sort _l => true,
-            _ => false,
+        Term.pi b _dom _cod => match binder_name b {
+            DebugName.named id => Similar.similar id (Identifier.id "u"),
+            DebugName.unnamed => false,
         },
         _ => false,
     }
@@ -582,7 +595,7 @@ def test_level_binder_is_marked_as_a_sort : Bool :=
 #[test]
 def test_concrete_type_gains_no_level_binder : Bool :=
     match elaborate_type (Term.sort (SortLevel.concrete 1)) List.empty List.empty {
-        Term.forall _dbg _kind _body => false,
+        Term.pi _b _dom _cod => false,
         _ => true,
     }
 
@@ -602,14 +615,15 @@ def test_elaborate_type_level_generalization_is_idempotent : Bool :=
     let once : Term := elaborate_type typ List.empty List.empty in
     Similar.similar (elaborate_type once List.empty List.empty) once
 
-/// The guard reads the binders' MARKER, not their position, so it still
-/// finds a level binder sitting outside a term binder -- the shape
-/// `elaborate_type` itself builds when a signature has both.
+/// The guard reads the binders' INFO, not their position, so it still
+/// finds a level binder sitting OUTSIDE a term binder -- the shape
+/// `elaborate_type` itself builds when a signature has both. The term
+/// binder in the middle must not stop the walk.
 #[test]
 def test_bound_level_var_names_finds_the_level_binder : Bool :=
-    let inner : Term := Term.forall (DebugName.named (Identifier.id "A")) (Term.sort (SortLevel.concrete 1)) Term.hole in
-    let t : Term := Term.forall (DebugName.named (Identifier.id "u"))
-                                (Term.sort (SortLevel.concrete 0)) inner in
+    let inner : Term := Term.pi (binder_binder (Identifier.id "A")) (Term.sort (SortLevel.concrete 1)) Term.hole in
+    let t : Term := Term.pi (binder_level (Identifier.id "u"))
+                            (Term.sort (SortLevel.concrete 0)) inner in
     match bound_level_var_names t {
         List.cons hd rest =>
             List.is_empty rest && Similar.similar hd (Identifier.id "u"),

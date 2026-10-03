@@ -1,10 +1,10 @@
 use std::list {List.length}
 use lang::types {
-  Attribute, DebugName, Decl, FieldPattern, FieldPatternEntry, Identifier,
-  CubicalPrim, InductConstructor, Inductive, MatchCase, ModulePath, NamePath,
-  Param, Scope, ScopeClassDef, ScopeData, Similar, Term, TypeError, binder_anon, char, cub_i0,
-  cub_i1, cub_ijoin, cub_imeet, cub_ineg, cub_interval, if_, many, match_,
-  package_private, sentinel, sort_n,
+  Attribute, Binder, BinderInfo, DebugName, Decl, FieldPattern, FieldPatternEntry,
+  Identifier, CubicalPrim, InductConstructor, Inductive, MatchCase, ModulePath,
+  NamePath, Param, Scope, ScopeClassDef, ScopeData, Similar, Term, TypeError,
+  binder_anon, binder_binder, char, cub_i0, cub_i1, cub_ijoin, cub_imeet, cub_ineg,
+  cub_interval, if_, many, match_, package_private, sentinel, sort_n,
 }
 use lib::scope {build_scope_from_decls, scope_find_inductive}
 use lib::typecheck::infer {
@@ -12,7 +12,7 @@ use lib::typecheck::infer {
   is_uninformative_carrier, lam_binder_hint, type_check, type_check_match_case
 }
 
-open Term {app, forall, hole, lam, lit, pi, var}
+open Term {app, hole, lam, lit, pi, var}
 open DebugName {named, unnamed}
 open Identifier {id}
 open ModulePath {mp}
@@ -172,8 +172,8 @@ def test_var_free_unknown : Bool :=
 // sorts (W1.2), not the flat level-1 universe these tests used to assert.
 // A component contributes the sort of its TYPE: `Type` is `Sort 1`, so
 // `Type : Sort 2` and `(A : Type) -> Type` is itself a `Sort 2`. Three
-// of the four affected tests are below; the fourth, `test_forall_infer`,
-// is in the Forall section and says the same thing about the other arm.
+// of the four affected tests are below; the fourth, `test_quantifier_infer`,
+// is in the quantifier section and says the same thing about the other arm.
 // They were the corpus's only pins on the old rule, and `monad test` is
 // what found them: `check` never validates a signature's KIND, so no
 // `check`-based comparison can see a universe move.
@@ -288,29 +288,35 @@ def test_app_with_hole_return : Bool :=
         err _ => false,
     }
 
-// --- Forall tests ---
+// --- Quantifier tests ---
+//
+// `Term.pi` with a `binder` tag, which is what `Term.forall` became in R2b.
 
 #[test]
-def test_forall_infer : Bool :=
-    let a_dbg : DebugName := DebugName.named (Identifier.id "A") in
+def test_quantifier_infer : Bool :=
+    let a_id : Identifier := Identifier.id "A" in
     let kind : Term := sort_n 1 in
     let body : Term := sort_n 1 in
-    let t : Term := Term.forall a_dbg kind body in
+    let t : Term := Term.pi (binder_binder a_id) kind body in
     match run_check t Term.hole {
         ok tt =>
-            // Same rule on the `Forall` arm: both components are
-            // `Type`, contributing 2 each (see the note above the Pi
-            // tests).
+            // Same rule on the quantifier flavour of `Term.pi`: both
+            // components are `Type`, contributing 2 each (see the note
+            // above the Pi tests).
             match tt { mk _ typ => Similar.similar typ (sort_n 2) },
         err _ => false,
     }
 
 #[test]
-def test_forall_unnamed : Bool :=
-    let dbg : DebugName := DebugName.unnamed in
+def test_quantifier_unnamed : Bool :=
+    // Built as a literal rather than through `binder_binder`, which wraps
+    // every name it is handed in `DebugName.named`: what this pins is the
+    // UNNAMED spelling. Annotated local first -- the
+    // bare-struct-literal-in-argument-position miscompile.
+    let b : Binder := { name := DebugName.unnamed, info := BinderInfo.binder } in
     let kind : Term := sort_n 1 in
     let body : Term := sort_n 1 in
-    let t : Term := Term.forall dbg kind body in
+    let t : Term := Term.pi b kind body in
     match run_check t Term.hole {
         ok _ => true,
         err _ => false,
@@ -1109,27 +1115,29 @@ def test_dup_type_name_wanted_declared_first : Bool :=
 // reproduce it: that helper builds a synthetic single-module scope, and the
 // over-generalization that produces the `forall` depends on which names count
 // as known, so the bug is reachable there only through an explicit implicit
-// binder. Building the `forall` by hand tests the arm itself.
+// binder. Building the quantifier by hand tests the arm itself.
 //
 // The body `Sort 1` against an expected return of `Sort 1` is rejected by the
 // `Sort n : Sort n` rule, so it is a mismatch the checker is known to catch --
 // which is what makes the NEGATIVE pin below meaningful rather than a test of
 // some unrelated permissiveness.
 
-/// The Pi the two `forall` pins wrap: `Type -> Type`.
-def forall_pin_pi : Term := Term.pi binder_anon (sort_n 1) (sort_n 1)
+/// The Pi the two quantifier pins wrap: `Type -> Type`.
+def quantifier_pin_pi : Term := Term.pi binder_anon (sort_n 1) (sort_n 1)
 
-/// `forall (a : Type). Type -> Type` -- the shape `{A : Type}` elaborates to.
-def forall_pin_expected : Term :=
-    Term.forall (DebugName.named (Identifier.id "a")) (sort_n 1) forall_pin_pi
+/// `{a : Type} -> Type -> Type` -- the shape `{A : Type}` elaborates to, a
+/// `Term.pi` whose binder carries the `binder` tag (R2b; this was
+/// `Term.forall`).
+def quantifier_pin_expected : Term :=
+    Term.pi (binder_binder (Identifier.id "a")) (sort_n 1) quantifier_pin_pi
 
 /// NEGATIVE, and the actual regression: the body is `Sort 1` where the Pi's
 /// return is `Sort 1`, which `type_check_sort_full` rejects. Before the
-/// `Term.forall` arm existed this was ACCEPTED, because the expected type never
+/// quantifier arm existed this was ACCEPTED, because the expected type never
 /// reached the body.
 #[test]
-def test_forall_expected_still_rejects_bad_body : Bool :=
-    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) forall_pin_expected {
+def test_quantifier_expected_still_rejects_bad_body : Bool :=
+    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) quantifier_pin_expected {
         ok _ => false,
         err _ => true,
     }
@@ -1137,18 +1145,18 @@ def test_forall_expected_still_rejects_bad_body : Bool :=
 /// POSITIVE control: the same shape with a body that does check. Without this,
 /// the pin above would also pass if the arm simply rejected everything.
 #[test]
-def test_forall_expected_still_accepts_good_body : Bool :=
-    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 0)) forall_pin_expected {
+def test_quantifier_expected_still_accepts_good_body : Bool :=
+    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 0)) quantifier_pin_expected {
         ok _ => true,
         err _ => false,
     }
 
 /// The un-wrapped control: a plain `Term.pi` expectation already rejected this
-/// body, so this pin is what says the `forall` case now agrees with it rather
+/// body, so this pin is what says the quantifier case now agrees with it rather
 /// than being special.
 #[test]
 def test_plain_pi_expected_rejects_bad_body : Bool :=
-    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) forall_pin_pi {
+    match run_check (Term.lam DebugName.unnamed (sort_n 1) (sort_n 1)) quantifier_pin_pi {
         ok _ => false,
         err _ => true,
     }

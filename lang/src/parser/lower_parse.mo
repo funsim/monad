@@ -43,7 +43,8 @@ use lang::types {
   ParseDecl, ParseDeclKind, ParseDef, ParseInductConstructor, ParseInductive,
   ParseInstance, ParseLiteral, ParseMatchCase, ParseNative, ParseParam,
   ParseStruct, ParseStructField, ParseStructLitField, ParseTerm, ParseTermKind,
-  QualifiedName, Struct, StructField, StructLitField, Term, binder_anon, binder_named,
+  QualifiedName, Struct, StructField, StructLitField, Term, binder_anon, binder_binder,
+  binder_named,
   sentinel,
   show_identifier,
 }
@@ -577,10 +578,13 @@ def lower_parse_kind (ctx : ParseLowerCtx) (k : ParseTermKind) : Term :=
             Term.lam (DebugName.named name)
                      (lower_parse_term_bare ctx typ)
                      (lower_parse_term (lower_ctx_bind name ctx) body),
+        // R2b folded `Term.forall` into `Term.pi`; a parse-stage `forall`
+        // is the TERM-level quantifier, so it lowers to `binder_binder` and
+        // its sort argument stays where it was, in the domain slot.
         ParseTermKind.forall name typ body =>
-            Term.forall (DebugName.named name)
-                        (lower_parse_term_bare ctx typ)
-                        (lower_parse_term (lower_ctx_bind name ctx) body),
+            Term.pi (binder_binder name)
+                    (lower_parse_term_bare ctx typ)
+                    (lower_parse_term (lower_ctx_bind name ctx) body),
         // A `pi` binds when the source wrote a name: `(n : T) -> body`
         // puts `n` in scope over `body`, which is what `type_dep_arrow_tag`
         // (`lang/parser.mo`) used to do inline before the grammar stopped

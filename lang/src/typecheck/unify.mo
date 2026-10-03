@@ -1,6 +1,6 @@
 use lib::types {
-  LocalScope, Scope, Similar, SortLevel, Term, TypeError, level_le, sentinel,
-  sort_level_of, term_peel
+  LocalScope, Scope, Similar, SortLevel, Term, TypeError, binder_is_explicit,
+  level_le, sentinel, sort_level_of, term_peel
 }
 use lib::typecheck::whnf {whnf}
 
@@ -8,7 +8,9 @@ use lib::typecheck::whnf {whnf}
 /// Holes match anything. Pi matches Pi structurally.
 /// App spines are congruent: heads and arguments compare separately.
 /// Sorts respect cumulativity (level ≤ expected_level).
-/// Foralls are stripped before comparison.
+/// A non-explicit binder -- a quantified type variable or a universe level,
+/// which `Term.forall` used to spell -- is stripped before comparison, on
+/// either side.
 /// Peels both sides at entry rather than adding a `Term.ctx` arm to each
 /// of the four matches below. Every one of them tests SHAPE with a `_ =>`
 /// fallback, so a wrapper would not crash -- a wrapped `Term.pi` would just
@@ -77,18 +79,30 @@ def unify_structural (a : Term) (b : Term) (scope : Scope) (locals : LocalScope)
 def unify_go (a : Term) (b : Term) (scope : Scope) (locals : LocalScope) (reduce : Bool) : Result TypeError Term :=
     match a {
         Term.hole => ok b,
-        Term.pi _ arg1 ret1 => match b {
-            Term.hole => ok a,
-            Term.pi _ arg2 ret2 =>
-                match unify arg1 arg2 scope locals {
-                    ok _ => unify ret1 ret2 scope locals,
-                    err e => err e,
+        // All three binder flavours arrive here now, and the two old
+        // `Term.forall` arms fold into the two guards. A NON-EXPLICIT
+        // binder on `a` is transparent exactly as `forall` was: strip it
+        // and retry. It binds a quantified type variable or a universe
+        // level rather than an argument the two sides could be compared
+        // on, and its domain is a bare sort, so the structural comparison
+        // below is not the same question.
+        Term.pi b1 arg1 ret1 =>
+            if Bool.not (binder_is_explicit b1)
+            then unify ret1 b scope locals
+            else
+                match b {
+                    Term.hole => ok a,
+                    Term.pi b2 arg2 ret2 =>
+                        if binder_is_explicit b2
+                        then
+                            match unify arg1 arg2 scope locals {
+                                ok _ => unify ret1 ret2 scope locals,
+                                err e => err e,
+                            }
+                        else unify a ret2 scope locals,
+                    _ => unify_stuck a b scope locals reduce,
                 },
-            Term.forall _dbg _kind body2 => unify a body2 scope locals,
-            _ => unify_stuck a b scope locals reduce,
-        },
         Term.sort l1 => unify_sort a l1 b scope locals reduce,
-        Term.forall _dbg _kind body1 => unify body1 b scope locals,
         // P2 (plans/type-system/core-term-simplification.md): spine
         // congruence. `unify_stuck`'s whole-spine reduction is weak-head
         // -- it stops at a stuck head and never looks inside an
@@ -110,7 +124,12 @@ def unify_go (a : Term) (b : Term) (scope : Scope) (locals : LocalScope) (reduce
         // heads are and their arguments are.
         Term.app f1 x1 => match b {
             Term.hole => ok a,
-            Term.forall _dbg _kind body2 => unify a body2 scope locals,
+            // The stripped-`forall` case, now a guard: a non-explicit
+            // binder on `b` is transparent on this side too.
+            Term.pi b2 _dom body2 =>
+                if binder_is_explicit b2
+                then unify_stuck a b scope locals reduce
+                else unify a body2 scope locals,
             Term.app f2 x2 =>
                 if Similar.similar a b then
                     ok a
@@ -127,7 +146,15 @@ def unify_go (a : Term) (b : Term) (scope : Scope) (locals : LocalScope) (reduce
         },
         _ => match b {
             Term.hole => ok a,
-            Term.forall _dbg _kind body2 => unify a body2 scope locals,
+            // ...and on the catch-all side.
+            Term.pi b2 _dom body2 =>
+                if binder_is_explicit b2
+                then
+                    if Similar.similar a b then
+                        ok a
+                    else
+                        unify_stuck a b scope locals reduce
+                else unify a body2 scope locals,
             _ =>
                 if Similar.similar a b then
                     ok a

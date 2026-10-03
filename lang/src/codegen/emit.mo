@@ -13,8 +13,8 @@ use lang::types {
   Inductive, Literal, LocalScope, Location, MatchCase, ModulePath, Multiplicity,
   NamePath, Native, Operator, Param, Scope, ScopeData, Struct, StructField,
   StructLitField, Term, TypeConstraint, UseFilter, UseItem, Visibility,
-  char_to_string, concrete, empty_attrs, group, i64, id_eq, ident, param_many,
-  sentinel, show_identifier, show_module_path, term_peel,
+  binder_is_explicit, char_to_string, concrete, empty_attrs, group, i64, id_eq,
+  ident, param_many, sentinel, show_identifier, show_module_path, term_peel,
 }
 use llvm::ir {
   DbgLoc, LLVMBasicBlock, LLVMDeclaration, LLVMFunction, LLVMGlobal,
@@ -956,7 +956,7 @@ pub struct MaterializedVal {
 /// instructions produced `v` (no `compose_seq`-style terminator-splicing
 /// needed): every real call site that produces `LLVMValue.void_val`
 /// (`Literal.struct_lit`/`struct_update`, `DebugName.unnamed`,
-/// `Term.forall`/`Term.pi`/`Term.sort`/`Term.hole`) pairs it with
+/// `Term.pi`/`Term.sort`/`Term.hole`) pairs it with
 /// `List.empty` -- there's never a pending terminator to splice around
 /// when `v` is actually `void_val`.
 #[partial]
@@ -2399,8 +2399,9 @@ def compile_db_term_ir (c : CodegenCtx) (term_ : Term) : CompileResult := match 
         },
     Term.ntv native => compile_ntv_ir c native,
     Term.con constr => compile_con_ir c constr,
-    Term.forall dbg kind body => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
-    Term.pi _ arg ret => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+    // One arm: a quantifier erases exactly as an arrow does. R2b folded
+    // `Term.forall` in, and the arm it used to need was this one verbatim.
+    Term.pi _b _arg _ret => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     // A sort emits nothing: a type has no runtime representation.
     Term.sort _level => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     Term.hole => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
@@ -3821,7 +3822,15 @@ def term_to_llvm_type (t : Term) : LLVMType := match term_peel t {
 /// not a `Term.pi`, so the chain would never be peeled at all.
 #[partial]
 def return_llvm_type (typ : Term) : LLVMType := match term_peel typ {
-    Term.pi _ _ body => return_llvm_type body,
+    // Guarded (R2b). The decls this runs over are
+    // `elaborate_module_decls_best_effort`'s output, so a polymorphic
+    // def's `typ` really is quantifier-headed and this arm really does
+    // see one. Before the fold such a `typ` fell to the catch-all and
+    // the def's return type was read off the whole quantifier, i.e. the
+    // `_ =>` fallback in `term_to_llvm_type`. Merged verbatim it would
+    // instead peel the quantifier and read the body's return type --
+    // more correct, but a codegen change, and not one R2b is making.
+    Term.pi b _ body => if binder_is_explicit b then return_llvm_type body else term_to_llvm_type typ,
     _ => term_to_llvm_type typ,
 }
 
@@ -5741,7 +5750,6 @@ def desugar_struct_lit_def (scope : Scope) (d : Def) : Def := match d {
 #[partial]
 def desugar_struct_lit_term (scope : Scope) (t : Term) : Term := match t {
     Term.lam dbg typ body => Term.lam dbg (desugar_struct_lit_term scope typ) (desugar_struct_lit_term scope body),
-    Term.forall dbg kind body => Term.forall dbg (desugar_struct_lit_term scope kind) (desugar_struct_lit_term scope body),
     Term.pi b arg_ ret_ => Term.pi b (desugar_struct_lit_term scope arg_) (desugar_struct_lit_term scope ret_),
     Term.app fun_ arg_ => Term.app (desugar_struct_lit_term scope fun_) (desugar_struct_lit_term scope arg_),
     Term.ntv native => Term.ntv (desugar_struct_lit_native scope native),

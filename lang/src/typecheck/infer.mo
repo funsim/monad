@@ -5,7 +5,8 @@ use lang::types {
   LocalScope, LocalVar, Location, MatchCase, ModulePath, NamePath, NameRef,
   Native, NumSuffix, Param, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, Similar, SortLevel, StructLitField, Term, TypeConstraint,
-  TypeError, binder_anon, concrete, cub_hcomp, cub_i0, cub_i1, cub_interval, cub_is_one,
+  TypeError, binder_anon, binder_is_explicit, binder_is_level,
+  concrete, cub_hcomp, cub_i0, cub_i1, cub_interval, cub_is_one,
   cub_pathp, cubical_arity,
   cubical_prim_eq, cubical_prim_name, field_access_chain,
   id_eq, id_member, level_lt, level_of_type, list_rev_loop, list_reverse, many,
@@ -28,7 +29,6 @@ use lang::scope {
   scope_find_cubical_prim, scope_resolve_name, type_mentions_any,
 }
 use lib::typecheck::name_subst {name_subst_term}
-use lib::typecheck::levels {is_level_binder_kind}
 use lib::typecheck::subst {term_permute, term_subst, term_shift}
 use lib::typecheck::cubical {
   PathParts, endpoint_of, path_parts_of, peels_to_bare_interval,
@@ -82,8 +82,13 @@ pub def type_check (term : Term) (expected_type : Term) (scope : Scope) (local_t
         Term.var idx dbg => type_check_var idx dbg expected_type scope local_types locals,
         Term.lam dbg t body => type_check_lam dbg t body expected_type scope local_types locals,
         Term.app f a => type_check_app f a expected_type scope local_types locals,
-        Term.forall dbg kind body => type_check_forall dbg kind body scope local_types locals,
-        Term.pi _ arg ret => type_check_pi arg ret scope local_types locals,
+        // One arm for all three binder flavours. `b` is handed through
+        // unchanged: it carries the NAME (`wrap_forall`/`wrap_level_forall`
+        // put the variable's own name there) and the INFO that tells a
+        // quantified type variable, a universe level and an ordinary arrow
+        // apart -- rebuilding it as `binder_anon`, which is what the old
+        // `type_check_pi` did, would erase both.
+        Term.pi b arg ret => type_check_pi b arg ret scope local_types locals,
         Term.con c => type_check_con c expected_type scope local_types locals,
         Term.ntv ntv => type_check_ntv ntv expected_type scope local_types locals,
         // The sole sort form -- `Prop`/`Type`/`Sort n` all lower to it. The
@@ -178,8 +183,24 @@ def mk_typed (a : Term) (b : Term) : TypedTerm :=
 /// right all along here.
 def carrier_from_expected_type (t : Term) : Option Term :=
     match t {
-        Term.pi _ arg_typ ret_typ =>
-            if is_uninformative_carrier arg_typ then carrier_from_pi_chain ret_typ else Option.some arg_typ,
+        // The guard is R2b's, and it is NOT the same question
+        // `is_uninformative_carrier` below asks. Before the fold this
+        // function had an arm for `pi` and none for `forall`, so a
+        // quantifier-headed expectation fell to `_ => Option.some t` --
+        // the whole quantifier handed back as if it were a carrier.
+        // Folding makes `forall` a `pi`, which without the guard would
+        // silently route it through the arrow rule instead (skip the
+        // sort domain, recurse into the body). That looks like a
+        // fix -- `is_uninformative_carrier`'s own rule says a sort
+        // domain says nothing -- but it is a SEMANTIC change to
+        // instance resolution and R2b is a representation change.
+        // `binder_is_explicit` keeps the old answer bit for bit; the
+        // widening is its own step, with its own pins.
+        Term.pi b arg_typ ret_typ =>
+            if binder_is_explicit b
+            then
+                if is_uninformative_carrier arg_typ then carrier_from_pi_chain ret_typ else Option.some arg_typ
+            else Option.some t,
         Term.hole => Option.none,
         _ => Option.some t,
     }
@@ -193,8 +214,15 @@ def carrier_from_expected_type (t : Term) : Option Term :=
 #[partial]
 def carrier_from_pi_chain (t : Term) : Option Term :=
     match t {
-        Term.pi _ arg_typ ret_typ =>
-            if is_uninformative_carrier arg_typ then carrier_from_pi_chain ret_typ else Option.some arg_typ,
+        // Same guard, same reason as `carrier_from_expected_type` above:
+        // this one's old answer for a quantifier-headed chain was the
+        // catch-all `Option.none`, i.e. STOP. The fold would otherwise
+        // skip the quantifier's sort domain and walk into its body.
+        Term.pi b arg_typ ret_typ =>
+            if binder_is_explicit b
+            then
+                if is_uninformative_carrier arg_typ then carrier_from_pi_chain ret_typ else Option.some arg_typ
+            else Option.none,
         _ => Option.none,
     }
 
@@ -285,9 +313,12 @@ def dict_env_from_locals (locals : LocalScope) : List DictBinding :=
 /// method), and -- only when the MATCHED INSTANCE ITSELF still carries
 /// constraints (`HAdd`-forwards-to-`Add`) -- resolves and pre-applies its
 /// own dict argument(s) via the existing, reused `resolve_dict_args`.
-/// Strip `n` leading `Term.pi` binders (skipping over any `Term.forall`
-/// binders first at each step -- they don't correspond to an applied
-/// value argument), returning the final codomain. Needed because
+/// Strip `n` leading `Term.pi` binders (skipping over any quantified or
+/// level binder met at each step -- they don't correspond to an applied
+/// value argument), returning the final codomain. `binder_is_explicit` is
+/// the test; the guard is load-bearing rather than tidiness, because
+/// counting a former `forall` as a value binder would report a def's type
+/// one argument short. Needed because
 /// `resolve_class_method_d4`'s reported type must be the RESOLVED
 /// concrete def's own real signature (peeled by however many dict args
 /// got pre-applied), not `expected_type` verbatim -- `expected_type`
@@ -304,8 +335,8 @@ def strip_n_pis (typ : Term) (n : I64) : Term :=
     if I64.lt n 1 then typ
     else
         match typ {
-            Term.forall _ _ body => strip_n_pis body n,
-            Term.pi _ _ ret => strip_n_pis ret (n - 1),
+            Term.pi b _dom ret =>
+                if binder_is_explicit b then strip_n_pis ret (n - 1) else strip_n_pis ret n,
             _ => typ,
         }
 
@@ -2145,7 +2176,12 @@ def con_ref_result_type (id : Identifier) (expected_type : Term) (scope : Scope)
 def con_ref_wants_inference (expected_type : Term) : Bool :=
     match expected_type {
         Term.hole => true,
-        Term.pi _ _ ret => con_ref_wants_inference ret,
+        // Guarded for the reason the two above record: a
+        // quantifier-headed expectation used to answer the catch-all
+        // `false` here, and the fold would otherwise walk into the
+        // quantifier's body looking for a hole.
+        Term.pi b _ ret =>
+            if binder_is_explicit b then con_ref_wants_inference ret else false,
         _ => false,
     }
 
@@ -2466,7 +2502,33 @@ def is_hole (t : Term) : Bool :=
 #[terminating]
 def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match expected_type {
-        Term.pi _ arg_typ ret_typ =>
+        // An explicit binder is a real function type, so the lambda is
+        // checked against it. Anything else (`BinderInfo.binder` -- a
+        // quantified type variable, yesterday's `forall`, and
+        // `BinderInfo.level`) has no argument to check against: the first
+        // arm below is skipped and the chain is stripped instead.
+        Term.pi b _ _ =>
+            if binder_is_explicit b
+            then type_check_lam_explicit dbg t body expected_type scope local_types locals
+            else type_check_lam_strip dbg t body expected_type scope local_types locals,
+        // Stage 2: a path ABSTRACTION. `fn i => body` checked against a
+        // `PathP A a b` binds the binder at the interval, checks the body
+        // against the line applied to the fresh dimension, and requires
+        // the body's two boundaries to match the type's endpoints --
+        // `body[i:=i0] ≡ a`, `body[i:=i1] ≡ b`. Matched BEFORE the
+        // inferring arm below because that arm discards the expected
+        // type, and the boundary is the whole content of this rule.
+        Term.cubical _c => check_path_lam dbg t body expected_type scope local_types locals,
+        _ => type_check_lam_inferring dbg t body scope local_types locals,
+    }
+
+/// The explicit-arrow arm of `type_check_lam`. Split out so the merged
+/// `Term.pi` arm above can dispatch on the binder without re-indenting the
+/// whole rule.
+#[terminating]
+def type_check_lam_explicit (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match expected_type {
+        Term.pi _b arg_typ ret_typ =>
             // Prefer the lambda's OWN written param type `t` over `arg_typ`
             // (the type `type_check_app` infers for the ARGUMENT this
             // lambda is about to be applied to) whenever `t` isn't itself
@@ -2518,28 +2580,25 @@ def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : T
                     ok (mk_typed lam_term lam_typ),
                 err e => err e,
             },
-        // A `forall`-headed expected type is the SAME lambda check with the
-        // binder stripped, exactly as `unify_go` strips one before comparing.
-        // Without this arm a `forall` fell to the inferring `_` arm below and
-        // the expected type was discarded outright, so EVERY polymorphic def's
-        // body -- and every monomorphic def whose declared type got
-        // over-generalized -- was checked against `Term.hole`, i.e. not
-        // checked. Stripping is sound here because a reference to the binder
-        // inside `inner` is a free `sentinel` var resolved BY NAME (the def's
-        // type variables are skolemized into `locals` by
-        // `locals_with_def_typevars`, `lang/module.mo`), not a de Bruijn index
-        // into this binder -- so removing the binder renumbers nothing.
-        Term.forall _dbg _kind inner =>
-            type_check_lam dbg t body inner scope local_types locals,
-        // Stage 2: a path ABSTRACTION. `fn i => body` checked against a
-        // `PathP A a b` binds the binder at the interval, checks the body
-        // against the line applied to the fresh dimension, and requires
-        // the body's two boundaries to match the type's endpoints --
-        // `body[i:=i0] ≡ a`, `body[i:=i1] ≡ b`. Matched BEFORE the
-        // inferring arm below because that arm discards the expected
-        // type, and the boundary is the whole content of this rule.
-        Term.cubical _c => check_path_lam dbg t body expected_type scope local_types locals,
-        _ => type_check_lam_inferring dbg t body scope local_types locals,
+        _ => err (TypeError.custom "type_check_lam_explicit: expected a function type"),
+    }
+
+/// The non-explicit arm of `type_check_lam`: a quantified-type-variable or
+/// level binder is the SAME lambda check with the binder stripped, exactly
+/// as `unify_go` strips one before comparing. Without this arm such an
+/// expected type fell to the inferring arm and was discarded outright, so
+/// EVERY polymorphic def's body -- and every monomorphic def whose declared
+/// type got over-generalized -- was checked against `Term.hole`, i.e. not
+/// checked. Stripping is sound here because a reference to the binder
+/// inside the body is a free `sentinel` var resolved BY NAME (the def's
+/// type variables are skolemized into `locals` by
+/// `locals_with_def_typevars`, `lang/module.mo`), not a de Bruijn index
+/// into this binder -- so removing the binder renumbers nothing.
+#[terminating]
+def type_check_lam_strip (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match expected_type {
+        Term.pi _b _dom cod => type_check_lam dbg t body cod scope local_types locals,
+        _ => err (TypeError.custom "type_check_lam_strip: expected a binder"),
     }
 
 /// The inferring arm of `type_check_lam`, factored out so the path
@@ -3070,39 +3129,56 @@ pub struct SigInfo {
 def sig_tvars_params_ret (sig : Term) : SigInfo :=
     sig_tvars_go sig 0 List.empty
 
-/// Decompose the pi chain, OPENING any `Term.forall` binder met along
-/// the way with a fresh free placeholder (`sig_tv_<n>`) via the standard
-/// open (`term_subst 0 placeholder body`) -- so that even a sig whose
-/// type parameters arrive forall-BOUND (not this pipeline's usual
-/// already-free shape, see `SigInfo`'s doc comment) still leaves them
-/// as free vars that `solve_typevars` and `subst_typevars_term` can
-/// solve and rewrite. `term_subst_go`'s fused shift also corrects the
-/// remaining indices when the binder drops off.
+/// Decompose the pi chain. Three-way at each binder, and all three
+/// flavours really occur in a signature:
+///
+///   - an EXPLICIT binder is a value parameter: recorded in `params`.
+///   - a QUANTIFIED type variable is OPENED with a fresh free placeholder
+///     (`sig_tv_<n>`) via the standard open (`term_subst 0 placeholder
+///     body`) -- so that even a sig whose type parameters arrive
+///     bound (not this pipeline's usual already-free shape, see
+///     `SigInfo`'s doc comment) still leaves them as free vars that
+///     `solve_typevars` and `subst_typevars_term` can solve and rewrite.
+///     `term_subst_go`'s fused shift also corrects the remaining indices
+///     when the binder drops off.
+///   - a LEVEL binder is DROPPED, for the reasons in the arm below.
+///
+/// Before R2b this was two arms, `Term.forall` and `Term.pi`, and the
+/// three-way split lived inside the `forall` arm; the fold is what makes
+/// the explicit case need its own branch rather than a catch-all.
 #[partial]
 def sig_tvars_go (t : Term) (n : I64) (params : List Term) : SigInfo :=
     match t {
-        Term.forall _dbg kind body =>
-            // A LEVEL binder is not a type variable and must not be
-            // opened with a term placeholder. Substituting `sig_tv_<n>`
-            // for it would rename the binder while the `SortLevel.var u`
-            // occurrences in the body keep the ORIGINAL name -- leaving
-            // an unresolved level, which every comparison in
-            // `lang/types.mo` answers `false` for, i.e. a spurious
-            // rejection rather than an error anyone could read.
-            //
-            // A level binder carries no term-level index, so dropping it
-            // outright (rather than substituting) is what keeps the body's
-            // de Bruijn indices correct: `term_subst 0` is exactly the
-            // shift that removing one binder requires, and the level
-            // variables are name-keyed, so they need no shifting at all.
-            if is_level_binder_kind kind
-            then sig_tvars_go (term_subst 0 (Term.sort (SortLevel.concrete 0)) body) n params
+        Term.pi b arg ret =>
+            if binder_is_level b
+            then
+                // A LEVEL binder is not a type variable and must not be
+                // opened with a term placeholder. Substituting `sig_tv_<n>`
+                // for it would rename the binder while the `SortLevel.var u`
+                // occurrences in the body keep the ORIGINAL name -- leaving
+                // an unresolved level, which every comparison in
+                // `lang/types.mo` answers `false` for, i.e. a spurious
+                // rejection rather than an error anyone could read.
+                //
+                // A level binder carries no term-level index, so dropping it
+                // outright (rather than substituting) is what keeps the body's
+                // de Bruijn indices correct: `term_subst 0` is exactly the
+                // shift that removing one binder requires, and the level
+                // variables are name-keyed, so they need no shifting at all.
+                sig_tvars_go (term_subst 0 (Term.sort (SortLevel.concrete 0)) ret) n params
+            else if binder_is_explicit b
+            then
+                // An ordinary arrow: a real value parameter. It is not
+                // opened -- there is no placeholder to make -- it is
+                // recorded, and the walk continues down the chain.
+                sig_tvars_go ret n (list_append params [arg])
             else
+                // A quantified TYPE VARIABLE: open it with a fresh free
+                // placeholder so `solve_typevars` and `subst_typevars_term`
+                // can reach it.
                 let fresh : Identifier := Identifier.id (String.concat "sig_tv_" (I64.to_string n)) in
                 let placeholder : Term := Term.var sentinel (DebugName.named fresh) in
-                sig_tvars_go (term_subst 0 placeholder body) (n + 1) params,
-        Term.pi _ arg ret =>
-            sig_tvars_go ret n (list_append params [arg]),
+                sig_tvars_go (term_subst 0 placeholder ret) (n + 1) params,
         _ => { params := params, ret := t },
     }
 
@@ -3178,13 +3254,25 @@ def solve_typevars (scope : Scope) (param : Term) (actual : Term) (subst : List 
                         },
                     DebugName.unnamed => subst,
                 },
-        Term.pi _ p_arg p_ret =>
-            match actual_p {
-                Term.pi _ a_arg a_ret => solve_typevars scope p_ret a_ret (solve_typevars scope p_arg a_arg subst),
-                Term.forall _ _ body => solve_typevars scope param body subst,
-                _ => subst,
-            },
-        Term.forall _dbg _kind body => solve_typevars scope body actual_p subst,
+        Term.pi p_b p_arg p_ret =>
+            // A NON-EXPLICIT binder on the pattern side is not an
+            // argument to match against, so it is stripped and the walk
+            // continues -- exactly what the old `Term.forall` arm did.
+            // Matching a former `forall` against a real `pi` argument
+            // would solve a type variable from a value's type.
+            if Bool.not (binder_is_explicit p_b)
+            then solve_typevars scope p_ret actual_p subst
+            else
+                match actual_p {
+                    // ...and the same on the ARGUMENT side: a
+                    // quantified/level binder there is stripped and the
+                    // pattern side is re-walked against its body.
+                    Term.pi a_b a_arg a_ret =>
+                        if binder_is_explicit a_b
+                        then solve_typevars scope p_ret a_ret (solve_typevars scope p_arg a_arg subst)
+                        else solve_typevars scope param a_ret subst,
+                    _ => subst,
+                },
         Term.app p_f p_a =>
             match actual_p {
                 Term.app a_f a_a => solve_typevars scope p_f a_f (solve_typevars scope p_a a_a subst),
@@ -3642,8 +3730,12 @@ def mentions_unresolved_name (t : Term) (scope : Scope) : Bool :=
             else
                 false,
         Term.app f a => if mentions_unresolved_name f scope then true else mentions_unresolved_name a scope,
-        Term.pi _ p ret => if mentions_unresolved_name p scope then true else mentions_unresolved_name ret scope,
-        Term.forall _dbg _kind body => mentions_unresolved_name body scope,
+        // Both children, and the domain is inert. A former `forall`'s kind
+        // was skipped -- it is a `Term.sort` or a bare type variable, and
+        // walking it changes nothing that the old arm could see: the
+        // domain of a folded `forall` is always a sort, which answers
+        // `false` below.
+        Term.pi _b dom cod => if mentions_unresolved_name dom scope then true else mentions_unresolved_name cod scope,
         Term.lam _dbg ty body => if mentions_unresolved_name ty scope then true else mentions_unresolved_name body scope,
         _ => false,
     }
@@ -3680,14 +3772,24 @@ def inferred_callee_domain (f : Term) (scope : Scope) (local_types : List Term) 
             },
     }
 
-/// Peel a (possibly forall-wrapped) Pi chain down to its first domain, if that
-/// domain carries real information. A hole domain means the callee knows no
-/// more than we do, which is `Option.none` so the caller keeps its hole.
+/// Peel a (possibly binder-wrapped) Pi chain down to its first value domain,
+/// if that domain carries real information. A hole domain means the callee
+/// knows no more than we do, which is `Option.none` so the caller keeps its
+/// hole.
+///
+/// `binder_is_explicit` is what keeps a folded `forall` out of the answer.
+/// Its `dom` is `Term.sort (SortLevel.concrete 0)` or `... 1` -- a real
+/// `Option.some`, not a hole, so without the guard a quantified type
+/// variable's KIND would be returned as the domain the next argument has to
+/// have. Before R2b the two were different constructors and the strip arm
+/// caught it for free.
 #[partial]
 def pi_domain_of (t : Term) : Option Term :=
     match term_peel t {
-        Term.pi _ dom _ret => if is_hole (term_peel dom) then Option.none else Option.some dom,
-        Term.forall _dbg _kind body => pi_domain_of body,
+        Term.pi b dom ret =>
+            if binder_is_explicit b
+            then if is_hole (term_peel dom) then Option.none else Option.some dom
+            else pi_domain_of ret,
         _ => Option.none,
     }
 
@@ -3819,9 +3921,47 @@ def class_method_declared_sig_bare (id : Identifier) (scope : Scope) : Option Cl
     }
 
 /// Extract the return type from the function's type after application.
+///
+/// `#[terminating]`: R2b split the body by binder flavour, and the two halves
+/// call back into this one on the stripped codomain, which is a subterm the
+/// checker cannot see through the peel. It is the same argument the old
+/// single-bodied version was making inline, now spread over three defs.
+#[terminating]
 def extract_pi_ret (f_term : Term) (a_term : Term) (f_typ : Term) (a_typ : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match f_typ {
-        Term.pi _ pi_arg pi_ret =>
+        // A NON-EXPLICIT binder on the callee's type is not the arrow this
+        // call is applying. Strip it and retry -- the old `Term.forall` arm
+        // below. Without the guard the rule below would read a quantified
+        // type variable's KIND as the parameter the argument is checked
+        // against.
+        Term.pi b _ _ =>
+            if binder_is_explicit b
+            then extract_pi_ret_explicit f_term a_term f_typ a_typ expected_type scope local_types locals
+            else extract_pi_ret_strip f_term a_term f_typ a_typ expected_type scope local_types locals,
+        // Stage 2: a path APPLICATION. The callee's type is a `PathP`,
+        // which is not a Pi -- it reaches this arm because
+        // `type_check_var` returns a variable's own type without
+        // unifying it against the synthesized Pi the application was
+        // checked against, and `try_type_check_def_call` declines
+        // non-Pi signatures. The argument must be a DIMENSION, and the
+        // result type is the line applied to it: `A d`.
+        Term.cubical _c =>
+            extract_path_app f_term a_term f_typ a_typ expected_type scope locals,
+        _ => extract_non_pi_ret f_term a_term expected_type scope,
+    }
+
+/// The strip arm of `extract_pi_ret`.
+def extract_pi_ret_strip (f_term : Term) (a_term : Term) (f_typ : Term) (a_typ : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match f_typ {
+        Term.pi _b _dom cod => extract_pi_ret f_term a_term cod a_typ expected_type scope local_types locals,
+        _ => err (TypeError.custom "extract_pi_ret_strip: expected a binder"),
+    }
+
+/// The explicit-arrow arm of `extract_pi_ret`. Split out so the merged
+/// `Term.pi` arm above can dispatch on the binder without re-indenting it.
+def extract_pi_ret_explicit (f_term : Term) (a_term : Term) (f_typ : Term) (a_typ : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match f_typ {
+        Term.pi _b pi_arg pi_ret =>
             let app_term : Term := Term.app f_term a_term in
             // A CONSTRUCTOR's callee type is not a real signature pi: for
             // a MULTI-argument constructor the callee is itself a partial
@@ -3857,50 +3997,49 @@ def extract_pi_ret (f_term : Term) (a_term : Term) (f_typ : Term) (a_typ : Term)
             else
                 let pi_subst : List (Pair Identifier Term) := solve_typevars scope pi_arg a_typ List.empty in
                 ok (mk_typed app_term (subst_typevars_term pi_ret pi_subst)),
-        Term.forall _ _ body_ =>
-            extract_pi_ret f_term a_term body_ a_typ expected_type scope local_types locals,
-        // Stage 2: a path APPLICATION. The callee's type is a `PathP`,
-        // which is not a Pi -- it reaches this arm because
-        // `type_check_var` returns a variable's own type without
-        // unifying it against the synthesized Pi the application was
-        // checked against, and `try_type_check_def_call` declines
-        // non-Pi signatures. The argument must be a DIMENSION, and the
-        // result type is the line applied to it: `A d`.
-        Term.cubical c =>
-            match path_parts_of f_typ {
-                Option.some parts =>
-                    match unify a_typ cub_interval scope locals {
-                        err _ => err (TypeError.custom
-                            "a path is applied at a dimension of the interval, not at a value"),
-                        ok _ =>
-                            let result_typ : Term := Term.app parts.line a_term in
-                            // `p i0`/`p i1` for a stuck `p` never reduces
-                            // (`whnf_go`'s app arm needs a `Term.lam`
-                            // head), but the path's own type CARRIES the
-                            // endpoint, so checking the application AS
-                            // the boundary term makes `p i0 ≡ a` hold by
-                            // construction. Recorded limit: sufficient
-                            // through `transp`/Stage 3, where boundary
-                            // terms are paths applied at substituted
-                            // endpoints, and NOT for Stage 5's
-                            // eta-expanded paths.
-                            match endpoint_of (whnf scope locals a_term) {
-                                Option.some ep =>
-                                    match cubical_prim_eq ep CubicalPrim.i0 {
-                                        true => ok (mk_typed parts.left result_typ),
-                                        false => ok (mk_typed parts.right result_typ),
-                                    },
-                                Option.none =>
-                                    ok (mk_typed (Term.app f_term a_term) result_typ),
+        // Unreachable in practice -- the dispatcher above hands this
+        // function only `Term.pi` -- but a match with no catch-all is a
+        // silent hole in a language with no exhaustiveness checking, so
+        // the old fallback stays.
+        _ => extract_non_pi_ret f_term a_term expected_type scope,
+    }
+
+/// The cubical arm of `extract_pi_ret`: a path APPLICATION. The callee's
+/// type is a `PathP`, which is not a Pi -- it reaches the dispatcher
+/// because `type_check_var` returns a variable's own type without
+/// unifying it against the synthesized Pi the application was checked
+/// against, and `try_type_check_def_call` declines non-Pi signatures. The
+/// argument must be a DIMENSION, and the result type is the line applied
+/// to it: `A d`.
+def extract_path_app (f_term : Term) (a_term : Term) (f_typ : Term) (a_typ : Term)
+    (expected_type : Term) (scope : Scope) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match path_parts_of f_typ {
+        Option.some parts =>
+            match unify a_typ cub_interval scope locals {
+                err _ => err (TypeError.custom
+                    "a path is applied at a dimension of the interval, not at a value"),
+                ok _ =>
+                    let result_typ : Term := Term.app parts.line a_term in
+                    // `p i0`/`p i1` for a stuck `p` never reduces
+                    // (`whnf_go`'s app arm needs a `Term.lam` head), but
+                    // the path's own type CARRIES the endpoint, so checking
+                    // the application AS the boundary term makes
+                    // `p i0 ≡ a` hold by construction. Recorded limit:
+                    // sufficient through `transp`/Stage 3, where boundary
+                    // terms are paths applied at substituted endpoints, and
+                    // NOT for Stage 5's eta-expanded paths.
+                    match endpoint_of (whnf scope locals a_term) {
+                        Option.some ep =>
+                            match cubical_prim_eq ep CubicalPrim.i0 {
+                                true => ok (mk_typed parts.left result_typ),
+                                false => ok (mk_typed parts.right result_typ),
                             },
+                        Option.none => ok (mk_typed (Term.app f_term a_term) result_typ),
                     },
-                // A cubical callee type that is not a saturated PathP is
-                // in no shape to peel a return from: same fallback as
-                // the `_` arm.
-                Option.none => extract_non_pi_ret f_term a_term expected_type scope,
             },
-        _ =>
-            extract_non_pi_ret f_term a_term expected_type scope,
+        // A cubical callee type that is not a saturated PathP is in no
+        // shape to peel a return from: same fallback as the `_` arm.
+        Option.none => extract_non_pi_ret f_term a_term (Term.hole) scope,
     }
 
 /// The not-a-Pi continuation of `extract_pi_ret`: no return type to
@@ -3956,7 +4095,15 @@ def con_spine_result_typ (f_term : Term) (fallback : Term) (scope : Scope) : Ter
         _ => fallback,
     }
 
-/// Type check a forall binder.
+/// Type check a binder over a type -- the ONE rule for all three flavours
+/// (`BinderInfo.explicit`, `.binder`, `.level`). `type_check_forall` and
+/// `type_check_pi` were two functions with this same body until R2b; the
+/// only difference was that the Pi one ran its domain through
+/// `pi_domain_level`, and that difference is provably vacuous here --
+/// `pi_domain_level` answers `level_of_type arg_typ` on every branch except
+/// a bare `Term.cubical` interval, and the old `forall` domain was always a
+/// `Term.sort`, which is never one. So the merged rule applies
+/// `pi_domain_level` unconditionally.
 ///
 /// The universe is the `max` of the two components' sorts -- the standard rule,
 /// and previously a flat level-1 sort that discarded both. `level_of_type`
@@ -3967,34 +4114,22 @@ def con_spine_result_typ (f_term : Term) (fallback : Term) (scope : Scope) : Ter
 /// folded to a numeral, which would need a case split for a level holding an
 /// unresolved variable; every consumer that wants a numeral folds through
 /// `level_const` anyway, so nothing is lost by leaving it as `max`.
-def type_check_forall (dbg : DebugName) (kind : Term) (body : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
-    match type_check kind Term.hole scope local_types locals {
-        ok kind_tt =>
-            let extended_types : List Term := List.cons kind local_types in
-            match type_check body Term.hole scope extended_types locals {
-                ok body_tt =>
-                    let forall_term : Term := Term.forall dbg kind body in
-                    let universe : Term := Term.sort (SortLevel.max (level_of_type kind_tt.typ) (level_of_type body_tt.typ)) in
-                    ok (mk_typed forall_term universe),
-                err e => err e,
-            },
-        err e => err e,
-    }
-
-/// Type check a Pi type. Universe rule as in `type_check_forall` above,
-/// except that the DOMAIN goes through `pi_domain_level`: a domain that
-/// peels to the bare interval contributes `concrete 0`, not the level of
-/// its checker-reported type.
-def type_check_pi (arg : Term) (ret : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
-    match type_check arg Term.hole scope local_types locals {
-        ok arg_tt =>
-            let extended_types : List Term := List.cons arg local_types in
-            match type_check ret Term.hole scope extended_types locals {
-                ok ret_tt =>
-                    let pi_term : Term := Term.pi binder_anon arg ret in
+///
+/// The binder `b` is kept VERBATIM rather than rebuilt as `binder_anon`, as
+/// the old Pi rule did. Rebuilding would erase both the name (which the
+/// `forall` rule preserved, so a signature's variable names would silently
+/// go) and the info (which would turn every generalization this rule types
+/// into an ordinary arrow the next time anything looked at it).
+def type_check_pi (b : Binder) (dom : Term) (cod : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
+    match type_check dom Term.hole scope local_types locals {
+        ok dom_tt =>
+            let extended_types : List Term := List.cons dom local_types in
+            match type_check cod Term.hole scope extended_types locals {
+                ok cod_tt =>
+                    let pi_term : Term := Term.pi b dom cod in
                     let universe : Term :=
-                        Term.sort (SortLevel.max (pi_domain_level arg_tt.term arg_tt.typ)
-                            (level_of_type ret_tt.typ)) in
+                        Term.sort (SortLevel.max (pi_domain_level dom_tt.term dom_tt.typ)
+                            (level_of_type cod_tt.typ)) in
                     ok (mk_typed pi_term universe),
                 err e => err e,
             },

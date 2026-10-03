@@ -1,11 +1,11 @@
 use lang::types {
-  app, binder_anon, con, forall, hole, i64, id, if_, lam, lit, match_, mc, mk, named, npath,
-  num, package_private, pi, sort_n, str, unnamed, var,
+  app, binder_anon, binder_binder, con, hole, i64, id, if_, lam, lit, match_, mc, mk, named,
+  npath, num, package_private, pi, sort_n, str, unnamed, var,
 }
 use llvm::ir {emit_module}
 use lib::codegen::emit {check_contains, compile_db_decls_ir}
 
-open Term {app, con, forall, hole, lam, lit, pi, var}
+open Term {app, con, hole, lam, lit, pi, var}
 open Literal {if_, match_, num, str}
 open Identifier {id}
 open DebugName {named, unnamed}
@@ -1176,16 +1176,16 @@ def test_compile_lambda_multi_arg : Bool :=
     let text := emit_module mod_ in
     check_contains text "lam_multi_arg"
 
-/// Test compilation of forall type
+/// Test compilation of a quantified type
 #[test]
 def test_compile_forall_type : Bool :=
     let id := Identifier.id "forall_test" in
     let a_id := Identifier.id "A" in
     let x_id := Identifier.id "x" in
     let x_var := Term.var 0 (DebugName.named x_id) in
-    // forall A. A -> A (identity function)
+    // {A : Type} -> A (a quantified binder, `Term.forall` until R2b)
     let forall_body := Term.lam (DebugName.named x_id) (sort_n 1) x_var in
-    let term_ := Term.forall (DebugName.named a_id) (sort_n 1) forall_body in
+    let term_ := Term.pi (binder_binder a_id) (sort_n 1) forall_body in
     let def_ := Def.mk
         (NamePath.npath (List.cons id List.empty))
         (sort_n 1)
@@ -1206,7 +1206,7 @@ def test_compile_pi_type : Bool :=
     let a_var := Term.var 0 (DebugName.named a_id) in
     let b_var := Term.var 0 (DebugName.named b_id) in
     // Pi A B. (A -> B -> A)
-    let pi_body := Term.forall (DebugName.named b_id) (sort_n 1) (
+    let pi_body := Term.pi (binder_binder b_id) (sort_n 1) (
         Term.lam (DebugName.unnamed) (sort_n 1) a_var) in
     let term_ := Term.pi binder_anon a_var pi_body in
     let def_ := Def.mk

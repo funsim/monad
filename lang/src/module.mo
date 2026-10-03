@@ -10,8 +10,8 @@ use lang::types {
   InductConstructor, Inductive, Infix, Instance, LocalScope, LocalVar, Location,
   ModulePath, NamePath, NameRef, Param, Scope, ScopeData, ScopeInstance, SourceRange,
   Struct, StructField, Term, TypeConstraint, TypeError, UseFilter, UseItem,
-  binder_anon, concrete, id_eq, list_reverse, many, module_path_to_string_colon,
-  package_private, priv_,
+  binder_anon, binder_is_explicit, binder_is_level, binder_name, concrete, id_eq,
+  list_reverse, many, module_path_to_string_colon, package_private, priv_,
   show_identifier, show_module_path, show_name_path, term_peel, union_ids,
   use_bare, use_glob, use_items, use_name, use_rename, use_sub, use_sub_rename,
   visibility_beq,
@@ -55,7 +55,6 @@ use lib::scope {
 }
 use lib::termination {check_termination_all}
 use lib::typecheck::diagnostic {render_type_error}
-use lib::typecheck::levels {is_level_binder_kind}
 use lib::typecheck::infer {empty_local_types, empty_locals, type_check}
 // `--verbose` per-module/per-stage trace (see `std/src/log.mo`'s own header
 // for why the helpers gate themselves and why `bench_step` below prints
@@ -1755,24 +1754,31 @@ def bind_unresolved_as_local_typevars (names : List Identifier) (scope : Scope) 
             }
     }
 
-/// Walk a type's leading `Term.forall`-binder chain, collecting each
-/// binder's NAMED debug-name identifier (unnamed binders are skipped).
+/// Walk a type's leading quantifier chain, collecting each binder's NAMED
+/// debug-name identifier (unnamed binders are skipped).
 /// This is how `locals_with_def_typevars` recovers the implicit type
 /// parameters `elaborate.mo`'s `wrap_forall` introduced: a def like
 /// `def Lens [Functor F] {F : Type -> Type} (...) : Type := ...` has its
 /// `{F}` clause deliberately dropped by the parser
 /// (`def_implicit_close`, lang/parser.mo) on the understanding that
-/// `elaborate_def` re-introduces `F` as a leading `Forall F. ...` binder
+/// `elaborate_def` re-introduces `F` as a leading quantifier binder
 /// -- once that elaboration is wired into the pipeline, the binder name
-/// only survives HERE (in `typ`'s Forall chain), so this walk is what
+/// only survives HERE (in `typ`'s quantifier chain), so this walk is what
 /// skolemizes `F` into `locals` for the body check. Mirrors the Rust
-/// reference's own Forall-chain walk. Does NOT descend past the leading
-/// Foralls: nested inner Foralls (under a Pi) belong to a different
+/// reference's own quantifier-chain walk. Does NOT descend past the leading
+/// quantifiers: nested inner ones (under an arrow) belong to a different
 /// scope and are not this def's own implicit params.
 #[partial]
 def forall_chain_binder_names (typ : Term) : List Identifier :=
     match typ {
-        Term.forall dbg kind body =>
+        // Three-way. An EXPLICIT binder is a real arrow and stops the
+        // walk, which is what the old catch-all did -- descending past one
+        // would pull type variables out of a function's domain, a scope
+        // this def does not own.
+        Term.pi b _dom body =>
+            if binder_is_explicit b
+            then List.empty
+            else if binder_is_level b
             // A LEVEL binder's name is not a type variable: its only
             // consumer, `locals_with_def_typevars`, skolemizes these
             // names into `LocalScope` as TERM locals, and a level
@@ -1781,9 +1787,8 @@ def forall_chain_binder_names (typ : Term) : List Identifier :=
             // to unfold a same-named global). Levels live in the
             // signature as binders and are resolved by level
             // substitution, never by local lookup.
-            if is_level_binder_kind kind
             then forall_chain_binder_names body
-            else match dbg {
+            else match binder_name b {
                 DebugName.named id =>
                     let rest : List Identifier := forall_chain_binder_names body in
                     union_ids (List.cons id List.empty) rest,
@@ -2426,7 +2431,8 @@ def elaborate_module_decls_go (scope : Scope) (decl_list : List Decl) (locals : 
 // and the same file checks clean self-hosted.
 //
 // Polarity starts `true` at each constructor parameter and flips on every
-// arrow's DOMAIN (`Term.pi`'s `arg`, `Term.forall`'s `kind`), staying put
+// arrow's DOMAIN -- `Term.pi`'s `arg`, which is also where a former
+// `forall`'s `kind` now sits -- staying put
 // across the codomain. So `Bad -> I64` is negative and rejected, while
 // `I64 -> Bad` and `(Bad -> I64) -> I64` -- two flips -- are accepted. Both
 // of those were measured against the host rather than reasoned about.
@@ -2518,10 +2524,11 @@ def strict_pos_bad (module_str : String) (type_str : String) (t : Term) (polarit
             },
         Term.app fun arg =>
             strict_pos_bad module_str type_str fun polarity || strict_pos_bad module_str type_str arg polarity,
-        Term.pi _ arg ret =>
+        // Merged; inert on the folded flavour -- a quantifier's domain is a
+        // sort, and `strict_pos_bad` answers `false` for one, so the old arm's
+        // "flip over the kind, then walk the body" is what this does.
+        Term.pi _b arg ret =>
             strict_pos_bad module_str type_str arg (strict_pos_flip polarity) || strict_pos_bad module_str type_str ret polarity,
-        Term.forall _ kind body =>
-            strict_pos_bad module_str type_str kind (strict_pos_flip polarity) || strict_pos_bad module_str type_str body polarity,
         // Every other shape is opaque to the rule, matching the reference's
         // `_ => Ok(())` -- in particular `Term.lam`, whose body the
         // reference does not descend into either.

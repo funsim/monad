@@ -23,10 +23,12 @@
 //   - `TypeError` (lang/src/types.mo) is not `pub`, so pins assert
 //     accept/reject, never a specific error variant.
 //   - `DebugName` was not `pub` at first, which is why the earliest pins
-//     built no binder at all. It was widened deliberately (W1.2) so the
-//     `Forall` universe arm could be pinned: `type_check_pi` and
-//     `type_check_forall` are separate arms, and a `max` added to one and
-//     not the other is precisely the half-fix a pin has to catch.
+//     built no binder at all. It was widened deliberately (W1.2) so a
+//     binder's universe could be pinned. When this note was written that
+//     meant `type_check_pi` and `type_check_forall` were separate arms, and a
+//     `max` added to one and not the other was precisely the half-fix a pin
+//     had to catch; R2b folded them into one, so the split is gone and what
+//     these pins now guard is the single arm's formula.
 //   - `level_const` was the second widening (W1.4), and the reason is the
 //     same shape of argument: a sort's level is often a COMPUTED `max`, so
 //     a reader that matches only the concrete shape answers "not a sort"
@@ -88,17 +90,18 @@ def rejected (term : Term) (expected_type : Term) : Bool := not (accepted term e
 ///
 /// Folds through `level_const` rather than matching a `concrete` payload,
 /// and that is what keeps it working across the sort collapse:
-/// `type_check_pi`/`type_check_forall` answer a `SortLevel.max`, and
+/// `type_check_pi` answers a `SortLevel.max` on every binder flavour, and
 /// `type_check_sort_full` answers a `succ` -- both perfectly concrete levels
 /// with no `concrete` shape to match. Shape-matching happened to be adequate
 /// only while `sort_term_of_level` re-rendered a computed level back into
 /// the old concrete spelling; with that gone, both shapes must fold.
 ///
-/// This exists because `accepted` structurally cannot see a `Pi`'s or a
-/// `Forall`'s universe: `type_check`'s `Term.pi`/`Term.forall` arms ignore
-/// the expectation and answer the universe they computed, so EVERY
-/// expectation is accepted for a well-formed Pi and an accept/reject pin
-/// over one cannot discriminate at all. Reading the inferred type is the
+/// This exists because `accepted` structurally cannot see a binder's
+/// universe: `type_check`'s one `Term.pi` arm ignores the expectation and
+/// answers the universe it computed, so EVERY expectation is accepted for a
+/// well-formed Pi -- quantifier binders included, since R2b folded
+/// `Term.forall` into that same arm -- and an accept/reject pin over one
+/// cannot discriminate at all. Reading the inferred type is the
 /// only observable route, and the `Term` constructors are `pub`, so no new
 /// export is needed for it.
 def inferred_sort_level (term : Term) : Option I64 :=

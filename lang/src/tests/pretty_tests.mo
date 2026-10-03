@@ -1,7 +1,8 @@
 use lang::types {
   Attribute, Class, ClassDef, Con, Decl, Def, Identifier, InductConstructor,
   Inductive, Instance, Literal, MatchCase, ModulePath, NamePath, Native, Operator,
-  Param, Struct, StructField, Term, TypeConstraint, affine, binder_anon, f64, i32, i64, i8,
+  Param, Struct, StructField, Term, TypeConstraint, affine, binder_anon, binder_binder, f64,
+  i32, i64, i8,
   linear, many, named, open_all, package_private, show_identifier,
   show_module_path, sort_n, u32, unnamed, use_bare, zero,
 }
@@ -10,7 +11,7 @@ use lib::pretty {
   show_term, show_universe,
 }
 
-open Term {app, con, forall, hole, lam, lit, ntv, pi, var}
+open Term {app, con, hole, lam, lit, ntv, pi, var}
 open Literal {if_, match_, num, str}
 open Decl {class_d, def_d, inductive_d, infix_d, open_d, struct_d, use_d}
 open DebugName {named, unnamed}
@@ -19,7 +20,7 @@ open ModulePath {mp}
 open NumSuffix {f64, i32, i64, i8, u32}
 open Multiplicity {affine, linear, many, zero}
 
-// --- Helper definitions (typed to avoid forall inference issues) ---
+// --- Helper definitions (typed to avoid quantifier inference issues) ---
 
 def test_id_x : Identifier := Identifier.id "x"
 
@@ -184,12 +185,16 @@ def test_show_term_pi_simple : Bool :=
     let result : String := show_term pi in
     String.beq result "(Type -> Type)"
 
+/// The same `Term.pi` constructor the test above uses, printed through the
+/// quantifier branch of `show_term` because its binder carries the `binder`
+/// tag rather than `explicit`. R2b is what made those two the same
+/// constructor; this pin is what says the printing did not move with it.
 #[test]
-def test_show_term_forall_simple : Bool :=
+def test_show_term_quantifier_simple : Bool :=
     let kind : Term := sort_n 1 in
     let body : Term := Term.var 0 (DebugName.named test_id_A) in
-    let forall : Term := Term.forall (DebugName.named test_id_A) kind body in
-    let result : String := show_term forall in
+    let quant : Term := Term.pi (binder_binder test_id_A) kind body in
+    let result : String := show_term quant in
     String.beq result "{A : Type} -> A"
 
 // --- show_literal tests ---

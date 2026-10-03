@@ -14,8 +14,8 @@
 use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
 use std::list {List.length}
 use lang::types {
-  DebugName, Def, Identifier, Location, ModulePath, Param, Term, param_many,
-  term_peel,
+  DebugName, Def, Identifier, Location, ModulePath, Param, Term, binder_is_explicit,
+  param_many, term_peel,
 }
 use llvm::ir {DbgLoc, LLVMInstruction, LLVMValue}
 use lib::codegen::symbols {def_symbol_name}
@@ -261,7 +261,8 @@ def lookup_binding (bindings : List LocalBinding) (name : Identifier) : Option L
 }
 
 /// Collect lambda params from a de Bruijn Term body.
-/// Strips `Term.lam` prefixes and returns Param for each.
+/// Strips `Term.lam` prefixes and quantifier prefixes, and returns a Param
+/// for each `lam`.
 // Peels. This walk derives a compiled function's PARAMETER COUNT by
 // counting `Term.lam`s, so a location wrapper interposed between two lams
 // truncates the list and emits a function with the wrong arity -- which
@@ -277,6 +278,12 @@ def collect_db_params (term_ : Term) : List Param := match term_peel term_ {
         } in
         let param_ := param_many name typ in
         List.cons param_ (collect_db_params body),
-    Term.forall dbg kind body => collect_db_params body,
+    // A quantifier is stripped exactly as the old `Term.forall` arm
+    // stripped it; an EXPLICIT binder is not, matching the old catch-all.
+    // That distinction is the point: this walk derives a compiled function's
+    // PARAMETER COUNT from `Term.lam`s, so an arrow counted as one would
+    // emit a function with the wrong arity.
+    Term.pi b _dom body =>
+        if binder_is_explicit b then List.empty else collect_db_params body,
     _ => List.empty,
 }

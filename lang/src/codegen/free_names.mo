@@ -15,7 +15,7 @@
 ///   reach for it where precision matters -- that is the other one.
 use lib::types {
   Con, DebugName, FieldPattern, FieldPatternEntry, Identifier, Literal, MatchCase,
-  Native, StructLitField, Term,
+  Native, StructLitField, Term, binder_is_explicit, binder_name,
 }
 use lib::codegen::symbols {symbol_identifier}
 use lib::codegen::util {ident_in_list, identifier_eq}
@@ -28,10 +28,16 @@ def free_names_of_term (bound : List Identifier) (t : Term) : List Identifier :=
     Term.lam dbg typ_ body_ =>
         List.append (free_names_of_term bound typ_)
             (free_names_of_term (add_bound_name bound dbg) body_),
-    Term.forall dbg kind body_ =>
-        List.append (free_names_of_term bound kind)
-            (free_names_of_term (add_bound_name bound dbg) body_),
-    Term.pi _ arg ret => List.append (free_names_of_term bound arg) (free_names_of_term bound ret),
+    // One arm, two flavours, and the guard is load-bearing: a quantifier
+    // binds its own name over its body and an arrow does not, so merging
+    // the old `Term.forall` arm verbatim would report a quantified type
+    // variable as a free name and let closure capture chase it.
+    Term.pi b arg ret =>
+        if binder_is_explicit b
+        then List.append (free_names_of_term bound arg) (free_names_of_term bound ret)
+        else
+            List.append (free_names_of_term bound arg)
+                (free_names_of_term (add_bound_name bound (binder_name b)) ret),
     Term.app fun_ arg_ => List.append (free_names_of_term bound fun_) (free_names_of_term bound arg_),
     Term.lit lit_ => free_names_of_lit bound lit_,
     Term.ntv native => free_names_of_native bound native,
@@ -163,8 +169,9 @@ def collect_referenced_names (t : Term) (acc : List String) : List String := mat
             DebugName.unnamed => acc,
         },
     Term.lam _dbg typ body => collect_referenced_names body (collect_referenced_names typ acc),
-    Term.forall _dbg kind body => collect_referenced_names body (collect_referenced_names kind acc),
-    Term.pi _ arg ret => collect_referenced_names ret (collect_referenced_names arg acc),
+    // This one is binder-BLIND, so the two flavours really are the same
+    // walk and the merge is verbatim.
+    Term.pi _b arg ret => collect_referenced_names ret (collect_referenced_names arg acc),
     Term.app fun_ arg_ => collect_referenced_names arg_ (collect_referenced_names fun_ acc),
     Term.ntv native => collect_referenced_names_native native acc,
     Term.con con_ => collect_referenced_names_con con_ acc,

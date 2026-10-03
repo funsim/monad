@@ -130,7 +130,7 @@ pub type LowerError {
   le_unknown_inductive (path: ModulePath),
   le_unknown_constructor (path: ModulePath),
   le_unknown_native (name: Identifier),
-  /// `Term.forall`/`pi`/`type_`/`hole` reached at lowering time -- these
+  /// `Term.pi`/`type_`/`hole` reached at lowering time -- these
   /// are type-level-only and should never occur in a well-typed
   /// runtime-relevant subterm.
   le_type_level_term,
@@ -733,7 +733,6 @@ def lower_term (ctx : LowerCtx) (t : Term) (acc : LowerAcc) : Pair (Result Lower
     Term.lit value => lower_literal ctx value acc,
     Term.ntv native => lower_native ctx native acc,
     Term.con c => lower_con ctx c acc,
-    Term.forall _ _ _ => lower_err LowerError.le_type_level_term acc,
     Term.pi _ _ _ => lower_err LowerError.le_type_level_term acc,
     // A sort is a type-level term, so it has no runtime lowering.
     Term.sort _level => lower_err LowerError.le_type_level_term acc,

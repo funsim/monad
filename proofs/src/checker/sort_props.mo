@@ -17,12 +17,15 @@
 // "is this sort a valid inhabitant of that sort", a strictly lower
 // relation.
 
-use lang::src::types {concrete, forall, hole, id, named, pi, sort, succ}
+use lang::src::types {concrete, hole, id, named, pi, sort, succ}
 use lib::checker::harness {accepted, rejected, infers_sort_at}
 use lang::module {try_parse_decls}
 use lang::scope {build_scope_from_decls}
 use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
-use lang::types {ModulePath, Scope, ScopeData, binder_anon, cub, cub_interval, level_const, sentinel}
+use lang::types {
+  ModulePath, Scope, ScopeData, binder_anon, binder_binder, cub, cub_interval, level_const,
+  sentinel,
+}
 
 // --- The soundness pin ---
 
@@ -142,10 +145,10 @@ def sort_spelling_evaluates_a_succ_level : Bool :=
 def sort_spelling_is_accepted_with_no_expectation : Bool :=
     accepted (Term.sort (SortLevel.concrete 1)) Term.hole
 
-// --- The universe of a Pi/Forall is the MAX of its components ---
+// --- The universe of a Pi chain is the MAX of its components ---
 //
 // These pin W1.2. They cannot be written with `accepted`: `type_check`'s
-// `Term.pi`/`Term.forall` arms ignore the expectation completely and answer
+// `Term.pi` arm ignores the expectation completely and answers
 // the universe they computed, so every well-formed Pi is accepted against
 // EVERY expectation and no accept/reject pair can tell a `max` from a flat,
 // numeral-only universe. They read the inferred type instead, through the
@@ -174,8 +177,11 @@ def pi_universe_is_the_max_not_the_last_part : Bool :=
 /// arm -- a `max` added to one arm and not the other is exactly the shape
 /// of half-fix this file exists to catch.
 #[test]
-def forall_universe_is_the_max_of_its_parts : Bool :=
-    infers_sort_at (Term.forall (DebugName.named (Identifier.id "a")) (Term.sort (SortLevel.concrete 1)) (Term.sort (SortLevel.concrete 3))) 4
+/// A quantifier binder (`binder`), not an arrow: R2b folded `Term.forall`
+/// into `Term.pi`, and this pin is what says the universe rule did not move
+/// with the constructor.
+def quantifier_universe_is_the_max_of_its_parts : Bool :=
+    infers_sort_at (Term.pi (binder_binder (Identifier.id "a")) (Term.sort (SortLevel.concrete 1)) (Term.sort (SortLevel.concrete 3))) 4
 
 /// A component that is not a known sort contributes a flat 1, which is
 /// what both arms answered unconditionally before W1.2. This is the pin

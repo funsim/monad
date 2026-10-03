@@ -1103,13 +1103,17 @@ pub type ParseTermKind {
     pi (arg_name: Option Identifier) (arg: ParseTerm) (ret: ParseTerm),
     app (fun: ParseTerm) (arg: ParseTerm),
     lit (value: ParseLiteral),
-    // `forall`, `ntv` and `con` mirror `Term` for completeness but no
-    // syntax produces one: there is no `forall` keyword in the grammar,
+    // `forall`, `ntv` and `con` were spelled here to mirror the old
+    // `Term`; no syntax produces one: there is no `forall` keyword in the
+    // grammar,
     // natives arrive through an attribute rather than a term, and the
     // parser has never built a `Term.con` (constructor applications are
     // ordinary `app`s of a `var` until the type checker resolves them).
-    // They carry no `pt_*` smart constructor for that reason -- only the
-    // lowering arms and exhaustive matches name them.
+    // `Term.forall` itself is gone -- R2b folded it into `Term.pi` -- but
+    // this parse-tree variant stays because deleting it would mean
+    // touching the lowering arms for no gain. They carry no `pt_*` smart
+    // constructor for that reason -- only the lowering arms and
+    // exhaustive matches name them.
     ntv (native: ParseNative),
     con (c: ParseCon),
     /// A sort, as a `SortLevel` -- which covers a concrete numeral exactly as
@@ -1193,17 +1197,17 @@ pub type BinderInfo {
     /// `(x : T) -> U` — an ordinary explicit parameter. Every `lam`'s
     /// binder, and the only kind `pi` had before R2.
     explicit,
-    /// `forall`'s term-level flavour: a quantified type variable, whose
-    /// domain is a real type. Named here so R2b has one place to land the
-    /// fold; nothing constructs it before then.
+    /// A quantified type variable, whose domain is a real type —
+    /// `{A : Type} -> …`. This is what a `Term.forall` became when R2b folded
+    /// it into `pi`; `binder_binder` above is its sole constructor.
     binder,
     /// A universe-LEVEL binder, whose domain is a level rather than a type.
-    /// Today this is `forall`'s marker, recognised by `is_level_binder_kind`
-    /// testing whether the binder's `kind` term is a sort at level 0 —
-    /// a shape test on a term standing in for a property of the binder.
-    /// R2b replaces that test with this case; the comment on
-    /// `is_level_binder_kind` (`lang/typecheck/levels.mo`) is what asks for
-    /// it and records why the current marker is only safe because the
+    /// This was `forall`'s marker, recognised before R2b by
+    /// `is_level_binder_kind` testing whether the binder's `kind` term was a
+    /// sort at level 0 — a shape test on a term standing in for a property of
+    /// the binder. That test is now the tag it was always describing (see
+    /// `binder_is_level` below), which is what removes the hazard the old
+    /// comment recorded: the marker was only collision-free because the
     /// grammar has no `forall` keyword.
     level,
 }
@@ -1253,6 +1257,86 @@ pub def binder_named (n : Identifier) : Binder := {
     info := BinderInfo.explicit,
 }
 
+/// The binder `wrap_forall` (`lang/elaborate.mo`) puts on a quantified type
+/// variable — `forall`'s term-level flavour, `{A : Type} -> …`. Built here
+/// rather than at the wrap site for the same reason as the two above, and
+/// because R2b's fold needs exactly one place that says what a former
+/// `forall` lowers to.
+///
+/// The `Term` side of that fold is the `dom`: `wrap_forall` writes
+/// `Term.sort (SortLevel.concrete 1)`, which is `Type`, and that is right —
+/// the binder's domain really is the type its variable ranges over. Only the
+/// *discriminator* moved, from "is the kind a sort at level 0?" to this tag.
+pub def binder_binder (n : Identifier) : Binder := {
+    name := DebugName.named n,
+    info := BinderInfo.binder,
+}
+
+/// The binder `wrap_level_forall` puts on a universe level — `Sort u` in a
+/// signature, bound by the enclosing def. Same discipline as `binder_binder`
+/// above; `wrap_level_forall` writes `Term.sort (SortLevel.concrete 0)` as the
+/// domain, which is the marker the old `is_level_binder_kind` read.
+pub def binder_level (n : Identifier) : Binder := {
+    name := DebugName.named n,
+    info := BinderInfo.level,
+}
+
+/// Every `BinderInfo`, as a number. Same purpose as `cubical_prim_tag`: the
+/// type is payload-free, so equality IS tag equality, and a spelled-out 3×3
+/// cross product is nine places to get the answer wrong for the same result.
+/// Read by `binder_info_eq` and by the `Similar` instance below it.
+pub def binder_info_tag (i : BinderInfo) : I64 := match i {
+    BinderInfo.explicit => 0,
+    BinderInfo.binder => 1,
+    BinderInfo.level => 2,
+}
+
+pub def binder_info_eq (a : BinderInfo) (b : BinderInfo) : Bool :=
+    I64.beq (binder_info_tag a) (binder_info_tag b)
+
+/// What a binder's behaviour is, for a caller holding a whole `Binder`.
+/// A named def rather than a field read because reading a struct field
+/// inside a recursive walk defeats the termination checker where a
+/// pattern binder does not (AGENTS.md).
+pub def binder_info_of (b : Binder) : BinderInfo :=
+    match b { { name := _n, info := i } => i }
+
+/// Is this an ordinary arrow's binder -- `(x : T) -> U`?
+///
+/// The question a walker asks when it has to decide whether a `pi` is a
+/// REAL function type or one of the two former `forall` flavours. It was
+/// never asked before R2b: `forall` and `pi` were different constructors,
+/// so a walker that cared told them apart by shape. Now they share an arm
+/// and `info` is the only thing that separates them, which is why this
+/// exists as a named predicate rather than a field read at each site.
+pub def binder_is_explicit (b : Binder) : Bool :=
+    binder_info_eq (binder_info_of b) BinderInfo.explicit
+
+/// Is this a LEVEL binder rather than a type-variable binder?
+///
+/// This was a SHAPE test on the binder's `kind` term until R2b: a
+/// `Term.forall` carried `wrap_level_forall`'s marker
+/// (`Term.sort (SortLevel.concrete 0)`) as its kind, where `wrap_forall`
+/// used level 1, so "is a sort at level 0" was the whole discriminator --
+/// a property of the binder read off a term standing in for it. The fold
+/// deleted the kind term and made the property the tag it always was.
+/// That is also why this lives here now: the old test walked a `Term` and
+/// so had to sit beside `term_map_children` in `lang/typecheck/levels.mo`;
+/// a tag comparison has no such dependency.
+///
+/// The collision the old test reasoned about is gone rather than
+/// mitigated: no term is a binder's `info`, so nothing a program writes
+/// can be mistaken for a level marker.
+pub def binder_is_level (b : Binder) : Bool :=
+    binder_info_eq (binder_info_of b) BinderInfo.level
+
+/// What a binder is called, for a caller holding a whole `Binder`.
+/// Companion to `binder_info_of` and a named def for the same reason:
+/// `b.name` by field access inside a recursive walk loses the
+/// termination proof.
+pub def binder_name (b : Binder) : DebugName :=
+    match b { { name := n, info := _i } => n }
+
 // The canonical de Bruijn term IR — what everything after the parser
 // works on. `ParseTerm` above is lowered into this.
 //
@@ -1262,15 +1346,20 @@ pub def binder_named (n : Identifier) : Binder := {
 pub type Term {
     var (idx: I64) (dbg: DebugName),
     lam (dbg: DebugName) (typ: Term) (body: Term),
-    forall (dbg: DebugName) (kind: Term) (body: Term),
-    /// A function type. The binder is an ANNOTATION, exactly as `lam`'s
-    /// `dbg` is: the name never affects an index, because the parser
-    /// already binds it before `Term` exists (`lower_parse.mo`'s
-    /// `pi_ret_ctx` extends the lowering context by the arrow's own binder
-    /// when the source named one), and `term_map_children_at_depth` already
-    /// walks `ret` at depth 1. R2a stopped `pi` from DROPPING the name it
-    /// was given; R2a' made the grammar actually give it one for a `def`'s
-    /// parameter list (`binder_named` above).
+    /// A function type, and the ONLY binder over a type. `forall` used to sit
+    /// beside it as a second spelling; R2b folded it in, so `b`'s `info` is
+    /// now what tells a quantified type variable (`binder`), a universe level
+    /// (`level`) and an ordinary arrow (`explicit`) apart, and `arg` carries a
+    /// former `forall`'s `kind` unchanged (a `Term.sort`, which is exactly the
+    /// domain its variable ranges over).
+    ///
+    /// The binder is an ANNOTATION, exactly as `lam`'s `dbg` is: the name never
+    /// affects an index, because the parser already binds it before `Term`
+    /// exists (`lower_parse.mo`'s `pi_ret_ctx` extends the lowering context by
+    /// the arrow's own binder when the source named one), and
+    /// `term_map_children_at_depth` already walks `ret` at depth 1. R2a stopped
+    /// `pi` from DROPPING the name it was given; R2a' made the grammar actually
+    /// give it one for a `def`'s parameter list (`binder_named` above).
     pi (b : Binder) (arg : Term) (ret: Term),
     app (fun: Term) (arg: Term),
     lit (value: Literal),
@@ -1935,6 +2024,29 @@ instance Similar Literal {
 
 // --- Similar instances for de Bruijn types (Phase 0) ---
 
+instance Similar BinderInfo {
+    /// Dense tag comparison, not a cross product -- the `cubical_prim_eq`
+    /// pattern, and for the same reason.
+    def similar (a : BinderInfo) (b : BinderInfo) : Bool := binder_info_eq a b
+}
+
+/// The NAME is deliberately not compared. `Binder`'s own doc comment says the
+/// name is error-message metadata and NEVER identity; two binders differing
+/// only in what an error message would call them are the same binder. `info`
+/// is the half the checker discriminates on, so it is the half this compares.
+///
+/// That distinction became load-bearing with R2b. Before the fold every
+/// `pi`'s binder was `binder_anon`, so ignoring it was free. After, a level
+/// binder at level 0 and an explicit `(x : Prop)` binder have the SAME domain
+/// (`Term.sort (SortLevel.concrete 0)`) and can have the same codomain — so a
+/// `similar_term_go` that ignored `info` would call `forall u. C` and
+/// `(x : Prop) -> C` convertible, and `pi_arity` counts one of those as a value
+/// parameter and not the other.
+instance Similar Binder {
+    def similar (a : Binder) (b : Binder) : Bool :=
+        binder_info_eq (binder_info_of a) (binder_info_of b)
+}
+
 instance Similar DebugName {
     def similar (a : DebugName) (b : DebugName) : Bool :=
         match a {
@@ -2079,8 +2191,7 @@ def sort_level_of (t: Term) : Option SortLevel := match term_peel t {
 /// compared against is gone, so what is left to pin is that the sole
 /// constructor is reachable at all -- a `sort_level_of` that stopped
 /// matching `Term.sort` would answer `none` for every sort in the compiler
-/// and collapse `level_of_type`, `is_level_binder_kind` and `unify_sort`
-/// with it.
+/// and collapse `level_of_type`, `binder_is_level` and `unify_sort` with it.
 #[test]
 def test_sort_level_of_reads_the_only_spelling : Bool :=
     match sort_level_of (sort_n 3) {
@@ -2394,76 +2505,74 @@ def similar_term_go (a : Term) (b : Term) : Bool :=
         match a {
             var i1 d1 => match b {
                 var i2 d2 => I64.beq i1 i2 && Similar.similar d1 d2,
-                lam _ _ _ => false, forall _ _ _ => false, pi _ _ _ => false,
+                lam _ _ _ => false, pi _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             lam d1 t1 bd1 => match b {
                 lam d2 t2 bd2 => Similar.similar d1 d2 && Similar.similar t1 t2 && Similar.similar bd1 bd2,
-                var _ _ => false, forall _ _ _ => false, pi _ _ _ => false,
+                var _ _ => false, pi _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
-            forall d1 k1 bd1 => match b {
-                forall d2 k2 bd2 => Similar.similar d1 d2 && Similar.similar k1 k2 && Similar.similar bd1 bd2,
-                var _ _ => false, lam _ _ _ => false, pi _ _ _ => false,
-                app _ _ => false, lit _ => false, ntv _ => false,
-                con _ => false, hole => false,
-                sort _ => false, cubical _ => false
-            },
-            pi _ a1 r1 => match b {
-                pi _ a2 r2 => Similar.similar a1 a2 && Similar.similar r1 r2,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+            // The two binders are compared, and the domain and codomain with
+            // them. Comparing `b1`/`b2` is not decoration: it is what keeps a
+            // level binder at level 0 -- whose domain is `Term.sort (concrete
+            // 0)`, i.e. `Prop` -- from being similar to an explicit
+            // `(x : Prop) -> …`. See `Similar Binder` for the full reason.
+            pi b1 a1 r1 => match b {
+                pi b2 a2 r2 => Similar.similar b1 b2 && Similar.similar a1 a2 && Similar.similar r1 r2,
+                var _ _ => false, lam _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             app f1 a1 => match b {
                 app f2 a2 => Similar.similar f1 f2 && Similar.similar a1 a2,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                var _ _ => false, lam _ _ _ => false,
                 pi _ _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             lit v1 => match b {
                 lit v2 => Similar.similar v1 v2,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                var _ _ => false, lam _ _ _ => false,
                 pi _ _ _ => false, app _ _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             ntv n1 => match b {
                 ntv n2 => Similar.similar n1 n2,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                var _ _ => false, lam _ _ _ => false,
                 pi _ _ _ => false, app _ _ => false, lit _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             con c1 => match b {
                 con c2 => Similar.similar c1 c2,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                var _ _ => false, lam _ _ _ => false,
                 pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             sort l1 => match b {
                 sort l2 => level_eq l1 l2,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                var _ _ => false, lam _ _ _ => false,
                 pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, con _ => false, hole => false, cubical _ => false
             },
             hole => match b {
                 hole => true,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                var _ _ => false, lam _ _ _ => false,
                 pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, con _ => false,
                 sort _ => false, cubical _ => false
             },
             cubical c1 => match b {
                 cubical c2 => similar_cubical c1 c2,
-                var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
+                var _ _ => false, lam _ _ _ => false,
                 pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, con _ => false, hole => false,
                 sort _ => false
@@ -2508,11 +2617,41 @@ def test_term_lam : Bool :=
     let l : Term := Term.lam DebugName.unnamed body body in
     true
 
+/// A level binder is not similar to an explicit binder even when their
+/// domains coincide -- and they CAN coincide, which is why this pin exists.
+/// `wrap_level_forall` gives a level binder `Term.sort (SortLevel.concrete 0)`
+/// as its domain, and `Prop` lowers to exactly that term, so `forall u. C` and
+/// `(x : Prop) -> C` agree on the domain AND the codomain and differ only in
+/// `BinderInfo`. Before R2b the two were different constructors and `similar`
+/// answered `false` for free; the fold is what makes `info` load-bearing.
+///
+/// Mutating `Similar Binder` to constant `true` -- or reverting
+/// `similar_term_go`'s `pi` arm to ignoring its binders, which is what it did
+/// before R2b -- makes this fail, and nothing else in the corpus does: every
+/// other consumer that must tell the two apart tests `info` directly rather
+/// than going through `Similar`.
 #[test]
-def test_term_forall : Bool :=
-    let body : Term := Term.var 0 (DebugName.unnamed) in
-    let f : Term := Term.forall DebugName.unnamed body body in
-    true
+def test_level_binder_is_not_similar_to_a_prop_binder : Bool :=
+    let prop : Term := Term.sort (SortLevel.concrete 0) in
+    let cod : Term := Term.sort (SortLevel.concrete 1) in
+    let level_pi : Term := Term.pi (binder_level (Identifier.id "u")) prop cod in
+    let explicit_pi : Term := Term.pi (binder_named (Identifier.id "x")) prop cod in
+    let other_name : Term := Term.pi (binder_level (Identifier.id "v")) prop cod in
+    Bool.not (Similar.similar level_pi explicit_pi) && Similar.similar level_pi other_name
+
+/// The three tags are pairwise distinct, and each predicate reads exactly
+/// one of them. A `binder_is_explicit` that answered `true` for a level
+/// binder would make every walker that guards on it treat a generalization
+/// as a function type -- which is the whole Class-2 hazard R2b creates, in
+/// one line.
+#[test]
+def test_binder_predicates_read_their_own_tag : Bool :=
+    let ex : Binder := binder_anon in
+    let ty : Binder := binder_binder (Identifier.id "A") in
+    let lv : Binder := binder_level (Identifier.id "u") in
+    binder_is_explicit ex && Bool.not (binder_is_explicit ty) && Bool.not (binder_is_explicit lv) &&
+    binder_is_level lv && Bool.not (binder_is_level ex) && Bool.not (binder_is_level ty) &&
+    Bool.not (binder_is_explicit ty) && Bool.not (binder_is_level ex)
 
 #[test]
 def test_term_pi : Bool :=

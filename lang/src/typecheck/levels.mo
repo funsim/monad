@@ -21,8 +21,8 @@
 /// space, and `term_shift`/`term_subst`/`term_permute` need no change --
 /// they reach a sort through their existing catch-alls.
 use lang::types {
-  DebugName, Identifier, Similar, SortLevel, Term, binder_anon, free_level_vars_of,
-  level_const, level_subst, sort_level_of, sort_n, union_ids,
+  Identifier, Similar, SortLevel, Term, binder_anon, binder_level, free_level_vars_of,
+  level_const, level_subst, union_ids,
 }
 use lib::typecheck::traverse {term_map_children}
 
@@ -50,8 +50,7 @@ pub def subst_levels_term (t: Term) (binds: List (Pair Identifier SortLevel)) : 
 pub def free_level_vars (t: Term) : List Identifier := match t {
     Term.sort l => free_level_vars_of l,
     Term.lam _dbg typ body => union_ids (free_level_vars typ) (free_level_vars body),
-    Term.forall _dbg kind body => union_ids (free_level_vars kind) (free_level_vars body),
-    Term.pi _ arg ret => union_ids (free_level_vars arg) (free_level_vars ret),
+    Term.pi _b arg cod => union_ids (free_level_vars arg) (free_level_vars cod),
     Term.app callee arg => union_ids (free_level_vars callee) (free_level_vars arg),
     Term.quote_ inner => free_level_vars inner,
     Term.ctx _loc inner => free_level_vars inner,
@@ -70,43 +69,6 @@ def free_level_vars_of_terms (ts : List Term) : List Identifier := match ts {
     List.empty => List.empty,
     List.cons x rest => union_ids (free_level_vars x) (free_level_vars_of_terms rest),
 }
-
-/// Is this `forall` binder a LEVEL binder rather than a type-variable
-/// binder? `wrap_level_forall` (`lang/elaborate.mo`) marks one by giving
-/// it a SORT as its kind, where `wrap_forall` gives a term binder
-/// `Term.sort (SortLevel.concrete 1)`.
-///
-/// Reading the marker with `sort_level_of` gives whichever level it
-/// carries; the term binder's marker sits at level 1 and is NOT a level
-/// binder, so the test is "is a sort AND is at level 0". Nothing else
-/// inspects a binder's kind shape, which is what makes this marker safe
-/// (see `wrap_level_forall`'s own comment).
-///
-/// The marker cannot collide with a user-written binder, because there
-/// is no way to write one: the grammar has NO `forall` keyword
-/// (`ParseTermKind`'s own comment in `lang/types.mo` records this), so
-/// every `Term.forall` in the tree is built by `wrap_forall` or
-/// `wrap_level_forall`. If a `forall` syntax is ever added, a source
-/// binder written at `Prop` would land here and this test would need a
-/// real discriminator instead of a level comparison.
-#[partial]
-pub def is_level_binder_kind (kind : Term) : Bool :=
-    match sort_level_of kind {
-        Option.some l => match level_const l {
-            Option.some n => I64.beq n 0,
-            Option.none => false,
-        },
-        Option.none => false,
-    }
-
-/// The level/term binder split at the level values that carry it:
-/// `wrap_level_forall` writes level 0 and `wrap_forall` writes level 1, so
-/// this predicate is the entire discriminator. It is also the one thing
-/// standing between `collect_forall_names` and dropping a real
-/// type-variable name -- or binding an argument against a level variable.
-#[test]
-def test_level_binder_kind_is_a_sort_at_level_zero : Bool :=
-    is_level_binder_kind (sort_n 0) && Bool.not (is_level_binder_kind (sort_n 1))
 
 // ─── Test helpers ─────────────────────────────────────────────────────
 //
@@ -231,5 +193,5 @@ def test_subst_levels_term_leaves_a_concrete_level_alone : Bool :=
 #[test]
 def test_free_level_vars_reaches_under_a_binder : Bool :=
     let inner : Term := Term.sort (SortLevel.var (Identifier.id "u")) in
-    let t : Term := Term.forall DebugName.unnamed (Term.sort (SortLevel.concrete 0)) inner in
+    let t : Term := Term.pi (binder_level (Identifier.id "k")) (Term.sort (SortLevel.concrete 0)) inner in
     ids_are_exactly_one (free_level_vars t) (Identifier.id "u")

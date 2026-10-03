@@ -1,22 +1,19 @@
 use lang::types {
-  Attribute, Class, ClassDef, Con, CubicalPrim, DebugName, Decl, DeclGroup, Def,
+  Attribute, Binder, Class, ClassDef, Con, CubicalPrim, DebugName, Decl, DeclGroup, Def,
   FieldPattern, FieldPatternEntry, Identifier, InductConstructor, Inductive,
   Infix, Instance, InstanceKey, Literal, LocalScope, LocalVar, MatchCase, Module,
   ModulePath, ModuleRegistry, NamePath, NameRef, Native, NumSuffix, OpenFilter,
   Operator, Param, QualifiedName, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, ScopeInstance, Similar, SortLevel, Struct, StructField,
   StructLitField, Term, TypeConstraint, UseFilter, UseItem, Visibility,
-  attr_args, binder_anon, cubical_prim_of_name, f32, f64, i16, i32, i64, i8, id_member,
+  attr_args, binder_anon, binder_binder, binder_is_explicit, binder_is_level,
+  binder_level, binder_name, cubical_prim_of_name, f32, f64, i16, i32, i64, i8, id_member,
   many, mk, name_path_similar, open_all, open_only, package_private, param_many,
   priv_, pub_, show_identifier, show_module_path, show_name_path, show_operator,
   term_peel, u16, u32, u64, u8, union_ids, use_bare, use_glob, use_items,
   use_name, use_rename, use_sub, use_sub_rename,
 }
 use lib::typecheck::traverse {con_map_children, native_map_children, term_map_children}
-// `collect_forall_names` has to tell a LEVEL binder from a type-variable
-// binder -- see its own doc comment. No new cycle: `lib::elaborate` below
-// already pulls this module in.
-use lib::typecheck::levels {is_level_binder_kind}
 // `collect_def_types` registers `elaborate_def`-wrapped types and needs the
 // same whole-graph known-name set the `check` path's `elaborate_def_typs`
 // uses -- see `registered_def_type`'s own doc comment for why.
@@ -625,8 +622,8 @@ def scope_debug_name_to_id (dbg : DebugName) : Identifier :=
 def scope_data_add_def_params (sd : ScopeData) (name : NamePath) (params : List Param) : ScopeData :=
     { sd with def_params := npath_map_insert name params sd.def_params }
 
-/// Strips a def's own declared signature (`Def.typ`, a `Term.pi`/
-/// `Term.forall` chain) down to its final, non-binder return type --
+/// Strips a def's own declared signature (`Def.typ`, a `Term.pi`
+/// chain) down to its final, non-binder return type --
 /// e.g. `CodegenCtx -> CtxStrPair` (`Term.pi CodegenCtx (Term.pi ... )`
 /// -- actually `Term.pi CodegenCtx CtxStrPair` for a single-arg def)
 /// strips to `CtxStrPair`. Mirrors `lang/codegen/emit.mo`'s own
@@ -634,8 +631,7 @@ def scope_data_add_def_params (sd : ScopeData) (name : NamePath) (params : List 
 #[terminating]
 def strip_pi_chain_to_return_type (t : Term) : Term :=
     match t {
-        Term.pi _ _arg ret => strip_pi_chain_to_return_type ret,
-        Term.forall _dbg _kind body => strip_pi_chain_to_return_type body,
+        Term.pi _b _arg ret => strip_pi_chain_to_return_type ret,
         _ => t,
     }
 
@@ -2086,10 +2082,21 @@ def resolve_open_alias_term_scoped (names : HashMap String String) (bound : List
             },
         Term.lam dbg typ body =>
             Term.lam dbg (resolve_open_alias_term_scoped names bound typ) (resolve_open_alias_term_scoped names (push_bound_dbg bound dbg) body),
-        Term.forall dbg kind body =>
-            Term.forall dbg (resolve_open_alias_term_scoped names bound kind) (resolve_open_alias_term_scoped names (push_bound_dbg bound dbg) body),
-        Term.pi b arg ret =>
-            Term.pi b (resolve_open_alias_term_scoped names bound arg) (resolve_open_alias_term_scoped names bound ret),
+        // The quantifier's own name enters scope only inside its BODY --
+        // which is what the old `Term.forall` arm did and the old `Term.pi`
+        // arm deliberately did not, since an arrow's binder name is
+        // error-message metadata and never identity. Both flavours arrive
+        // in this one arm now, so `binder_is_explicit` splits them.
+        Term.pi b dom cod =>
+            if binder_is_explicit b
+            then
+                Term.pi b
+                    (resolve_open_alias_term_scoped names bound dom)
+                    (resolve_open_alias_term_scoped names bound cod)
+            else
+                Term.pi b
+                    (resolve_open_alias_term_scoped names bound dom)
+                    (resolve_open_alias_term_scoped names (push_bound_dbg bound (binder_name b)) cod),
         Term.app fun_ arg =>
             Term.app (resolve_open_alias_term_scoped names bound fun_) (resolve_open_alias_term_scoped names bound arg),
         Term.lit value => Term.lit (resolve_open_alias_literal_scoped names bound value),
@@ -2771,8 +2778,10 @@ def def_references_class (cls_str : String) (t : Term) : Bool :=
                 DebugName.unnamed => false,
             },
         Term.lam _ typ body => def_references_class cls_str typ || def_references_class cls_str body,
-        Term.forall _ kind body => def_references_class cls_str kind || def_references_class cls_str body,
-        Term.pi _ arg ret => def_references_class cls_str arg || def_references_class cls_str ret,
+        // One arm, three flavours. A former `forall`'s kind is its `arg`
+        // here; it is always a sort, which references no class, so
+        // visiting it changes nothing the old arm could see.
+        Term.pi _b arg ret => def_references_class cls_str arg || def_references_class cls_str ret,
         Term.app f a => def_references_class cls_str f || def_references_class cls_str a,
         Term.lit v => literal_references_class cls_str v,
         Term.con c =>
@@ -3039,7 +3048,7 @@ pub type DefTypeEntry {
 ///
 /// **Every registered type is `elaborate_def`-wrapped** (`registered_def_type`
 /// below). Both consumers of this table read a signature's own type
-/// variables off its LEADING `Term.forall` binders -- `call_arg_hints`'s
+/// variables off its LEADING quantifier binders -- `call_arg_hints`'s
 /// def branch via `collect_forall_names`, `instantiate_def_carrier` via the
 /// same call -- and both document the invariant that `elaborate_def`
 /// supplies them. Codegen's
@@ -3057,7 +3066,7 @@ def collect_def_types (known_names : List Identifier) (decl_list : List Decl) : 
     collect_def_types_go known_names decl_list str_map_empty
 
 /// The type `collect_def_types` registers for one def: its declared type
-/// with every free type variable wrapped in a `Term.forall` binder, exactly
+/// with every free type variable wrapped in a quantifier binder, exactly
 /// the shape `elaborate_def_typs` (`lang/module.mo:2802`) gives the `check`
 /// path's decls. See `collect_def_types`'s own doc comment for what reading
 /// it unwrapped cost.
@@ -3143,20 +3152,21 @@ def collect_def_types_go (known_names : List Identifier) (decl_list : List Decl)
 def lookup_def_type (entries : HashMap String Term) (name : Identifier) : Option Term :=
     str_map_lookup (show_identifier name) entries
 
-/// Strip `n` leading `Term.pi` binders (skipping any leading `Term.forall`
-/// binders at each step -- they don't correspond to an applied value
-/// argument), returning the final codomain. A promoted, constrained
-/// instance method's own declared type can interleave Phase 3's
-/// prepended dict-parameter Pis with surviving Foralls, hence re-
-/// checking for a leading Forall before every single Pi strip, not just
-/// once up front.
+/// Strip `n` leading `Term.pi` binders (skipping any NON-EXPLICIT binder met
+/// at each step -- a quantified type variable or a universe level, neither of
+/// which corresponds to an applied value argument), returning the final
+/// codomain. A promoted, constrained instance method's own declared type can
+/// interleave Phase 3's prepended dict-parameter Pis with surviving
+/// quantifiers, hence re-checking before every single Pi strip, not just once
+/// up front.
 #[partial]
 def return_type_after_n_args (typ : Term) (n : I64) : Term :=
     if I64.lt n 1 then typ
     else
         match typ {
-            Term.forall _ _ body => return_type_after_n_args body n,
-            Term.pi _ _ ret => return_type_after_n_args ret (n - 1),
+            Term.pi b _arg ret =>
+                if binder_is_explicit b then return_type_after_n_args ret (n - 1)
+                else return_type_after_n_args ret n,
             _ => typ,
         }
 
@@ -3493,7 +3503,7 @@ def scrutinee_type_spine (env : List LocalTypeBinding) (ctor_owners : List CtorO
                                         // `strip_foralls` for the reason
                                         // `call_return_type` gives: this
                                         // table holds `elaborate_def`-wrapped
-                                        // values, and a `forall` has no head
+                                        // values, and a quantifier has no head
                                         // for a spine to read.
                                         Option.some typ => Option.some (flatten_call_spine (strip_foralls typ)),
                                         Option.none => Option.none,
@@ -3543,7 +3553,7 @@ def scrutinee_type_spine (env : List LocalTypeBinding) (ctor_owners : List CtorO
 /// does. `strip_foralls` runs first there because
 /// `return_type_after_n_args`'s `n < 1` early-out returns a quantified type
 /// as-is (the early-out `infer_carrier_type`'s 0-arg def-reference arm
-/// records the same note about), and a `forall`-headed type has no spine
+/// records the same note about), and a quantifier-headed type has no spine
 /// for an arm env to read.
 def call_return_type (env : List LocalTypeBinding) (ctor_owners : List CtorOwner) (def_types : HashMap String Term) (ctor_field_types : List CtorFieldTypes) (typ : Term) (args : List Term) : Term :=
     match instantiate_def_carrier env ctor_owners def_types ctor_field_types typ args {
@@ -4175,7 +4185,7 @@ def infer_carrier_type (env : List LocalTypeBinding) (ctor_owners : List CtorOwn
                                             // table's values are
                                             // `elaborate_def`-wrapped
                                             // (`registered_def_type`'s own doc
-                                            // comment), and a `forall` has no
+                                            // comment), and a quantifier has no
                                             // head for `type_head_name_local`
                                             // to read -- so the wrapped value
                                             // answered NO carrier where the
@@ -4856,7 +4866,7 @@ def constraint_carriers (bindings : List (Pair Identifier Term)) (vars : List Id
 // Deliberately conservative in three ways, each of which leaves the
 // pre-existing bare-head behavior completely untouched:
 //
-//   * only Forall-bound names are bindable (`collect_forall_names`), so
+//   * only quantifier-bound names are bindable (`collect_forall_names`), so
 //     a monomorphic def's declared type (`I64.add`'s) records nothing
 //     and this path is skipped for it;
 //   * nothing bound at all (`List.empty` bindings) means `Option.none`,
@@ -4870,7 +4880,7 @@ def constraint_carriers (bindings : List (Pair Identifier Term)) (vars : List Id
 // so the only dispatches that can move are ones that were resolving
 // with a carrier that said strictly less.
 
-/// The names a declared type's own leading `Forall` binders introduce --
+/// The names a declared type's own leading quantifier binders introduce --
 /// exactly the set `bind_params_against_args` may bind. `wrap_forall`
 /// (`lang/elaborate.mo`) puts every free type variable at the FRONT, so
 /// this only ever needs to walk binders, but it keeps walking defensively
@@ -4880,24 +4890,31 @@ def constraint_carriers (bindings : List (Pair Identifier Term)) (vars : List Id
 /// binds one per free level variable in the SAME chain, and a level
 /// variable is not a type variable -- binding `u` against a call
 /// argument's carrier would hand a universe level to a term-level
-/// unifier. This is the third of the three sites that open a `forall`
+/// unifier. This is the third of the three sites that open a binder
 /// chain and must tell the two apart, alongside
 /// `forall_chain_binder_names` (`lang/module.mo`) and `sig_tvars_go`
 /// (`lang/typecheck/infer.mo`).
 #[partial]
 def collect_forall_names (typ : Term) : List Identifier :=
     match term_peel typ {
-        Term.forall dbg kind body =>
-            if is_level_binder_kind kind
+        // Three-way. `explicit` (an ordinary arrow) is a NEW case here: it
+        // used to reach the catch-all, and it must keep doing so -- an
+        // arrow names no bindable type variable, and descending into it
+        // would collect names from a function's domain that this never
+        // used to see.
+        Term.pi b _dom body =>
+            if binder_is_explicit b
+            then List.empty
+            else if binder_is_level b
             then collect_forall_names body
-            else match dbg {
+            else match binder_name b {
                 DebugName.named id => List.cons id (collect_forall_names body),
                 DebugName.unnamed => collect_forall_names body,
             },
         _ => List.empty,
     }
 
-/// The names a declared type with NO `Forall` binder at all still leaves
+/// The names a declared type with NO quantifier binder at all still leaves
 /// standing for its own parameters -- the mirror `collect_forall_names`
 /// needs for the one shape `elaborate_def` (`lang/elaborate.mo`) never
 /// runs on: a promoted INSTANCE METHOD.
@@ -4905,7 +4922,7 @@ def collect_forall_names (typ : Term) : List Identifier :=
 /// `instance FromListLiteral List { def cons (a : A) (l : List A) : List A }`
 /// registers `FromListLiteral_List_cons` with the type `A -> List A -> List A`
 /// (`promote_methods` copies the instance method's own `Def` verbatim), and
-/// `A` is bound by the instance HEAD, not by the def -- so no Forall is ever
+/// `A` is bound by the instance HEAD, not by the def -- so no quantifier is ever
 /// added and `collect_forall_names` correctly reports that the def's own
 /// type binds nothing. Left at that, the ONE call shape whose whole point
 /// is the element type -- `[42]`, `[1, 2, 3]` -- is exactly the one that
@@ -4945,8 +4962,11 @@ def collect_free_param_names (typ : Term) : List Identifier :=
 #[partial]
 def collect_bare_param_names (typ : Term) : List Identifier :=
     match term_peel typ {
-        Term.forall _ _ body => collect_bare_param_names body,
-        Term.pi _ ptyp ret => List.append (bare_type_var_name ptyp) (collect_bare_param_names ret),
+        // Merged, and inert on the folded flavour: a quantifier's domain is
+        // a `Term.sort`, and `bare_type_var_name` answers `List.empty` for
+        // one, so the old arm's "skip the kind, walk the body" is exactly
+        // what "append nothing, walk the codomain" does here.
+        Term.pi _b ptyp ret => List.append (bare_type_var_name ptyp) (collect_bare_param_names ret),
         _ => List.empty,
     }
 
@@ -4957,8 +4977,9 @@ def collect_app_arg_names (t : Term) : List Identifier :=
     match term_peel t {
         Term.app f a => List.append (bare_type_var_name a) (List.append (collect_app_arg_names f) (collect_app_arg_names a)),
         Term.lam _ _ body => collect_app_arg_names body,
-        Term.forall _ _ body => collect_app_arg_names body,
-        Term.pi _ ptyp ret => List.append (collect_app_arg_names ptyp) (collect_app_arg_names ret),
+        // Merged; inert for the same reason as `collect_bare_param_names`
+        // above -- a quantifier's domain is a sort and contributes no name.
+        Term.pi _b ptyp ret => List.append (collect_app_arg_names ptyp) (collect_app_arg_names ret),
         _ => List.empty,
     }
 
@@ -5061,13 +5082,12 @@ def collect_recurring_domain_names (typ : Term) : List Identifier :=
     keep_ids_present (collect_bare_param_names typ) (List.append (collect_app_arg_names typ) (bare_type_var_name (final_result_type typ)))
 
 /// The type a Pi chain ultimately returns -- the innermost `ret` of a
-/// (possibly `Forall`-prefixed) function type. See
+/// (possibly quantifier-prefixed) function type. See
 /// `collect_recurring_domain_names`.
 #[partial]
 def final_result_type (typ : Term) : Term :=
     match term_peel typ {
-        Term.forall _ _ body => final_result_type body,
-        Term.pi _ _ ret => final_result_type ret,
+        Term.pi _b _dom ret => final_result_type ret,
         _ => term_peel typ,
     }
 
@@ -5110,8 +5130,7 @@ def collect_param_app_arg_names (params : List Identifier) (t : Term) : List Ide
         Term.app f a =>
             let here := if app_head_is_param params f then bare_type_var_name a else List.empty in
             union_ids here (union_ids (collect_param_app_arg_names params f) (collect_param_app_arg_names params a)),
-        Term.pi _ p r => union_ids (collect_param_app_arg_names params p) (collect_param_app_arg_names params r),
-        Term.forall _ _ body => collect_param_app_arg_names params body,
+        Term.pi _b p r => union_ids (collect_param_app_arg_names params p) (collect_param_app_arg_names params r),
         Term.lam _ ty body => union_ids (collect_param_app_arg_names params ty) (collect_param_app_arg_names params body),
         _ => List.empty,
     }
@@ -5129,14 +5148,20 @@ def app_head_is_param (params : List Identifier) (t : Term) : Bool :=
         _ => false,
     }
 
-/// Strip every leading `Term.forall` binder -- the shape a signature's
-/// own body has to be in before anything can be matched against a
-/// carrier (`term_peel` itself only ever peels `Term.ctx`, so a bare
-/// `bind_term_vars` on a `Forall`-wrapped type would match nothing).
+/// Strip every leading QUANTIFIER -- the shape a signature's own body has to
+/// be in before anything can be matched against a carrier (`term_peel` itself
+/// only ever peels `Term.ctx`, so a bare `bind_term_vars` on a
+/// quantifier-wrapped type would match nothing).
+///
+/// "Quantifier" means `BinderInfo.binder` or `BinderInfo.level`, the two
+/// flavours `Term.forall` used to spell. An EXPLICIT binder stops the walk:
+/// it is a real value parameter, and stripping it would make a function type
+/// look like its own codomain.
 #[partial]
 def strip_foralls (typ : Term) : Term :=
     match term_peel typ {
-        Term.forall _ _ body => strip_foralls body,
+        Term.pi b _dom ret =>
+            if binder_is_explicit b then term_peel typ else strip_foralls ret,
         _ => term_peel typ,
     }
 
@@ -5207,13 +5232,16 @@ def method_sig_bindings (classes : List Class) (cls_name : NamePath) (method_nam
 #[partial]
 def carrier_shape_candidates (typ : Term) : List Term :=
     match term_peel typ {
-        Term.pi _ dom ret =>
+        Term.pi _b dom ret =>
             let here := match term_peel dom {
                 Term.app _ _ => List.cons dom List.empty,
                 _ => List.empty,
             } in
             List.append here (carrier_shape_candidates ret),
-        Term.forall _ _ body => carrier_shape_candidates body,
+        // Merged with the arm above, and inert on the folded flavour: a
+        // quantifier's domain is a `Term.sort`, `term_peel` of one is not an
+        // application, so `here` is empty and the walk goes straight to the
+        // codomain exactly as the old strip arm did.
         Term.app _ _ => List.cons typ List.empty,
         _ => List.empty,
     }
@@ -5241,17 +5269,23 @@ def bind_shape_candidates (names : List Identifier) (shapes : List Term) (carrie
 #[partial]
 def bind_params_against_args (env : List LocalTypeBinding) (ctor_owners : List CtorOwner) (def_types : HashMap String Term) (ctor_field_types : List CtorFieldTypes) (wildcards : List Identifier) (typ : Term) (args : List Term) (bindings : List (Pair Identifier Term)) : List (Pair Identifier Term) :=
     match term_peel typ {
-        Term.forall _ _ body => bind_params_against_args env ctor_owners def_types ctor_field_types wildcards body args bindings,
-        Term.pi _ ptyp ret =>
-            match args {
-                List.empty => bindings,
-                List.cons a rest =>
-                    let inner := match infer_carrier_type env ctor_owners def_types ctor_field_types a {
-                        Option.some actual => bind_term_vars wildcards ptyp actual bindings,
-                        Option.none => bindings,
-                    } in
-                    bind_params_against_args env ctor_owners def_types ctor_field_types wildcards ret rest inner,
-            },
+        // A quantifier does not consume an argument, so the guard here is
+        // load-bearing: without it the first argument would be bound against
+        // a quantified type variable's KIND, and every later argument would
+        // be matched to the wrong parameter.
+        Term.pi b ptyp ret =>
+            if Bool.not (binder_is_explicit b)
+            then bind_params_against_args env ctor_owners def_types ctor_field_types wildcards ret args bindings
+            else
+                match args {
+                    List.empty => bindings,
+                    List.cons a rest =>
+                        let inner := match infer_carrier_type env ctor_owners def_types ctor_field_types a {
+                            Option.some actual => bind_term_vars wildcards ptyp actual bindings,
+                            Option.none => bindings,
+                        } in
+                        bind_params_against_args env ctor_owners def_types ctor_field_types wildcards ret rest inner,
+                },
         _ => bindings,
     }
 
@@ -6279,7 +6313,15 @@ def lam_binder_type (written : Term) (expect : Option Term) : Term :=
             match expect {
                 Option.some e =>
                     match term_peel e {
-                        Term.pi _ arg _ret => arg,
+                        // Guarded (R2b): this function had `pi` and no
+                        // `forall` arm before the fold, so a
+                        // quantifier-headed expectation kept the
+                        // lambda's own WRITTEN type. Merged verbatim it
+                        // would instead bind the parameter at the
+                        // quantifier's domain -- a `Term.sort`, i.e.
+                        // the placeholder this file spends its length
+                        // avoiding.
+                        Term.pi b arg _ret => if binder_is_explicit b then arg else written,
                         _ => written,
                     },
                 Option.none => written,
@@ -6364,7 +6406,12 @@ def lam_body_expect (expect : Option Term) : Option Term :=
     match expect {
         Option.some e =>
             match term_peel e {
-                Term.pi _ _arg ret => Option.some ret,
+                // Guarded (R2b), same shape as `lam_binder_type` above:
+                // a quantifier-headed expectation used to answer
+                // `Option.none` here -- "no body expectation to hand
+                // down" -- and the fold would otherwise hand down the
+                // quantifier's body.
+                Term.pi b _arg ret => if binder_is_explicit b then Option.some ret else Option.none,
                 _ => Option.none,
             },
         Option.none => Option.none,
@@ -6494,17 +6541,21 @@ def infer_carriers_each (env : List LocalTypeBinding) (ctor_owners : List CtorOw
 #[partial]
 def sig_arg_bindings (sig : Term) (names : List Identifier) (each : List (Option Term)) (acc : List (Pair Identifier Term)) : List (Pair Identifier Term) :=
     match term_peel sig {
-        Term.forall _ _ body => sig_arg_bindings body names each acc,
-        Term.pi _ ptyp ret =>
-            match each {
-                List.empty => acc,
-                List.cons c rest =>
-                    let inner := match c {
-                        Option.some carrier => bind_term_vars names ptyp carrier acc,
-                        Option.none => acc,
-                    } in
-                    sig_arg_bindings ret names rest inner,
-            },
+        // Same guard, same reason as `bind_params_against_args`: a quantifier
+        // consumes no argument, so it is skipped without stepping `each`.
+        Term.pi b ptyp ret =>
+            if Bool.not (binder_is_explicit b)
+            then sig_arg_bindings ret names each acc
+            else
+                match each {
+                    List.empty => acc,
+                    List.cons c rest =>
+                        let inner := match c {
+                            Option.some carrier => bind_term_vars names ptyp carrier acc,
+                            Option.none => acc,
+                        } in
+                        sig_arg_bindings ret names rest inner,
+                },
         _ => acc,
     }
 
@@ -6513,8 +6564,13 @@ def sig_arg_bindings (sig : Term) (names : List Identifier) (each : List (Option
 #[partial]
 def sig_arg_hints (sig : Term) (names : List Identifier) (bindings : List (Pair Identifier Term)) : List (Option Term) :=
     match term_peel sig {
-        Term.forall _ _ body => sig_arg_hints body names bindings,
-        Term.pi _ ptyp ret => List.cons (concrete_hint ptyp names bindings) (sig_arg_hints ret names bindings),
+        // Pass 2 must emit one hint per VALUE parameter, so a quantifier --
+        // which pass 1 also skipped -- emits nothing here either, or the two
+        // passes would disagree on which position is which.
+        Term.pi b ptyp ret =>
+            if binder_is_explicit b
+            then List.cons (concrete_hint ptyp names bindings) (sig_arg_hints ret names bindings)
+            else sig_arg_hints ret names bindings,
         _ => List.empty,
     }
 
@@ -6571,13 +6627,21 @@ def sig_arg_hints (sig : Term) (names : List Identifier) (bindings : List (Pair 
 def concrete_hint (ptyp : Term) (names : List Identifier) (bindings : List (Pair Identifier Term)) : Option Term :=
     let sub := subst_carrier_bindings bindings ptyp in
     match term_peel sub {
+        // Guarded (R2b): `concrete_hint` had `pi` and no `forall` arm, so
+        // a quantifier-headed declared type took the catch-all below --
+        // the "is it still generic?" test. The fold would otherwise
+        // split it as if it were a lambda's arrow, which is the one
+        // reading this file documents as the hazard it exists to stop.
         Term.pi b dom ret =>
-            match expected_carrier_of ret {
-                // A codomain of a hole or a bare universe placeholder says
-                // nothing about the body, so there is nothing to hand down.
-                Option.none => Option.none,
-                Option.some _ => Option.some (Term.pi b (hint_arrow_domain names dom) ret),
-            },
+            if binder_is_explicit b
+            then
+                match expected_carrier_of ret {
+                    // A codomain of a hole or a bare universe placeholder says
+                    // nothing about the body, so there is nothing to hand down.
+                    Option.none => Option.none,
+                    Option.some _ => Option.some (Term.pi b (hint_arrow_domain names dom) ret),
+                }
+            else if type_mentions_any names sub then Option.none else expected_carrier_of sub,
         _ => if type_mentions_any names sub then Option.none else expected_carrier_of sub,
     }
 
@@ -6604,8 +6668,9 @@ def type_mentions_any (names : List Identifier) (t : Term) : Bool :=
                 DebugName.unnamed => false,
             },
         Term.app f a => if type_mentions_any names f then true else type_mentions_any names a,
-        Term.pi _ p ret => if type_mentions_any names p then true else type_mentions_any names ret,
-        Term.forall _ _ body => type_mentions_any names body,
+        // Merged; inert -- a quantifier's domain is a sort, and a sort holds
+        // no name.
+        Term.pi _b p ret => if type_mentions_any names p then true else type_mentions_any names ret,
         Term.lam _ ty body => if type_mentions_any names ty then true else type_mentions_any names body,
         _ => false,
     }
@@ -6698,13 +6763,13 @@ def sig_expect_bindings (typ : Term) (names : List Identifier) (expect : Option 
             },
     }
 
-/// The number of value parameters a declared signature takes (its own
-/// Pi chain, `Forall` binders skipped -- they bind types, not values).
+/// The number of value parameters a declared signature takes (its own Pi
+/// chain, quantifier binders skipped -- they bind types, not values).
 #[partial]
 def pi_arity (sig : Term) : I64 :=
     match term_peel sig {
-        Term.forall _ _ body => pi_arity body,
-        Term.pi _ _ ret => 1 + pi_arity ret,
+        Term.pi b _dom ret =>
+            if binder_is_explicit b then 1 + pi_arity ret else pi_arity ret,
         _ => 0,
     }
 
@@ -7291,9 +7356,9 @@ def find_unresolved_class_calls_term (classes : List Class) (t : Term) (acc : Li
             DebugName.unnamed => acc,
         },
     Term.lam _dbg typ body => find_unresolved_class_calls_term classes body (find_unresolved_class_calls_term classes typ acc),
-    Term.forall _dbg kind body => find_unresolved_class_calls_term classes body (find_unresolved_class_calls_term classes kind acc),
-    Term.pi _ arg ret =>
-        find_unresolved_class_calls_term classes ret (find_unresolved_class_calls_term classes arg acc),
+    // Merged; inert -- the domain of a folded quantifier is a sort, which
+    // holds no variable reference.
+    Term.pi _b arg ret => find_unresolved_class_calls_term classes ret (find_unresolved_class_calls_term classes arg acc),
     Term.app fun_ arg_ => find_unresolved_class_calls_term classes arg_ (find_unresolved_class_calls_term classes fun_ acc),
     Term.ntv native => find_unresolved_class_calls_native classes native acc,
     Term.con con_ => find_unresolved_class_calls_con classes con_ acc,
@@ -7524,16 +7589,15 @@ def resolve_class_calls_decls_go (classes : List Class) (instances : List Instan
             },
     }
 
-/// Strip EVERY leading `Term.pi`/`Term.forall` binder (unlike
-/// `return_type_after_n_args`, which strips a fixed `n`) -- used to find
-/// a top-level def's own ULTIMATE codomain regardless of arity, for
-/// `full_return_carrier`'s do-notation fallback (see
-/// `resolve_class_call_term`'s doc comment).
+/// Strip EVERY leading `Term.pi` binder, all three flavours included
+/// (unlike `return_type_after_n_args`, which strips a fixed `n` and stops at
+/// a quantifier) -- used to find a top-level def's own ULTIMATE codomain
+/// regardless of arity, for `full_return_carrier`'s do-notation fallback
+/// (see `resolve_class_call_term`'s doc comment).
 #[partial]
 pub def strip_all_leading_binders (typ : Term) : Term :=
     match typ {
-        Term.forall _ _ body => strip_all_leading_binders body,
-        Term.pi _ _ ret => strip_all_leading_binders ret,
+        Term.pi _b _dom ret => strip_all_leading_binders ret,
         _ => typ,
     }
 
@@ -8161,27 +8225,28 @@ def test_placeholder_carrier_accepts_a_sort : Bool :=
 def test_placeholder_carrier_rejects_a_real_carrier : Bool :=
     Bool.not (placeholder_carrier (carrier_var "List"))
 
-// `collect_forall_names` is the third site that opens a `forall` chain
-// and has to tell a LEVEL binder from a type-variable binder. The names
-// it returns are exactly what `bind_params_against_args` may bind
-// against a call's arguments, and a level variable must never be in
-// that set.
+// `collect_forall_names` is the third site that opens a binder chain and
+// has to tell a LEVEL binder from a type-variable binder. The names it
+// returns are exactly what `bind_params_against_args` may bind against a
+// call's arguments, and a level variable must never be in that set.
 
-/// A term binder (`wrap_forall`'s sort-at-1 marker) IS collected.
+/// A type-variable binder IS collected. (Before R2 this was `wrap_forall`'s
+/// sort-at-1 marker; the tag says the same thing now.)
 #[test]
 def test_collect_forall_names_keeps_a_term_binder : Bool :=
-    let t : Term := Term.forall (DebugName.named (Identifier.id "A")) (Term.sort (SortLevel.concrete 1)) Term.hole in
+    let b : Binder := binder_binder (Identifier.id "A") in
+    let t : Term := Term.pi b (Term.sort (SortLevel.concrete 1)) Term.hole in
     match collect_forall_names t {
         List.cons hd rest =>
             List.is_empty rest && Similar.similar hd (Identifier.id "A"),
         List.empty => false,
     }
 
-/// A level binder (`wrap_level_forall`'s sort-at-0 marker) is NOT.
+/// A level binder is NOT.
 #[test]
 def test_collect_forall_names_skips_a_level_binder : Bool :=
-    let t : Term := Term.forall (DebugName.named (Identifier.id "u"))
-                                (Term.sort (SortLevel.concrete 0)) Term.hole in
+    let b : Binder := binder_level (Identifier.id "u") in
+    let t : Term := Term.pi b (Term.sort (SortLevel.concrete 0)) Term.hole in
     List.is_empty (collect_forall_names t)
 
 /// The shape `elaborate_type` actually builds -- a level binder OUTSIDE
@@ -8190,9 +8255,8 @@ def test_collect_forall_names_skips_a_level_binder : Bool :=
 /// single-binder pins above.
 #[test]
 def test_collect_forall_names_skips_a_level_binder_and_keeps_going : Bool :=
-    let inner : Term := Term.forall (DebugName.named (Identifier.id "A")) (Term.sort (SortLevel.concrete 1)) Term.hole in
-    let t : Term := Term.forall (DebugName.named (Identifier.id "u"))
-                                (Term.sort (SortLevel.concrete 0)) inner in
+    let inner : Term := Term.pi (binder_binder (Identifier.id "A")) (Term.sort (SortLevel.concrete 1)) Term.hole in
+    let t : Term := Term.pi (binder_level (Identifier.id "u")) (Term.sort (SortLevel.concrete 0)) inner in
     match collect_forall_names t {
         List.cons hd rest =>
             List.is_empty rest && Similar.similar hd (Identifier.id "A"),

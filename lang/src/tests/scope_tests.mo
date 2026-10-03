@@ -2,7 +2,7 @@ use lang::types {
   Attribute, Decl, Def, Identifier, InductConstructor, Inductive, Infix, Instance,
   InstanceKey, LocalScope, LocalVar, Module, ModulePath, ModuleRegistry, NamePath,
   NameRef, Param, QualifiedName, Scope, ScopeData, ScopeDef, ScopeError,
-  ScopeInstance, Similar, Term, TypeConstraint, Visibility, many, named,
+  ScopeInstance, Similar, Term, TypeConstraint, Visibility, binder_binder, many, named,
   package_private, param_many, priv_, pub_, sort_n, unnamed,
 }
 use lang::scope {
@@ -987,7 +987,7 @@ def test_constraint_bound_carrier_needs_a_candidate : Bool :=
 /// The shape this table holds for a def that quantifies over its own
 /// variable -- what `registered_def_type` guarantees.
 def quantified_def_typ : Term :=
-    Term.forall (DebugName.named (Identifier.id "A")) Term.hole (list_of (var_named "A"))
+    Term.pi (binder_binder (Identifier.id "A")) Term.hole (list_of (var_named "A"))
 
 /// The carrier `infer_carrier_type` reads off a 0-arg def REFERENCE
 /// (`empty`, what `[]` desugars to), as a slug.

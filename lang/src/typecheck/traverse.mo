@@ -32,7 +32,9 @@ def term_map_children (f : Term -> Term) (t : Term) : Term :=
         Term.var idx dbg => Term.var idx dbg,
         Term.var_macro idx dbg => Term.var_macro idx dbg,
         Term.lam dbg typ body => Term.lam dbg (f typ) (f body),
-        Term.forall dbg kind body => Term.forall dbg (f kind) (f body),
+        // One arm for all three binder flavours: `forall` folded into
+        // `pi` in R2b, and the walk is the same either way -- a former
+        // `forall`'s kind is its `arg` here, unchanged.
         Term.pi b arg ret => Term.pi b (f arg) (f ret),
         Term.app callee arg => Term.app (f callee) (f arg),
         Term.lit value => Term.lit (literal_map_children f value),
@@ -130,7 +132,7 @@ def native_map_children (f : Term -> Term) (n : Native) : Native :=
 // need to know how many binders they are under -- de Bruijn shifting and
 // substitution ([[lang/typecheck/subst.mo]]). `f` receives the binder
 // depth of each child relative to `t`: 0 for every child except the BODY
-// of a `lam`/`forall`/`pi`, which is 1 (those three are the only binding
+// of a `lam`/`pi`, which is 1 (those two are the only binding
 // forms in `Term`, and each binds only over its body, not over its
 // type/argument).
 //
@@ -138,7 +140,7 @@ def native_map_children (f : Term -> Term) (n : Native) : Native :=
 // adding the relative depth they are handed. A depth-agnostic caller
 // should use plain `term_map_children` instead.
 //
-// IMPORTANT: `lam`/`forall`/`pi` are not the only binding forms a walk
+// IMPORTANT: `lam`/`pi` are not the only binding forms a walk
 // crosses. A `MatchCase`'s own pattern bindings (`args`) bind over its
 // BODY too, so a `Literal.match_`'s arms are walked by the depth-aware
 // `match_cases_map_children_at_depth` below, which adds
@@ -152,7 +154,9 @@ def term_map_children_at_depth (f : I64 -> Term -> Term) (t : Term) : Term :=
         Term.var idx dbg => Term.var idx dbg,
         Term.var_macro idx dbg => Term.var_macro idx dbg,
         Term.lam dbg typ body => Term.lam dbg (f 0 typ) (f 1 body),
-        Term.forall dbg kind body => Term.forall dbg (f 0 kind) (f 1 body),
+        // As above: one arm, all three flavours. The DEPTH is what made
+        // the old two arms look different, and it is the same either way
+        // -- `forall`'s kind sat at depth 0 exactly as `pi`'s arg does.
         Term.pi b arg ret => Term.pi b (f 0 arg) (f 1 ret),
         Term.app callee arg => Term.app (f 0 callee) (f 0 arg),
         Term.lit value => Term.lit (literal_map_children_at_depth f value),

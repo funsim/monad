@@ -1,15 +1,17 @@
 use lang::types {
-  AttrArg, Attribute, Class, ClassDef, Con, Cubical, DebugName, Decl, Def,
+  AttrArg, Attribute, Binder, BinderInfo, Class, ClassDef, Con, Cubical, DebugName, Decl,
+  Def,
   FieldPattern, Identifier, InductConstructor, Inductive, Instance, Literal,
   MatchCase, ModulePath, Multiplicity, NamePath, Native, NumSuffix, OpenFilter,
   Operator, Param, SortLevel, Struct, StructField, StructLitField, Term, UseFilter,
-  UseItem, Visibility, binder_anon, char_to_string, cubical_prim_name, level_const,
+  UseItem, Visibility, binder_anon, binder_is_explicit, binder_name, char_to_string,
+  cubical_prim_name, level_const,
   package_private, priv_, pub_, show_identifier, show_module_path, show_name_path,
   show_operator,
 }
 use std::list {List.intercalate}
 
-open Term {app, con, cubical, forall, hole, lam, lit, ntv, pi, var}
+open Term {app, con, cubical, hole, lam, lit, ntv, pi, var}
 open Literal {char, flt, if_, match_, num, str}
 open Decl {
   class_d, def_d, inductive_d, infix_d, instance_d, mote_d, open_d, scoped_open_d,
@@ -88,22 +90,29 @@ pub def show_term (t : Term) : String := match t {
         let rhs := String.concat " => " body_str in
         let inner := String.concat lhs rhs in
         String.concat inner ")",
-    forall dbg kind body =>
-        let name_str := show_debug_name dbg in
-        let kind_str := show_term kind in
-        let body_str := show_term body in
-        let lhs := String.concat "{" name_str in
-        let lt := String.concat " : " kind_str in
-        let mid := String.concat lhs lt in
-        let rt := String.concat "} -> " body_str in
-        String.concat mid rt,
-    pi _ arg ret =>
-        let arg_str := show_term arg in
-        let ret_str := show_term ret in
-        let lhs := String.concat "(" arg_str in
-        let arrow := String.concat " -> " ret_str in
-        let inner := String.concat lhs arrow in
-        String.concat inner ")",
+    pi b arg ret =>
+        // R2b: `pi` carries all three binder flavours now. The two that
+        // used to arrive as their own `Term.forall` constructor keep the
+        // `{A : Type} -> Body` spelling this arm has always printed for
+        // them -- only which constructor they arrive on changed, so no
+        // printed output moves. The EXPLICIT flavour is the ordinary arrow.
+        if binder_is_explicit b
+        then
+            let arg_str := show_term arg in
+            let ret_str := show_term ret in
+            let lhs := String.concat "(" arg_str in
+            let arrow := String.concat " -> " ret_str in
+            let inner := String.concat lhs arrow in
+            String.concat inner ")"
+        else
+            let name_str := show_debug_name (binder_name b) in
+            let kind_str := show_term arg in
+            let body_str := show_term ret in
+            let lhs := String.concat "{" name_str in
+            let lt := String.concat " : " kind_str in
+            let mid := String.concat lhs lt in
+            let rt := String.concat "} -> " body_str in
+            String.concat mid rt,
     app fun arg =>
         let fun_str := show_term fun in
         let arg_str := show_term arg in
@@ -645,17 +654,20 @@ def test_show_lam_named : Bool :=
 
 #[test]
 def test_show_forall_named : Bool :=
-    let id := Identifier.id "A" in
-    let dbg := DebugName.named id in
+    let b : Binder := binder_binder (Identifier.id "A") in
     let body := Term.sort (SortLevel.concrete 1) in
-    let t := Term.forall dbg (Term.sort (SortLevel.concrete 1)) body in
+    let t := Term.pi b (Term.sort (SortLevel.concrete 1)) body in
     show_term t == "{A : Type} -> Type"
 
 #[test]
 def test_show_forall_unnamed : Bool :=
-    let dbg := DebugName.unnamed in
+    // Built as a literal rather than through `binder_binder`: every binder
+    // helper takes an `Identifier` and wraps it in `DebugName.named`, and
+    // what this test is about is the UNNAMED spelling. Annotated local
+    // first -- the bare-struct-literal-in-argument-position miscompile.
+    let b : Binder := { name := DebugName.unnamed, info := BinderInfo.binder } in
     let body := Term.sort (SortLevel.concrete 1) in
-    let t := Term.forall dbg (Term.sort (SortLevel.concrete 1)) body in
+    let t := Term.pi b (Term.sort (SortLevel.concrete 1)) body in
     show_term t == "{_ : Type} -> Type"
 
 #[test]

@@ -3515,8 +3515,8 @@ def instance_method_finish (input : String) (name : Identifier) (params : List P
 ///
 /// The parameter's NAME is threaded through (R2a'). A `ParseParam` has
 /// always carried one; what was missing was a `Term.pi` field to hold it,
-/// so this folded an anonymous chain and every parameter type and the
-/// return type lowered at the SAME depth. A mention of an earlier
+/// so this used to fold an anonymous chain and every parameter type and
+/// the return type lowered at the SAME depth. A mention of an earlier
 /// parameter therefore resolved to `sentinel` -- a free variable -- and
 /// `elaborate_type` auto-generalized it into an unrelated implicit. This
 /// is sigma-types' deferred step A4: `Eq.rec` and the body-less cubical
@@ -4918,9 +4918,11 @@ def term_is_unlocated (t : Term) : Bool := match term_loc t {
 
 
 /// `(n : I64) -> Vec n` BINDS `n` over its body. This is the only arrow
-/// in the grammar that binds, and `Term.pi` has no field to carry the
-/// name, so the parse stage has to record it (`ParseTermKind.pi`'s `arg_name`)
-/// for lowering to resolve `n` to index 0 rather than `sentinel`.
+/// in the grammar that binds. `Term.pi` carries the name on its `Binder`
+/// now (R2a), but the parse stage still records it separately in
+/// `ParseTermKind.pi`'s `arg_name`, because what lowering needs is not the
+/// name alone but the fact that the SOURCE wrote one -- which is what
+/// decides whether `n` resolves to index 0 rather than `sentinel`.
 ///
 /// Regression test in the literal sense: this branch shipped without it
 /// and dropped the binder. Nothing else caught that -- the 251 parser
@@ -7061,10 +7063,9 @@ def type_dep_arrow_tag (r: ParseResult String) (input: String) (rem: String) (na
     }
 
 /// `name` reaches here rather than being dropped after the `->`: this
-/// is the one arrow in the grammar that BINDS, and `Term.pi` has no
-/// field to carry a binder name, so `ParseTermKind.pi`'s `arg_name` has
-/// to record it for `lower_parse_kind` to put `name` in scope over
-/// `body`. Dropping it (which this branch did, until review caught it)
+/// is the one arrow in the grammar that BINDS, so `ParseTermKind.pi`'s
+/// `arg_name` records it for `lower_parse_kind` to put `name` in scope
+/// over `body`. Dropping it (which this branch did, until review caught it)
 /// makes every use of `name` inside `body` resolve to `sentinel`.
 #[partial]
 def type_dep_body (r: ParseResult ParseTerm) (input: String) (name: String) (typ: ParseTerm) : ParseResult ParseTerm :=
@@ -7793,7 +7794,7 @@ def test_t_var_bound : Bool :=
 			match (lower_parse_term ctx out) {
 				Term.var idx dbg =>
 					I64.beq idx 0 && String.beq rem "",
-				Term.lam _ _ _ => false, Term.forall _ _ _ => false,
+				Term.lam _ _ _ => false,
 				Term.pi _ _ _ => false, Term.app _ _ => false,
 				Term.lit _ => false, Term.ntv _ => false,
 				Term.con _ => false, Term.sort _ => false, Term.hole => false,
@@ -7809,7 +7810,7 @@ def test_t_var_unbound : Bool :=
 			match (lower_parse_term lower_ctx_bare out) {
 				Term.var idx dbg =>
 					I64.beq idx sentinel && String.beq rem "",
-				Term.lam _ _ _ => false, Term.forall _ _ _ => false,
+				Term.lam _ _ _ => false,
 				Term.pi _ _ _ => false, Term.app _ _ => false,
 				Term.lit _ => false, Term.ntv _ => false,
 				Term.con _ => false, Term.sort _ => false, Term.hole => false,
@@ -7829,7 +7830,7 @@ def test_t_var_shadow : Bool :=
 			match (lower_parse_term ctx out) {
 				Term.var idx dbg =>
 					I64.beq idx 1 && String.beq rem "",
-				Term.lam _ _ _ => false, Term.forall _ _ _ => false,
+				Term.lam _ _ _ => false,
 				Term.pi _ _ _ => false, Term.app _ _ => false,
 				Term.lit _ => false, Term.ntv _ => false,
 				Term.con _ => false, Term.sort _ => false, Term.hole => false,

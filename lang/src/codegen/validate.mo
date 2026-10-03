@@ -18,7 +18,9 @@
 /// All four run on the REACHABLE decls, so a bug in dead code cannot
 /// block a build that never touches it.
 use llvm::strmap {str_map_empty, str_map_insert, str_map_lookup}
-use lang::types {Con, Decl, Def, Literal, MatchCase, Native, Term, term_peel}
+use lang::types {
+  Con, Decl, Def, Literal, MatchCase, Native, Term, binder_is_explicit, term_peel,
+}
 use llvm::ir {
   LLVMBasicBlock, LLVMDeclaration, LLVMFunction, LLVMInstruction, LLVMModule,
   LLVMValue, PhiPair,
@@ -194,8 +196,9 @@ def find_undesugared_struct_lit_defs_go (defs : List Def) (acc : List String) : 
 def term_has_struct_lit (t : Term) : Bool := match t {
     Term.var _idx _dbg => false,
     Term.lam _dbg typ body => term_has_struct_lit typ || term_has_struct_lit body,
-    Term.forall _dbg kind body => term_has_struct_lit kind || term_has_struct_lit body,
-    Term.pi _ arg ret => term_has_struct_lit arg || term_has_struct_lit ret,
+    // Merged; inert on the folded flavour -- a quantifier's domain is a
+    // sort, and a sort carries no struct literal.
+    Term.pi _b arg ret => term_has_struct_lit arg || term_has_struct_lit ret,
     Term.app fun_ arg_ => term_has_struct_lit fun_ || term_has_struct_lit arg_,
     Term.ntv native => native_has_struct_lit native,
     Term.con con_ => con_has_struct_lit con_,
@@ -458,15 +461,21 @@ def missing_call_targets (targets : List String) (defined : HashMap String Bool)
         },
 }
 
-/// Strip lambda/forall prefixes from a de Bruijn Term body.
+/// Strip lambda and quantifier prefixes from a de Bruijn Term body.
 // Peels, for the same reason `collect_db_params` does: this decides
 // whether a def is a BODYLESS native by stripping lams and testing for
 // `Term.hole`, and a wrapper around the hole makes a real native look
 // bodied -- silently skipping the unwired-native gate.
 #[partial]
 def strip_db_lams (term_ : Term) : Term := match term_peel term_ {
-    Term.lam dbg typ body => strip_db_lams body,
-    Term.forall dbg kind body => strip_db_lams body,
+    Term.lam _dbg _typ body => strip_db_lams body,
+    // One arm, two flavours. A quantifier is stripped exactly as the old
+    // `Term.forall` arm stripped it; an EXPLICIT binder is not, matching the
+    // old `Term.pi` catch-all -- and it must keep returning `term_` (the
+    // wrapper) rather than the peeled `dom`, for the reason the note below
+    // gives.
+    Term.pi b _dom body =>
+        if binder_is_explicit b then term_ else strip_db_lams body,
     // Returns the term WITH its wrapper, not the peeled one. Peeling is
     // only needed to see THROUGH a wrapper to a binder; the term this
     // finally lands on is the def's body, and its position is the one a

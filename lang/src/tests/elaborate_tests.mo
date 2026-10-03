@@ -1,14 +1,14 @@
 use lang::types {
   Attribute, Class, ClassDef, Decl, Def, Identifier, ModulePath, NamePath, Param,
-  Term, TypeConstraint, binder_anon, id_eq, id_member, many, package_private, sentinel, sort_n,
-  unnamed, use_bare,
+  Term, TypeConstraint, binder_anon, binder_is_explicit, binder_name, id_eq, id_member,
+  many, package_private, sentinel, sort_n, unnamed, use_bare,
 }
 use lib::elaborate {
   elaborate_class, elaborate_decls, elaborate_def, elaborate_type, free_vars,
   names_of_decl, names_of_decls
 }
 
-open Term {forall, hole, pi, var}
+open Term {hole, pi, var}
 open Decl {class_d, def_d, use_d}
 open DebugName {named, unnamed}
 open Identifier {id}
@@ -122,9 +122,14 @@ def test_free_vars_pi : Bool :=
 def test_elaborate_type_pi_free_vars : Bool :=
     let typ : Term := pi binder_anon v_A v_A in
     let elaborated : Term := elaborate_type typ empty_constraints no_ids in
+    // The wrapper is a quantifier binder -- `binder`, not `explicit` --
+    // and that tag is the whole of what separates it from an arrow now
+    // that R2b folded `Term.forall` into `Term.pi`.
     match elaborated {
-        forall dbg kind body =>
-            match dbg {
+        Term.pi b _dom body =>
+            if binder_is_explicit b
+            then false
+            else match binder_name b {
                 named n =>
                     if id_eq n id_A
                     then
@@ -160,7 +165,7 @@ def test_elaborate_def_free_var : Bool :=
     match elaborated {
         Def.mk {typ := elab_typ, ..} =>
             match elab_typ {
-                forall _ _ _ => true,
+                Term.pi b _dom _body => Bool.not (binder_is_explicit b),
                 _ => false,
             },
     }
@@ -171,7 +176,7 @@ def test_elaborate_def_free_var : Bool :=
 /// SomeTypeNotMentioningA` has `A` nowhere in the type body, but
 /// `elaborate_type` unions `free_vars typ` with
 /// `collect_constraint_vars constraints`, so `A` survives into the
-/// leading `Forall A. ...` binder that `locals_with_def_typevars`'s
+/// leading quantifier binder that `locals_with_def_typevars`'s
 /// `forall_chain_binder_names` walk then skolemizes for the body check.
 #[test]
 def test_elaborate_def_constraint_only_var : Bool :=
@@ -186,8 +191,10 @@ def test_elaborate_def_constraint_only_var : Bool :=
     match elaborated {
         Def.mk {typ := elab_typ, ..} =>
             match elab_typ {
-                forall dbg _kind _body =>
-                    match dbg {
+                Term.pi b _dom _body =>
+                    if binder_is_explicit b
+                    then false
+                    else match binder_name b {
                         named n => id_eq n id_A,
                         unnamed => false,
                     },
@@ -214,7 +221,7 @@ def test_elaborate_class_method : Bool :=
                     match em {
                         ClassDef.mk _ elab_typ _ =>
                             match elab_typ {
-                                forall _ _ _ => false,
+                                Term.pi b _dom _body => binder_is_explicit b,
                                 _ => true,
                             },
                     },
