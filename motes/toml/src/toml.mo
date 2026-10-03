@@ -53,7 +53,7 @@ open Toml.Value {array, boolean, integer, string, table}
 /// TOML value type. The parser produces `array` elements that are scalars or
 /// inline `table`s -- never a nested `array` -- but the type itself doesn't
 /// enforce that, and the serializer renders whatever it is handed.
-type Toml.Value {
+pub type Toml.Value {
   string (s : String),
   integer (n : I64),
   boolean (b : Bool),
@@ -121,7 +121,7 @@ instance BEq (BTreeMap String Toml.Value) {
 }
 
 /// TOML ParseError type
-type Toml.ParseError {
+pub type Toml.ParseError {
   expected (e : String) (found : String),
   generic String,
 }
@@ -726,7 +726,7 @@ def toml_sub_table_value (v : Toml.Value) : BTreeMap String Toml.Value :=
 
 /// The array currently at `key`, or empty when the key is absent or holds
 /// something else. The array counterpart of `Toml.sub_table`.
-def Toml.array_at (key : String) (root : BTreeMap String Toml.Value) : List Toml.Value :=
+pub def Toml.array_at (key : String) (root : BTreeMap String Toml.Value) : List Toml.Value :=
   toml_array_at_lookup (Map.lookup key root)
 
 def toml_array_at_lookup (found : Option Toml.Value) : List Toml.Value :=
@@ -960,7 +960,7 @@ def Toml.assemble (lines : List Toml.Line) : Result Toml.ParseError (BTreeMap St
 
 /// Main parse function: parse a full TOML document into its root table.
 #[partial]
-def Toml.parse (s : String) : Result Toml.ParseError (BTreeMap String Toml.Value) :=
+pub def Toml.parse (s : String) : Result Toml.ParseError (BTreeMap String Toml.Value) :=
   match Toml.document s {
     success rem lines =>
       if is_empty rem
@@ -1219,7 +1219,7 @@ pub def Toml.get_table (v : Toml.Value) : Result String (BTreeMap String Toml.Va
 
 // ─── Table manipulation ───
 
-def Toml.table_get (key : String) (t : BTreeMap String Toml.Value) : Option Toml.Value :=
+pub def Toml.table_get (key : String) (t : BTreeMap String Toml.Value) : Option Toml.Value :=
   Map.lookup key t
 
 def Toml.table_set (key : String) (value : Toml.Value) (t : BTreeMap String Toml.Value) : BTreeMap String Toml.Value :=
