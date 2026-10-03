@@ -1,6 +1,12 @@
-/// Self-hosted Monad grammar parser core types and constants.
+/// Parser core: the result and error types every parser in this tree
+/// returns, and the two predicates they all use.
+///
+/// Deliberately knows nothing about MONAD. The operator table and the keyword
+/// list -- the two things here that encoded this language's grammar rather
+/// than parsing in general -- moved to `op_table.mo` and `keywords.mo`, so
+/// that a generic parser substrate can take this file as-is. Nothing here
+/// imports `lang::types`, and nothing here should.
 
-use lib::types {}
 use std::list {}
 
 
@@ -39,171 +45,6 @@ pub type ParseResult O {
 	fail (error: ParseError)
 	}
 
-
-
-
-pub type OpEntry {
-	mk (op_str: String) (prec: I64) (right_assoc: Bool)
-	}
-
-
-pub def op_chars : List String :=
-	["+", "&", "=", "|", "<", ">", "*", "/", "-", "!", ".", "@"]
-
-
-pub def op_table : List OpEntry :=
-	[OpEntry.mk "|>" 5 false,
-	 OpEntry.mk "<|" 5 true,
-	 OpEntry.mk ">>=" 10 true,
-	 OpEntry.mk "." 12 true,
-	 OpEntry.mk "<*>" 15 false,
-	 OpEntry.mk "<|>" 20 false,
-	 OpEntry.mk "||" 25 true,
-	 OpEntry.mk "&&" 30 true,
-	 OpEntry.mk "==" 40 false,
-	 OpEntry.mk "!=" 40 false,
-	 // Same precedence level as ==/!= (40), matching the Rust
-	 // reference's operator_precedence (core/src/parser.rs) exactly --
-	 // missing here, `infix (<) := BOrd.lt`/`infix (>) := BOrd.gt`
-	 // (init/prelude.mo) rejected as "unknown operator" (op_check,
-	 // lang/parser.mo), which truncated the ENTIRE rest of prelude.mo
-	 // under decls_parser's lenient truncate-on-failure behavior --
-	 // silently dropping every later declaration (List.last,
-	 // Option.get_or_default, ...) from self-hosted-compiled programs'
-	 // dependency loading. <=/>= added too for the same parity, even
-	 // though nothing currently declares them via `infix (...)`.
-	 OpEntry.mk "<" 40 false,
-	 OpEntry.mk ">" 40 false,
-	 OpEntry.mk "<=" 40 false,
-	 OpEntry.mk ">=" 40 false,
-	 OpEntry.mk "++" 50 true,
-	 // No built-in meaning — see the matching `tag("@")` entry in
-	 // `core/src/parser.rs`'s `infix_symbol`/`operator_precedence`.
-	 OpEntry.mk "@" 50 true,
-	 OpEntry.mk ">>" 60 false,
-	 OpEntry.mk "<<" 60 false,
-	 OpEntry.mk "+" 65 false,
-	 OpEntry.mk "-" 65 false,
-	 OpEntry.mk "*" 70 false,
-	 OpEntry.mk "/" 70 false]
-
-
-#[partial]
-def op_char_member (c : String) (chars : List String) : Bool := 
-	match chars {
-		List.cons ch rest => if String.beq ch c then true else op_char_member c rest,
-		List.empty => false
-		}
-
-
-#[partial]
-def op_entry_name (entry : OpEntry) : String := 
-	match entry {
-		OpEntry.mk o _ _ => o
-		}
-
-
-#[partial]
-def op_entry_prec (entry : OpEntry) : I64 := 
-	match entry {
-		OpEntry.mk _ p _ => p
-		}
-
-
-#[partial]
-def op_entry_rassoc (entry : OpEntry) : Bool := 
-	match entry {
-		OpEntry.mk _ _ r => r
-		}
-
-
-#[partial]
-def op_lookup_prec (op_str : String) (table : List OpEntry) : I64 := 
-	match table {
-		List.cons entry rest =>
-			if String.beq (op_entry_name entry) op_str then op_entry_prec entry
-			else op_lookup_prec op_str rest,
-		List.empty => 0
-		}
-
-
-#[partial]
-def op_lookup_rassoc (op_str : String) (table : List OpEntry) : Bool :=
-	match table {
-		List.cons entry rest =>
-			if String.beq (op_entry_name entry) op_str then op_entry_rassoc entry
-			else op_lookup_rassoc op_str rest,
-		List.empty => false
-		}
-
-
-/// Single-scan lookup returning the whole matching `OpEntry`, so a
-/// caller that needs BOTH precedence and associativity for the same
-/// operator (`lang/parser.mo`'s `expr_climb_op_prec`/
-/// `expr_climb_op_rhs_ws`, on the same call path for every operator
-/// token in every expression parsed) walks `table` once instead of
-/// calling `op_lookup_prec` and `op_lookup_rassoc` separately.
-/// `op_lookup_prec`/`op_lookup_rassoc` themselves stay as-is for
-/// call sites that only need one or the other (e.g. `op_precedence`).
-#[partial]
-def op_lookup_entry (op_str : String) (table : List OpEntry) : Option OpEntry :=
-	match table {
-		List.cons entry rest =>
-			if String.beq (op_entry_name entry) op_str then Option.some entry
-			else op_lookup_entry op_str rest,
-		List.empty => Option.none
-		}
-
-
-/// `pub`/`priv` are missing here even though `vis_parser` treats both
-/// as real keywords elsewhere (`tag "pub"`/`tag "priv"` before a
-/// `def`/`type`/`class`/.../ declaration) -- the general `identifier`
-/// parser (used everywhere a bare identifier can appear, including
-/// `expr_climb_rest`'s own "one more application argument" attempt)
-/// happily accepts them as ordinary identifiers instead of rejecting
-/// them, so a preceding expression with nothing to naturally stop it
-/// (no comma, no operator) swallows the NEXT declaration's own leading
-/// `pub`/`priv` as a bogus extra argument -- the exact same failure
-/// mode `c1ed034`/this session's own `expr_climb_op` fix already cover
-/// for other triggers, just never closed for these two specific words.
-/// Confirmed live via the full `cli/src/main.mo` self-compile:
-/// `lang/parser/core.mo`'s own `op_chars : List String := [...]`
-/// (immediately followed by `pub def op_table : List OpEntry := ...`,
-/// no comment, nothing unusual) got its list literal miscompiled into
-/// applying the whole list to `pub`'s own (garbage) value instead of
-/// returning it -- `llc: undefined value '@pub'` once at codegen, but
-/// this was ALREADY silently wrong under the tree-walking interpreter
-/// too (this bug doesn't need LLVM to manifest, just never surfaced
-/// because nothing exercised `op_chars`'s own value end-to-end before).
-/// Mirrors the Rust reference's own `RESERVED_KEYWORDS`, which already
-/// includes `pub`/`priv` (fixed there in an earlier session) -- this
-/// self-hosted `kw_list` is a wholly separate, independent parser
-/// implementation that was never given the same fix.
-///
-/// `as` is NOT included here despite having the identical `tag "as"`
-/// shape (`use X as Y` renames) -- unlike `pub`/`priv`, `as` is also
-/// used pervasively as an ordinary bound variable name throughout this
-/// corpus (`lang/types.mo`'s own `Identifier.id as => ...`, `String.beq
-/// as bs`), so reserving it globally breaks far more than it fixes.
-/// Confirmed as a real regression from an earlier version of this same
-/// fix that included `as`: `lang/types.mo`/`lang/codegen/emit.mo` (both
-/// bind fields to a local literally named `as`) went from parsing fine
-/// to truncating entirely.
-def kw_list : List String :=
-	["def", "let", "in", "use", "open", "class", "struct", "instance",
-	 "type", "fn", "match", "if", "then", "else", "infix",
-	 "do", "return", "for", "quote", "with", "defmacro",
-	 "pub", "priv"]
-
-
-#[partial]
-def kw_member (s : String) (kws : List String) : Bool := 
-	match kws {
-		List.cons kw rest => if String.beq kw s then true else kw_member s rest,
-		List.empty => false
-		}
-
-
 // O(1) on both sides: `String.get s 0` reads one byte (the native's
 // `i == 0` fast path skips the length call entirely in compiled
 // binaries), while the old `String.length s == 0` ran a full `strlen`
@@ -219,4 +60,3 @@ def is_empty (s : String) : Bool :=
 		Option.some _ => false,
 		Option.none => true
 	}
-

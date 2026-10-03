@@ -1,6 +1,5 @@
 /// Character predicate functions for the self-hosted Monad parser.
 
-use lib::parser::core {kw_list, kw_member}
 use std::list {}
 
 // --- Char predicates ---
@@ -139,13 +138,6 @@ def is_hex_alpha (c : String) : Bool :=
 def is_hex_digit (c : String) : Bool :=
 	if is_digit c then true
 	else is_hex_alpha c
-
-
-// --- Keyword check ---
-
-#[partial]
-def is_keyword (s : String) : Bool :=
-	kw_member s kw_list
 
 
 // --- String prefix check ---

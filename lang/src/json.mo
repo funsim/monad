@@ -8,9 +8,7 @@ use std::map {BTreeMap, BTreeMap.to_list, empty}
 use std::list {List.intercalate, Show}
 use init::string {}
 use init::number {}
-use lang::parser::core {
-  ParseError, ParseResult, is_empty, mk, parse_error_remaining,
-}
+use lang::parser::core {ParseError, ParseResult, is_empty, parse_error_remaining}
 use lib::parser::char_preds {is_space}
 use lib::parser::combinators {
   alt, alt_fold, delimited_by, many0, map_parse, opt, separated_by, tag,

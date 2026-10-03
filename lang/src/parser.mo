@@ -28,10 +28,10 @@ use lang::parser::lower_parse {
   lower_ctx_bind_all, lower_ctx_locating, lower_parse_decl, lower_parse_decls,
   lower_parse_term, name_ref_to_string,
 }
-use lang::parser::core {
-  ParseResult, custom, is_empty, op_char_member, op_chars, op_entry_prec,
-  op_entry_rassoc, op_lookup_entry, op_lookup_prec, op_table,
-  parse_error_remaining,
+use lang::parser::core {ParseResult, custom, is_empty, parse_error_remaining}
+use lang::parser::op_table {
+  op_char_member, op_chars, op_entry_prec, op_entry_rassoc, op_lookup_entry,
+  op_lookup_prec, op_table,
 }
 use lang::parser::char_preds {
   is_ident_char_byte, is_prefix, is_space, is_space_byte,
@@ -40,16 +40,17 @@ use lang::parser::combinators {
   alt, alt_fold, bind_parse, delimited_by, many1, map_parse, opt, preceded_by,
   separated_by, tag, tag_keyword, take_while, take_while_byte, terminated_by,
 }
-use lib::parser::number {number, numeric_literal}
+use lib::parser::number {number}
+use lib::parser::numeric_literal {numeric_literal}
 use lib::parser::whitespace {skip_spaces, skip_spaces_match, ws0, ws1}
 use lib::parser::position {consume_span, location_of_remaining, new_span, resolve_offsets_in_file, span_fragment, span_location}
 use lib::parser::identifier {identifier}
 use lib::parser::string {char_literal, raw_string_parse, string_parse}
 use lib::parser::diagnostic {render_parse_error}
 open lang.parser.core {
-  ParseResult, custom, fail, is_empty, mk, op_char_member, op_chars,
-  op_lookup_prec, op_table, success, tag,
+  ParseResult, custom, fail, is_empty, mk, success, tag,
 }
+open lang.parser.op_table {op_char_member, op_chars, op_lookup_prec, op_table}
 open ParseResult {fail, success}
 
 #[partial]
