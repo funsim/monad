@@ -18,9 +18,18 @@
     };
   };
 
+  # CI pushes the built ladder to monad-lang; devenv.cachix.org was always here.
+  # Both are read (under --accept-flake-config or a trusted user); only ours is
+  # written, and only in CI.
   nixConfig = {
-    extra-trusted-public-keys = "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
-    extra-substituters = "https://devenv.cachix.org";
+    extra-trusted-public-keys = [
+      "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+      "monad-lang.cachix.org-1:iydtAH4RfGNfAimoaX7vfcACG/X8R5A3Iw9wL8dkFDU="
+    ];
+    extra-substituters = [
+      "https://devenv.cachix.org"
+      "https://monad-lang.cachix.org"
+    ];
   };
 
   # A thin assembler over three independent modules. Each `nix/*.nix` file owns

@@ -50,6 +50,16 @@ jobs:
           host="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
           echo "MONAD_HOST_BIN=$host/bin/monad-rs" >> "$GITHUB_ENV"
 
+      # Push the host this job builds, so a later commit substitutes rather than
+      # rebuilding it (~3 min). `cachix` is the devshell's (devenv.nix): the
+      # runner host has none.
+      - name: Push the host to the binary cache
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          paths="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
+          nix develop --no-pure-eval --accept-flake-config -c scripts/push-to-cache.sh $paths
+
       # The whole build -- compile, verification, staged artifacts and the
       # `tag`/`date` outputs the release step below reads -- happens inside
       # this one dev-shell entry. Two things drive the shape of it:

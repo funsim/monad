@@ -7,7 +7,8 @@
 }:
 
 {
-
+  cachix.pull = [ "monad-lang" ];
+  cachix.push = "monad-lang";
   # https://devenv.sh/packages/
   packages = with pkgs; [
     shellcheck
@@ -53,6 +54,9 @@
     # lscpu. The script guards the call with `command -v`, so losing this
     # would cost a diagnostic line rather than the step.
     util-linux
+    # The push side of the binary cache (scripts/push-to-cache.sh): the
+    # self-hosted runner host has no cachix of its own.
+    cachix
   ];
 
   # https://devenv.sh/languages/

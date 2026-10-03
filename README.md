@@ -53,6 +53,11 @@ cargo build --release
 cargo run --release -- run cli/src/main.mo build cli/src/main.mo -o "$PWD/monad" --release
 ```
 
+The compiler the flake builds is published to the project's Cachix cache. A
+`nix build --accept-flake-config .#monad` reads it with no setup; `cachix use
+monad-lang` opts in permanently by adding the substituter to your `nix.conf`, so
+an unchanged rung is a substitution rather than a ~20 minute interpretation.
+
 The `-o` must be **absolute**: a relative output name lands in the compiler's
 scratch directory. The trailing `--release` turns off DWARF debug info, which
 is on by default.

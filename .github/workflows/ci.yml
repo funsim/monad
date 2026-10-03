@@ -79,8 +79,12 @@ env:
 #     run 36238059186) because `.#monad` depends on this commit's whole source
 #     tree, so it is cold on EVERY commit. Pinning a job to one machine would
 #     remove scheduling freedom and buy nothing. The fix for that step is a
-#     binary cache shared by the two runners (nix-serve or attic) -- a
-#     monad-nixos-modules change, not one this repo can make.
+#     binary cache, and there is now one this repo owns: `monad-lang.cachix.org`,
+#     declared in flake.nix's nixConfig and pushed by the `Push ... to the binary
+#     cache` steps below (and in nightly.yml), via scripts/push-to-cache.sh. It
+#     serves both runners and the Tangled microVMs alike; the host-side
+#     `nix-serve`/attic route this comment used to name would only have reached
+#     the two runners.
 #
 # `changes` precedes the rest and gates the jobs that would otherwise BUILD
 # something: the compiler job on one answer, `flake-package` on another.
@@ -245,6 +249,16 @@ jobs:
           host="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
           echo "MONAD_HOST_BIN=$host/bin/monad-rs" >> "$GITHUB_ENV"
 
+      # Push the host this job just built, so the other runner and the Tangled
+      # microVMs substitute it instead of paying the ~3 minute Rust build. The
+      # path is named, not discovered: see scripts/push-to-cache.sh.
+      - name: Push the host to the binary cache
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          paths="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
+          nix develop --no-pure-eval --accept-flake-config -c scripts/push-to-cache.sh $paths
+
       # What this runner actually lets the sweep use, printed because the
       # answer differs per machine: this file once claimed the sharding
       # default was "= 7 here" while monad-nixos-modules' runner module
@@ -391,3 +405,25 @@ jobs:
         run: |
           monad="$(nix build --no-link --print-out-paths --accept-flake-config .#monad)"
           echo "flake-package: built $monad"
+
+      # The highest-value push: `.#monad`'s input is the ~20 minute rung-1
+      # interpretation. All three are named because a build input is NOT in the
+      # output closure `cachix push` walks -- rung-1 alone would stay uncached.
+      - name: Push the ladder to the binary cache
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          paths="$(nix build --no-link --print-out-paths --accept-flake-config \
+            .#monadHost .#monadRung1 .#monad)"
+          nix develop --no-pure-eval --accept-flake-config -c scripts/push-to-cache.sh $paths
+
+      # The flake's inputs too: an input is fetched, not built, so no build hook
+      # could ever see one, and only a store that starts empty wants them (the
+      # microVMs; the runners keep theirs). Main only.
+      - name: Push the flake's inputs
+        if: github.ref == 'refs/heads/main'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          nix develop --no-pure-eval --accept-flake-config -c \
+            scripts/push-to-cache.sh --inputs

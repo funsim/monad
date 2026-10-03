@@ -255,6 +255,11 @@ bootstrap build examples/hello.mo
 cargo run -- repl
 ```
 
+The flake's packages are published to the project's Cachix cache
+(`monad-lang.cachix.org`, declared in `flake.nix`'s `nixConfig`). CI pushes them;
+`nix build --accept-flake-config .#monad` pulls them with no setup, and `cachix
+use monad-lang` opts a developer machine in permanently.
+
 ### Use `--release` for self-hosted-compiler workloads
 
 Running `cli/src/main.mo` (the self-hosted compiler) interprets a real
