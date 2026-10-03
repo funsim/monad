@@ -41,5 +41,6 @@ members = [
   "motes/lsp",
   "motes/moon",
   "motes/moose",
+  "motes/parsec",
   "motes/toolkit",
 ]

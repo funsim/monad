@@ -8,7 +8,7 @@
 use lang::types {Decl, ParseDecl}
 use lib::parser {open_parser, use_parser}
 use lib::parser::lower_parse {lower_parse_decl, lower_ctx_bare}
-use lib::parser::core {ParseResult}
+use parsec::core {ParseResult}
 use lib::pretty {show_decl}
 
 open ParseResult {fail, success}

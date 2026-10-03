@@ -3,7 +3,7 @@ use lang::types {
   ModulePath, Scope, ScopeData, Similar, Term, many, sentinel, sort_n,
 }
 use lib::module {parse_all_decls}
-use lang::parser::core {fail, success}
+use parsec::core {fail, success}
 use lib::scope {build_scope_from_decls}
 use lib::typecheck::whnf {whnf}
 

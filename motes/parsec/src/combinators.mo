@@ -1,10 +1,9 @@
 /// Parser combinator functions for the self-hosted Monad parser.
 
-use lib::parser::core {
+use lib::core {
   ParseError, ParseResult, is_empty, parse_error_remaining
 }
-use lib::parser::char_preds {byte_at, is_ident_char, is_ident_char_byte, is_prefix, is_space, is_space_byte}
-use lib::types {list_reverse}
+use lib::char_preds {byte_at, is_ident_char, is_ident_char_byte, is_prefix, is_space, is_space_byte}
 use std::list {}
 
 open ParseResult {fail, success}
@@ -158,7 +157,7 @@ def alt_second (r : ParseResult A) (e1 : ParseError) (input : String) : ParseRes
 /// loop with constant stack.
 ///
 /// Equivalence with the previous spelling: same elements, same order
-/// (`list_reverse` undoes the reverse accumulation), and on failure the
+/// (`List.reverse` undoes the reverse accumulation), and on failure the
 /// same `success input` -- note the returned remainder is the input as of
 /// the call whose `p` failed, not the original, which is why the failing
 /// arm here returns its own `input` rather than an outer one.
@@ -171,7 +170,7 @@ def many0 (p : String -> ParseResult A) (input : String) : ParseResult (List A) 
 def many0_go (p : String -> ParseResult A) (input : String) (acc : List A) : ParseResult (List A) :=
 	match p input {
 		success rem out => many0_go p rem (List.cons out acc),
-		fail _ => success input (list_reverse acc)
+		fail _ => success input (List.reverse acc)
 	}
 
 
@@ -392,7 +391,7 @@ def separated_by_loop (r : ParseResult A) (rem : String) (out : B) (p : String -
 
 #[partial]
 def separated_by_ok (input : String) (acc : List B) : ParseResult (List B) :=
-	success input (list_reverse acc)
+	success input (List.reverse acc)
 
 
 // --- UTF-8 codepoint-width stepping ---

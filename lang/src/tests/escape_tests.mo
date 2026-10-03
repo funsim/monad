@@ -27,7 +27,7 @@
 /// `parse_fragment`, the string path, so a char literal has no
 /// continuation branch and `'\<newline>'` is an error in both compilers.
 use lib::parser::string {char_literal, string_parse}
-use lib::parser::core {ParseResult}
+use parsec::core {ParseResult}
 use lib::types {ParseTerm, ParseTermKind, ParseLiteral, char_to_string}
 
 def nl : String := "\n"
@@ -207,7 +207,8 @@ def test_escaped_tab_is_whitespace_too : Bool :=
 /// line as well.
 #[test]
 def test_escaped_cr_is_whitespace_too : Bool :=
-    String.beq "a\b" "ab"
+    String.beq "a\
+b" "ab"
 
 #[test]
 def test_escape_still_resolves_after_a_continuation : Bool :=

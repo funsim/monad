@@ -18,3 +18,5 @@ path = "../lang"
 
 [dependencies.llvm]
 path = "../llvm"
+[dependencies.parsec]
+path = "../motes/parsec"

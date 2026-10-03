@@ -19,7 +19,7 @@ use lib::parser {
   LocatedDecls, decls_parser, decls_parser_located, decls_parser_located_with_ranges,
   decls_parser_strict, module_path_to_string,
 }
-use lib::parser::core {ParseError, ParseResult}
+use parsec::core {ParseError, ParseResult}
 use lib::parser::diagnostic {parse_error_location, render_parse_error}
 use lang::mote {
   Mote.discover, Mote.manifest_of_attr, Mote.mote_attr_unknown_keys,

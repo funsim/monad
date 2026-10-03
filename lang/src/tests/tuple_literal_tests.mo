@@ -6,7 +6,7 @@
 use lib::types {Identifier, ParseTerm}
 use lib::parser {expression}
 use lib::parser::lower_parse {lower_parse_term, lower_ctx_bare}
-use lib::parser::core {ParseResult}
+use parsec::core {ParseResult}
 use lib::pretty {show_term}
 
 open ParseResult {fail, success}

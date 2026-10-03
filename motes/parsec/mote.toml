@@ -1,0 +1,36 @@
+# A generic parser-combinator library: `ParseResult`/`ParseError`, the
+# combinators over them, character-class predicates, and a numeric scanner.
+#
+# Extracted from `lang/src/parser/` so that `toml` and `json` -- and anything
+# else that needs to parse text -- can do so without depending on the Monad
+# compiler. `lang` itself is a consumer: its own grammar (the operator table,
+# the keyword list, `numeric_literal`) stayed behind in `lang/src/parser/`,
+# which is what makes the dependency one-way and broke the cycle that blocked
+# this extraction (`lang` -> `toml` -> `lang`, via `lang/src/mote.mo`'s
+# manifest reader).
+#
+# NOTHING HERE MAY IMPORT `lang`. That is the whole point of the mote, and it
+# is not enforced by anything but review: an import added here would re-close
+# the cycle, and the error surfaces as `module cycle detected` somewhere else
+# entirely.
+#
+# Sub-table headers rather than inline tables, like every manifest in this
+# repo: the self-hosted reader (lang/src/toml.mo) supports headers and not
+# inline tables, and an unparseable manifest makes `Mote.discover` return none
+# -- which SILENTLY disables the declared-dependency check rather than failing.
+#
+# `init` and `std` are ambient (`is_ambient_mote`), so these two entries are
+# documentation rather than requirement; they are declared because every other
+# manifest here declares them. No `llvm`/`runtime` entry: those are the
+# transitive drag that comes with depending on `lang::module`, and not
+# depending on it is this mote's defining property.
+[mote]
+name = "parsec"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies.init]
+path = "../../init"
+
+[dependencies.std]
+path = "../../std"

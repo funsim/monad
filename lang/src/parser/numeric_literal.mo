@@ -7,12 +7,12 @@
 /// `ParseTerm` and `pt_lit` are the point.
 
 use lang::types {NumSuffix, ParseTerm, flt, num, pt_lit}
-use lang::parser::core {ParseResult, is_empty}
-use lang::parser::number {
+use parsec::core {ParseResult, is_empty}
+use parsec::number {
   char_to_digit, hex_number, number, parse_digits, parse_digits_char,
 }
-use lib::parser::char_preds {is_digit, is_digit_byte, is_digit_or_underscore_byte}
-use lib::parser::combinators {tag, take_while_byte}
+use parsec::char_preds {is_digit, is_digit_byte, is_digit_or_underscore_byte}
+use parsec::combinators {tag, take_while_byte}
 
 open ParseResult {fail, success}
 

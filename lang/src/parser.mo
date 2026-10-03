@@ -28,26 +28,26 @@ use lang::parser::lower_parse {
   lower_ctx_bind_all, lower_ctx_locating, lower_parse_decl, lower_parse_decls,
   lower_parse_term, name_ref_to_string,
 }
-use lang::parser::core {ParseResult, custom, is_empty, parse_error_remaining}
+use parsec::core {ParseResult, custom, is_empty, parse_error_remaining}
 use lang::parser::op_table {
   op_char_member, op_chars, op_entry_prec, op_entry_rassoc, op_lookup_entry,
   op_lookup_prec, op_table,
 }
-use lang::parser::char_preds {
+use parsec::char_preds {
   is_ident_char_byte, is_prefix, is_space, is_space_byte,
 }
-use lang::parser::combinators {
+use parsec::combinators {
   alt, alt_fold, bind_parse, delimited_by, many1, map_parse, opt, preceded_by,
   separated_by, tag, tag_keyword, take_while, take_while_byte, terminated_by,
 }
-use lib::parser::number {number}
+use parsec::number {number}
 use lib::parser::numeric_literal {numeric_literal}
 use lib::parser::whitespace {skip_spaces, skip_spaces_match, ws0, ws1}
 use lib::parser::position {consume_span, location_of_remaining, new_span, resolve_offsets_in_file, span_fragment, span_location}
 use lib::parser::identifier {identifier}
 use lib::parser::string {char_literal, raw_string_parse, string_parse}
 use lib::parser::diagnostic {render_parse_error}
-open lang.parser.core {
+open parsec.core {
   ParseResult, custom, fail, is_empty, mk, success, tag,
 }
 open lang.parser.op_table {op_char_member, op_chars, op_lookup_prec, op_table}
@@ -5220,7 +5220,7 @@ def variable_got (r: ParseResult String) : ParseResult ParseTerm :=
 
 // ─── Canonical literal parser (Phase 10) ───────────────────────────────
 
-// `numeric_literal` (lang.parser.number) handles the full
+// `numeric_literal` (lang.parser.numeric_literal) handles the full
 // `[-]digits[.digits][suffix]` shape — int/float, sign, and suffix all
 // in one parser. See its doc comment for why the sign lives here rather
 // than as a separate unary-minus operator.

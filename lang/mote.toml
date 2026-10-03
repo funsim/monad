@@ -19,3 +19,5 @@ path = "../llvm"
 
 [dependencies.runtime]
 path = "../runtime"
+[dependencies.parsec]
+path = "../motes/parsec"

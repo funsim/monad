@@ -1,6 +1,6 @@
 use lang::types {LocalScope, ModulePath, NameRef, Scope, ScopeData, id}
 use lang::module {parse_all_decls}
-use lang::parser::core {fail, success}
+use parsec::core {fail, success}
 use lang::scope {build_scope_from_decls, scope_resolve_name}
 
 def empty_local_scope : LocalScope := {

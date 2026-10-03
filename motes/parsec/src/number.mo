@@ -8,9 +8,9 @@
 /// without depending on the compiler's AST, which `lang/src/toml.mo` and
 /// `lang/src/json.mo` both do. Keep this file free of `lang::types`.
 
-use lang::parser::core {ParseResult, custom, is_empty}
-use lib::parser::char_preds {is_digit, is_digit_byte, is_digit_or_underscore_byte, is_hex_digit_byte}
-use lib::parser::combinators {tag, take_while_byte}
+use lib::core {ParseResult, custom, is_empty}
+use lib::char_preds {is_digit, is_digit_byte, is_digit_or_underscore_byte, is_hex_digit_byte}
+use lib::combinators {tag, take_while_byte}
 
 open ParseResult {fail, success}
 

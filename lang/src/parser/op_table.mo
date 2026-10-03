@@ -5,7 +5,7 @@
 /// opposite -- every entry below is a fact about THIS language's grammar, so a
 /// parser substrate reused elsewhere must not carry it.
 
-use lang::parser::core {ParseResult}
+use parsec::core {ParseResult}
 
 pub type OpEntry {
 	mk (op_str: String) (prec: I64) (right_assoc: Bool)

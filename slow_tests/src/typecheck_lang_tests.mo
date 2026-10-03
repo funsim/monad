@@ -1,7 +1,7 @@
 use lib::typecheck_harness {typecheck_file}
 use lang::types {Decl, Def, Identifier, InductConstructor, Inductive, ModulePath, Scope, ScopeData, Term}
 use lang::module {}
-use lang::parser::core {}
+use parsec::core {}
 use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
 
 open IO {println}

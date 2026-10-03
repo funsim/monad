@@ -2,10 +2,10 @@
 /// Extracted from parser.mo as part of Phase C
 
 use lib::types {ParseLiteral, ParseTerm, Term, pt_lit}
-use lang::parser::core {ParseResult, custom, is_empty}
-use lib::parser::combinators {tag, take_while, utf8_char_width}
-use lib::parser::char_preds {is_hex_digit, is_space}
-use lib::parser::number {char_to_hex_digit}
+use parsec::core {ParseResult, custom, is_empty}
+use parsec::combinators {tag, take_while, utf8_char_width}
+use parsec::char_preds {is_hex_digit, is_space}
+use parsec::number {char_to_hex_digit}
 
 open ParseResult {fail, success}
 

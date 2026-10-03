@@ -36,14 +36,14 @@ use std::map {BTreeMap, BTreeMap.to_list, empty}
 use std::list {List.filter, List.intercalate, Show}
 use init::string {}
 use init::number {}
-use lib::parser::core {
+use parsec::core {
   ParseError, ParseResult, is_empty, parse_error_remaining
 }
-use lib::parser::char_preds {is_ident_char}
-use lib::parser::combinators {
+use parsec::char_preds {is_ident_char}
+use parsec::combinators {
   alt, alt_fold, delimited_by, many0, map_parse, separated_by, tag, take_while,
 }
-use lib::parser::number {number}
+use parsec::number {number}
 
 open ParseResult {fail, success}
 open Toml.Value {array, boolean, integer, string, table}

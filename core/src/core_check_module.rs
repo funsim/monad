@@ -4206,27 +4206,51 @@ mod test {
   }
 
   #[test]
-  fn test_real_file_lang_parser_char_preds() {
+  fn test_real_file_motes_parsec_char_preds() {
     let env = ModuleCheckEnv::new();
-    let source = include_str!("../../lang/src/parser/char_preds.mo");
+    let source = include_str!("../../motes/parsec/src/char_preds.mo");
     let report = check_module_source(&env, source);
-    print_report("lang/src/parser/char_preds.mo", &report);
+    print_report("motes/parsec/src/char_preds.mo", &report);
   }
 
   #[test]
-  fn test_real_file_lang_parser_combinators() {
+  fn test_real_file_motes_parsec_combinators() {
     let env = ModuleCheckEnv::new();
-    let source = include_str!("../../lang/src/parser/combinators.mo");
+    let source = include_str!("../../motes/parsec/src/combinators.mo");
     let report = check_module_source(&env, source);
-    print_report("lang/src/parser/combinators.mo", &report);
+    print_report("motes/parsec/src/combinators.mo", &report);
   }
 
   #[test]
-  fn test_real_file_lang_parser_core() {
+  fn test_real_file_motes_parsec_core() {
     let env = ModuleCheckEnv::new();
-    let source = include_str!("../../lang/src/parser/core.mo");
+    let source = include_str!("../../motes/parsec/src/core.mo");
     let report = check_module_source(&env, source);
-    print_report("lang/src/parser/core.mo", &report);
+    print_report("motes/parsec/src/core.mo", &report);
+  }
+
+  #[test]
+  fn test_real_file_lang_parser_keywords() {
+    let env = ModuleCheckEnv::new();
+    let source = include_str!("../../lang/src/parser/keywords.mo");
+    let report = check_module_source(&env, source);
+    print_report("lang/src/parser/keywords.mo", &report);
+  }
+
+  #[test]
+  fn test_real_file_lang_parser_numeric_literal() {
+    let env = ModuleCheckEnv::new();
+    let source = include_str!("../../lang/src/parser/numeric_literal.mo");
+    let report = check_module_source(&env, source);
+    print_report("lang/src/parser/numeric_literal.mo", &report);
+  }
+
+  #[test]
+  fn test_real_file_lang_parser_op_table() {
+    let env = ModuleCheckEnv::new();
+    let source = include_str!("../../lang/src/parser/op_table.mo");
+    let report = check_module_source(&env, source);
+    print_report("lang/src/parser/op_table.mo", &report);
   }
 
   #[test]
@@ -4238,11 +4262,11 @@ mod test {
   }
 
   #[test]
-  fn test_real_file_lang_parser_number() {
+  fn test_real_file_motes_parsec_number() {
     let env = ModuleCheckEnv::new();
-    let source = include_str!("../../lang/src/parser/number.mo");
+    let source = include_str!("../../motes/parsec/src/number.mo");
     let report = check_module_source(&env, source);
-    print_report("lang/src/parser/number.mo", &report);
+    print_report("motes/parsec/src/number.mo", &report);
   }
 
   #[test]

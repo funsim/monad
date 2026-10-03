@@ -148,7 +148,7 @@ def test_unify_app_different : Bool :=
 // mismatches purely on spelling.
 
 use lib::module {parse_all_decls}
-use lang::parser::core {fail, success}
+use parsec::core {fail, success}
 
 def conv_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "conv") List.empty)
 

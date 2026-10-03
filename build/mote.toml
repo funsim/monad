@@ -26,3 +26,5 @@ path = "../std"
 # not a cycle -- and `cli` depending on `build` later keeps it acyclic.
 [dependencies.lang]
 path = "../lang"
+[dependencies.parsec]
+path = "../motes/parsec"

@@ -41,7 +41,7 @@ use std::list {List.length}
 open IO {println, read_file}
 use std::bench {Bench.now, Bench.report_since}
 use lang::types {Decl, ParseDecl}
-use lang::parser::core {ParseResult}
+use parsec::core {ParseResult}
 use lang::parser::position {is_ascending}
 use lang::parser::lower_parse {collect_decl_rems}
 use lang::parser {decls_parser, decls_parser_located, decls_skip, rems_to_offsets, skip_docstrings}

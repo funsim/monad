@@ -2,10 +2,10 @@
 /// Extracted from parser.mo as part of Phase C
 
 use lib::types {}
-use lang::parser::core {ParseResult, custom, is_empty}
-use lib::parser::char_preds {ident_start, is_ident_char_byte}
+use parsec::core {ParseResult, custom, is_empty}
+use parsec::char_preds {ident_start, is_ident_char_byte}
 use lib::parser::keywords {is_keyword}
-use lib::parser::combinators {take_while_byte}
+use parsec::combinators {take_while_byte}
 
 open ParseResult {fail, success}
 

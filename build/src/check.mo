@@ -36,7 +36,7 @@ use std::list {List.contains_by, List.intercalate, List.length}
 use std::sha256 {Sha256.hash}
 use lang::mote {Mote.discover}
 use lang::module {extract_directory}
-use lang::parser::number {parse_i64}
+use parsec::number {parse_i64}
 use build::hash {Build.file_digest_with, Build.probe_digest_tool, DigestTool}
 use build::identity {Build.compiler_digest_with}
 use build::closure {Build.closure_digest_with}

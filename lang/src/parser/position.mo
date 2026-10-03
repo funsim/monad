@@ -2,7 +2,7 @@
 /// Extracted from parser.mo as part of Phase C
 
 use lib::types {LocatedSpan, Location}
-use lib::parser::combinators {utf8_char_width}
+use parsec::combinators {utf8_char_width}
 
 /// Create a new LocatedSpan starting at offset 0, line 1, column 1
 #[partial]
@@ -31,7 +31,7 @@ def span_fragment (span : LocatedSpan) : String :=
 // dedicated 64MB thread (confirmed by direct measurement — a bare
 // self-recursive countdown from 1500 crashes, from 1000 doesn't; this
 // is a pre-existing, systemic limitation of the interpreter itself, not
-// specific to any one function — `lang.parser.combinators.take_while`,
+// specific to any one function — `parsec.combinators.take_while`,
 // used throughout the whole grammar, crashes the exact same way if
 // asked to scan an entire large file in one call, though nothing in
 // normal parsing ever does that since every real token/construct is far

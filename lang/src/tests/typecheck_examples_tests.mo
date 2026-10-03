@@ -3,7 +3,7 @@ use lang::types {
   ScopeData, Term, id,
 }
 use lib::module {elaborate_module_decls, locals_with_def_typevars, parse_all_decls}
-use lang::parser::core {fail, success}
+use parsec::core {fail, success}
 use lib::scope {build_scope_from_decls}
 use lib::typecheck::infer {empty_local_types, empty_locals, type_check}
 

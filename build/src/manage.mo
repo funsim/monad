@@ -33,7 +33,7 @@
 
 use std::list {List.contains_by, List.filter, List.intercalate, List.length}
 use std::process {exec_cmd}
-use lang::parser::number {parse_i64}
+use parsec::number {parse_i64}
 use build::hash {Build.file_digest_with, Build.probe_digest_tool, DigestTool}
 use build::identity {Build.compiler_digest_with}
 use build::closure {Build.artifact_key, Build.closure_digest_with}

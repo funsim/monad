@@ -26,7 +26,7 @@ use lib::module {
   module_info_cache_empty, ranged_file_diagnostics,
 }
 use lib::parser {LocatedDecls, decls_parser_located_with_ranges}
-use lib::parser::core {fail, success}
+use parsec::core {fail, success}
 use std::list {List.length}
 open IO {println}
 use std::process {exec_cmd, process_id}

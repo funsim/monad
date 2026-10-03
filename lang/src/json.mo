@@ -8,13 +8,13 @@ use std::map {BTreeMap, BTreeMap.to_list, empty}
 use std::list {List.intercalate, Show}
 use init::string {}
 use init::number {}
-use lang::parser::core {ParseError, ParseResult, is_empty, parse_error_remaining}
-use lib::parser::char_preds {is_space}
-use lib::parser::combinators {
+use parsec::core {ParseError, ParseResult, is_empty, parse_error_remaining}
+use parsec::char_preds {is_space}
+use parsec::combinators {
   alt, alt_fold, delimited_by, many0, map_parse, opt, separated_by, tag,
   take_while, terminated_by, utf8_char_width,
 }
-use lib::parser::number {number}
+use parsec::number {number}
 use lib::types {list_reverse}
 
 open ParseResult {fail, success}

@@ -178,11 +178,14 @@
             "llvm"
             "runtime"
             "build"
-            # Compiler inputs because `cli` imports them -- see THE RULE above.
-            # Not the rest of `motes/`: those are consumers of the compiler,
-            # not part of it, and keeping them out is what stops an unrelated
-            # mote's edit from invalidating a 20-minute interpretation.
+            # Compiler inputs -- see THE RULE above. `lsp`/`toolkit` arrive
+            # through `cli` (its `lsp` subcommand); `parsec` arrives through
+            # `lang` itself, which parses with it. Not the rest of `motes/`:
+            # those are consumers of the compiler, not part of it, and keeping
+            # them out is what stops an unrelated mote's edit from
+            # invalidating a 20-minute interpretation.
             "motes/lsp"
+            "motes/parsec"
             "motes/toolkit"
           ]
         );

@@ -41,9 +41,9 @@
 /// whole large file in one call used to blow the stack, so this
 /// benchmark does not try to.
 use std::bench {Bench.now, Bench.report_since}
-use lang::parser::core {ParseResult}
-use lang::parser::combinators {take_while, take_while_byte}
-use lang::parser::char_preds {is_ident_char, is_ident_char_byte, is_space, is_space_byte}
+use parsec::core {ParseResult}
+use parsec::combinators {take_while, take_while_byte}
+use parsec::char_preds {is_ident_char, is_ident_char_byte, is_space, is_space_byte}
 
 open ParseResult {fail, success}
 

@@ -31,7 +31,7 @@ use std::list {List.length}
 open IO {println, read_file}
 use std::bench {Bench.now, Bench.report_since}
 use lang::types {Decl, Location, ParseDecl}
-use lang::parser::core {ParseResult}
+use parsec::core {ParseResult}
 use lang::parser::lower_parse {collect_decl_rems, lower_ctx_bare, lower_ctx_locating, lower_parse_decls}
 use lang::parser {build_loc_table, decls_skip, rekey_by_rem, rems_to_offsets, skip_docstrings}
 use lang::parser::position {resolve_offsets_in_file}

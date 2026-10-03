@@ -57,7 +57,7 @@ use lib::codegen::emit {
 use lang::codegen::symbols {
   bare_npath, module_path_to_str, name_path_to_str, symbol_identifier,
 }
-use lib::parser::number {parse_i64}
+use parsec::number {parse_i64}
 use lib::codegen::validate {validate_no_unwired_natives}
 use llvm::ir {LLVMModule}
 use lang::module {

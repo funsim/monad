@@ -41,7 +41,7 @@ use lang::codegen::test::e2e_harness {compile_source_run_expect}
 #[test]
 def test_take_while_tco_large_scan : IO Bool :=
     let source := r#"open IO {println}
-use lang::parser::combinators {take_while}
+use parsec::combinators {take_while}
 
 def always_true (s : String) : Bool := I64.beq (String.length s) (String.length s)
 

@@ -2,7 +2,7 @@
 /// Tests that the self hosted parser can parse all Monad source files
 
 use lang::parser {decls_parser}
-use lang::parser::core {}
+use parsec::core {}
 
 open ParseResult {fail, success}
 
