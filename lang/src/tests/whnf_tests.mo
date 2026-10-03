@@ -1,6 +1,6 @@
 use lang::types {
   DebugName, Identifier, Literal, LocalScope, LocalVar, Location, MatchCase,
-  ModulePath, Scope, ScopeData, Similar, Term, cub_i0, cub_i1, cub_ijoin,
+  ModulePath, Scope, ScopeData, Similar, Term, binder_anon, cub_i0, cub_i1, cub_ijoin,
   cub_imeet, cub_ineg, many, sentinel, sort_n,
 }
 use lib::module {parse_all_decls}
@@ -169,7 +169,7 @@ def test_whnf_sort_unchanged : Bool :=
 def test_whnf_pi_unchanged : Bool :=
     // A `pi` is rigid even though its parts contain a reducible term:
     // WHNF reduces the HEAD only, never inside.
-    let p : Term := Term.pi (Term.app (free_var "idt") (sort_n 0)) (sort_n 1) in
+    let p : Term := Term.pi binder_anon (Term.app (free_var "idt") (sort_n 0)) (sort_n 1) in
     Similar.similar (whnf idt_scope empty_locals p) p
 
 #[test]

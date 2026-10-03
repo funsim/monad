@@ -33,7 +33,7 @@
 
 use std::list {List.length}
 use lang::types {
-  Identifier, Location, ModulePath, Scope, ScopeData, Similar, Term, named,
+  Identifier, Location, ModulePath, Scope, ScopeData, Similar, Term, binder_anon, named,
   sentinel,
 }
 use lang::module {try_parse_decls}
@@ -168,7 +168,7 @@ def test_con_spine_result_typ_falls_back_for_an_unresolvable_head : Bool :=
 /// substitution counts the layers the walk reached -- and both the
 /// wrapped-parameter and wrapped-actual pins below read it.
 def ctx_peel_two_pis (a : String) (b : String) : Term :=
-    Term.pi (ctx_peel_named a) (ctx_peel_named b)
+    Term.pi binder_anon (ctx_peel_named a) (ctx_peel_named b)
 
 /// The parameter side. A wrapper here stops the walk at `_ => subst`
 /// before any layer is examined, so a type variable is silently never

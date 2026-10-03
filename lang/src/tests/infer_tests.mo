@@ -2,7 +2,7 @@ use std::list {List.length}
 use lang::types {
   Attribute, DebugName, Decl, FieldPattern, FieldPatternEntry, Identifier,
   CubicalPrim, InductConstructor, Inductive, MatchCase, ModulePath, NamePath,
-  Param, Scope, ScopeClassDef, ScopeData, Similar, Term, TypeError, char, cub_i0,
+  Param, Scope, ScopeClassDef, ScopeData, Similar, Term, TypeError, binder_anon, char, cub_i0,
   cub_i1, cub_ijoin, cub_imeet, cub_ineg, cub_interval, if_, many, match_,
   package_private, sentinel, sort_n,
 }
@@ -180,7 +180,7 @@ def test_var_free_unknown : Bool :=
 
 #[test]
 def test_pi_simple : Bool :=
-    let t : Term := Term.pi (sort_n 1) (sort_n 1) in
+    let t : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
     match run_check t Term.hole {
         ok tt =>
             // Both components are `Type`, contributing 2 each.
@@ -193,7 +193,7 @@ def test_pi_dependent : Bool :=
     let dbg : DebugName := DebugName.named (Identifier.id "A") in
     let arg : Term := sort_n 1 in
     let ret : Term := Term.var 0 dbg in
-    let t : Term := Term.pi arg ret in
+    let t : Term := Term.pi binder_anon arg ret in
     let types : List Term := List.cons arg List.empty in
     match type_check t Term.hole test_scope types empty_locals {
         ok tt =>
@@ -209,7 +209,7 @@ def test_pi_arg_is_not_type : Bool :=
     let id : Identifier := Identifier.id "x" in
     let dbg : DebugName := DebugName.named id in
     let var_term : Term := Term.var sentinel dbg in
-    let t : Term := Term.pi var_term (sort_n 1) in
+    let t : Term := Term.pi binder_anon var_term (sort_n 1) in
     match run_check t Term.hole {
         ok _ => false,
         err _ => true,
@@ -222,7 +222,7 @@ def test_lam_check_mode : Bool :=
     let dbg : DebugName := DebugName.named (Identifier.id "x") in
     let body : Term := Term.var 0 dbg in
     let arg_typ : Term := sort_n 1 in
-    let expected : Term := Term.pi arg_typ arg_typ in
+    let expected : Term := Term.pi binder_anon arg_typ arg_typ in
     let lam : Term := Term.lam dbg arg_typ body in
     match run_check lam expected {
         ok tt =>
@@ -240,7 +240,7 @@ def test_lam_infer_mode : Bool :=
         ok tt =>
             match tt { mk _ typ =>
                 match typ {
-                    pi a _ => Similar.similar a arg_typ,
+                    pi _ a _ => Similar.similar a arg_typ,
                     _ => false,
                 }},
         err _ => false,
@@ -251,7 +251,7 @@ def test_lam_unnamed : Bool :=
     let dbg : DebugName := DebugName.unnamed in
     let body : Term := Term.var 0 dbg in
     let arg_typ : Term := sort_n 1 in
-    let expected : Term := Term.pi arg_typ arg_typ in
+    let expected : Term := Term.pi binder_anon arg_typ arg_typ in
     let lam : Term := Term.lam dbg arg_typ body in
     match run_check lam expected {
         ok _ => true,
@@ -893,7 +893,8 @@ def test_lam_binder_hint_rejects_a_hole : Bool :=
 /// unsolved `Q` there can never reach a binder.
 #[test]
 def test_lam_binder_hint_reads_the_arrow_domain : Bool :=
-    match lam_binder_hint (cd_of (Term.pi (named_free_var "P") (named_free_var "Q")) List.empty) pair_scope {
+    let dom : Term := Term.pi binder_anon (named_free_var "P") (named_free_var "Q") in
+    match lam_binder_hint (cd_of dom List.empty) pair_scope {
         Option.none => false,
         Option.some bt => term_is_named_var bt "P",
     }
@@ -950,10 +951,10 @@ def test_lam_app_chain : Bool :=
 #[test]
 def test_pi_of_pi : Bool :=
     let dbg : DebugName := DebugName.named (Identifier.id "F") in
-    let arg : Term := Term.pi (sort_n 1) (sort_n 1) in
+    let arg : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
     let body : Term := Term.var 0 dbg in
     let types : List Term := List.cons arg List.empty in
-    let t : Term := Term.pi arg body in
+    let t : Term := Term.pi binder_anon arg body in
     match type_check t Term.hole test_scope types empty_locals {
         ok tt =>
             // The domain is the inner `Pi`, which infers `Sort 2`; the
@@ -1116,7 +1117,7 @@ def test_dup_type_name_wanted_declared_first : Bool :=
 // some unrelated permissiveness.
 
 /// The Pi the two `forall` pins wrap: `Type -> Type`.
-def forall_pin_pi : Term := Term.pi (sort_n 1) (sort_n 1)
+def forall_pin_pi : Term := Term.pi binder_anon (sort_n 1) (sort_n 1)
 
 /// `forall (a : Type). Type -> Type` -- the shape `{A : Type}` elaborates to.
 def forall_pin_expected : Term :=

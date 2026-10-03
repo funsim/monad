@@ -21,7 +21,7 @@
 /// space, and `term_shift`/`term_subst`/`term_permute` need no change --
 /// they reach a sort through their existing catch-alls.
 use lang::types {
-  DebugName, Identifier, Similar, SortLevel, Term, free_level_vars_of,
+  DebugName, Identifier, Similar, SortLevel, Term, binder_anon, free_level_vars_of,
   level_const, level_subst, sort_level_of, sort_n, union_ids,
 }
 use lib::typecheck::traverse {term_map_children}
@@ -51,7 +51,7 @@ pub def free_level_vars (t: Term) : List Identifier := match t {
     Term.sort l => free_level_vars_of l,
     Term.lam _dbg typ body => union_ids (free_level_vars typ) (free_level_vars body),
     Term.forall _dbg kind body => union_ids (free_level_vars kind) (free_level_vars body),
-    Term.pi arg ret => union_ids (free_level_vars arg) (free_level_vars ret),
+    Term.pi _ arg ret => union_ids (free_level_vars arg) (free_level_vars ret),
     Term.app callee arg => union_ids (free_level_vars callee) (free_level_vars arg),
     Term.quote_ inner => free_level_vars inner,
     Term.ctx _loc inner => free_level_vars inner,
@@ -209,9 +209,9 @@ def test_subst_levels_term_reaches_under_a_binder : Bool :=
     let binds : List (Pair Identifier SortLevel) :=
         List.cons (Pair.pair (Identifier.id "u") (SortLevel.concrete 7)) List.empty in
     let inner : Term := Term.sort (SortLevel.var (Identifier.id "u")) in
-    let t : Term := Term.pi (Term.sort (SortLevel.concrete 0)) inner in
+    let t : Term := Term.pi binder_anon (Term.sort (SortLevel.concrete 0)) inner in
     match subst_levels_term t binds {
-        Term.pi _arg ret => sort_term_has_level ret 7,
+        Term.pi _ _arg ret => sort_term_has_level ret 7,
         _ => false,
     }
 

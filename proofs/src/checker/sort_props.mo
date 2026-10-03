@@ -22,7 +22,7 @@ use lib::checker::harness {accepted, rejected, infers_sort_at}
 use lang::module {try_parse_decls}
 use lang::scope {build_scope_from_decls}
 use lang::typecheck::infer {empty_local_types, empty_locals, type_check}
-use lang::types {ModulePath, Scope, ScopeData, cub, cub_interval, level_const, sentinel}
+use lang::types {ModulePath, Scope, ScopeData, binder_anon, cub, cub_interval, level_const, sentinel}
 
 // --- The soundness pin ---
 
@@ -161,14 +161,14 @@ def sort_spelling_is_accepted_with_no_expectation : Bool :=
 /// lives at 4, not at the domain's 2.
 #[test]
 def pi_universe_is_the_max_of_its_parts : Bool :=
-    infers_sort_at (Term.pi (Term.sort (SortLevel.concrete 1)) (Term.sort (SortLevel.concrete 3))) 4
+    infers_sort_at (Term.pi binder_anon (Term.sort (SortLevel.concrete 1)) (Term.sort (SortLevel.concrete 3))) 4
 
 /// The domain decides when IT is the higher one -- the mirror image, so
 /// neither "always the first" nor "always the second" survives both pins.
 /// `(Sort 3) -> Sort 2`: the domain contributes 4, the codomain 3.
 #[test]
 def pi_universe_is_the_max_not_the_last_part : Bool :=
-    infers_sort_at (Term.pi (Term.sort (SortLevel.concrete 3)) (Term.sort (SortLevel.concrete 2))) 4
+    infers_sort_at (Term.pi binder_anon (Term.sort (SortLevel.concrete 3)) (Term.sort (SortLevel.concrete 2))) 4
 
 /// `Forall` is the same rule, pinned separately because it is a separate
 /// arm -- a `max` added to one arm and not the other is exactly the shape
@@ -183,14 +183,14 @@ def forall_universe_is_the_max_of_its_parts : Bool :=
 /// defaulting to 0" -- a hole at both ends must still land at 1.
 #[test]
 def pi_universe_defaults_an_unknown_component_to_1 : Bool :=
-    infers_sort_at (Term.pi Term.hole Term.hole) 1
+    infers_sort_at (Term.pi binder_anon Term.hole Term.hole) 1
 
 /// `Prop` at both ends: both components contribute 1 (`Prop : Type`), so
 /// the Pi is at 1 -- the level W1.2 must NOT move, since every `Pi` in the
 /// corpus today has components at exactly this level.
 #[test]
 def pi_universe_of_prop_components_stays_at_1 : Bool :=
-    infers_sort_at (Term.pi (Term.sort (SortLevel.concrete 0)) (Term.sort (SortLevel.concrete 0))) 1
+    infers_sort_at (Term.pi binder_anon (Term.sort (SortLevel.concrete 0)) (Term.sort (SortLevel.concrete 0))) 1
 
 // --- The interval is a primitive kind, not a universe resident ---
 //
@@ -267,7 +267,7 @@ def infers_sort_at_in_kind_scope (term : Term) (n : I64) : Bool :=
 /// infers `Sort 1` and with it every `Prop`-valued path family.
 #[test]
 def pi_over_the_interval_and_a_prop_variable_stays_in_prop : Bool :=
-    infers_sort_at_in_kind_scope (Term.pi cub_interval (kind_var "A")) 0
+    infers_sort_at_in_kind_scope (Term.pi binder_anon cub_interval (kind_var "A")) 0
 
 /// The same domain by bare NAME reference -- the shape a SOURCE
 /// `(i : I) -> A` lowers to, where the domain only becomes the cubical
@@ -277,21 +277,21 @@ def pi_over_the_interval_and_a_prop_variable_stays_in_prop : Bool :=
 /// actual source takes.
 #[test]
 def pi_over_the_interval_by_reference_stays_in_prop : Bool :=
-    infers_sort_at_in_kind_scope (Term.pi (kind_var "I") (kind_var "A")) 0
+    infers_sort_at_in_kind_scope (Term.pi binder_anon (kind_var "I") (kind_var "A")) 0
 
 /// The codomain's written `Prop` contributes 1 (`Prop : Type`), so even
 /// with the domain contributing 0 the Pi stays at 1 -- the pin that says
 /// the interval arm did not quietly zero every Pi it touches.
 #[test]
 def pi_over_the_interval_and_a_written_prop_stays_at_1 : Bool :=
-    infers_sort_at_in_kind_scope (Term.pi cub_interval (Term.sort (SortLevel.concrete 0))) 1
+    infers_sort_at_in_kind_scope (Term.pi binder_anon cub_interval (Term.sort (SortLevel.concrete 0))) 1
 
 /// The control on the OTHER side: a written `Prop` domain contributes 1
 /// even against a 0-contributing codomain, so the 0 above is the
 /// interval's alone and not something any small codomain drags in.
 #[test]
 def pi_over_prop_and_a_prop_variable_stays_at_1 : Bool :=
-    infers_sort_at_in_kind_scope (Term.pi (Term.sort (SortLevel.concrete 0)) (kind_var "A")) 1
+    infers_sort_at_in_kind_scope (Term.pi binder_anon (Term.sort (SortLevel.concrete 0)) (kind_var "A")) 1
 
 /// Interval-VALUED is not the interval: a dimension in domain position
 /// keeps the ordinary `level_of_type` answer (its type is `I`, not a
@@ -299,4 +299,4 @@ def pi_over_prop_and_a_prop_variable_stays_at_1 : Bool :=
 /// rather than interval-typedness.
 #[test]
 def pi_over_a_dimension_stays_at_1 : Bool :=
-    infers_sort_at_in_kind_scope (Term.pi (cub CubicalPrim.i0 List.empty) (kind_var "A")) 1
+    infers_sort_at_in_kind_scope (Term.pi binder_anon (cub CubicalPrim.i0 List.empty) (kind_var "A")) 1

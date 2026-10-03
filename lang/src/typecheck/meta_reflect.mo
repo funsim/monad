@@ -39,7 +39,7 @@ use lib::core_value {Value}
 use lib::scope {struct_fields_to_params}
 use lang::types {
   Attribute, Decl, Def, Identifier, InductConstructor, Inductive, MatchCase,
-  NamePath, Param, Struct, Term, TypeConstraint, i64, if_, many, match_, mk,
+  NamePath, Param, Struct, Term, TypeConstraint, binder_anon, i64, if_, many, match_, mk,
   named, no_attrs, npath, num, package_private, sentinel, show_name_path, str,
   unnamed,
 }
@@ -651,7 +651,7 @@ def build_pi_chain (ps : List (Pair String Term)) (ret : Term) : Term :=
     match ps {
         List.empty => ret,
         List.cons p rest =>
-            match p { Pair.pair _ typ => Term.pi typ (build_pi_chain rest ret) },
+            match p { Pair.pair _ typ => Term.pi binder_anon typ (build_pi_chain rest ret) },
     }
 
 /// `Term.lam p1 (Term.lam p2 (... body))` -- mirrors

@@ -1,7 +1,7 @@
 use lang::types {
   Attribute, Class, ClassDef, Con, Decl, Def, Identifier, InductConstructor,
   Inductive, Instance, Literal, MatchCase, ModulePath, NamePath, Native, Operator,
-  Param, Struct, StructField, Term, TypeConstraint, affine, f64, i32, i64, i8,
+  Param, Struct, StructField, Term, TypeConstraint, affine, binder_anon, f64, i32, i64, i8,
   linear, many, named, open_all, package_private, show_identifier,
   show_module_path, sort_n, u32, unnamed, use_bare, zero,
 }
@@ -180,7 +180,7 @@ def test_show_term_app_simple : Bool :=
 def test_show_term_pi_simple : Bool :=
     let arg : Term := sort_n 1 in
     let ret : Term := sort_n 1 in
-    let pi : Term := Term.pi arg ret in
+    let pi : Term := Term.pi binder_anon arg ret in
     let result : String := show_term pi in
     String.beq result "(Type -> Type)"
 
@@ -297,7 +297,7 @@ def test_show_term_con_with_args : Bool :=
 #[test]
 def test_show_decl_def : Bool :=
     let name : NamePath := NamePath.npath (List.cons (Identifier.id "id") List.empty) in
-    let typ : Term := Term.pi (sort_n 1) (Term.pi (Term.var 2 (DebugName.named test_id_A)) (Term.var 0 (DebugName.named test_id_A))) in
+    let typ : Term := Term.pi binder_anon (sort_n 1) (Term.pi binder_anon (Term.var 2 (DebugName.named test_id_A)) (Term.var 0 (DebugName.named test_id_A))) in
     let body : Term := Term.lam (DebugName.named test_id_x) (Term.var 1 (DebugName.named test_id_A)) (Term.var 0 (DebugName.named test_id_x)) in
     let def_ : Def := Def.mk name typ body empty_constraints empty_attrs Visibility.package_private List.empty in
     let decl : Decl := Decl.def_d def_ in
@@ -331,7 +331,7 @@ def test_show_decl_struct : Bool :=
 
 #[test]
 def test_show_decl_class_simple : Bool :=
-    let meth_typ : Term := Term.pi (Term.var 1 (DebugName.named test_id_A)) (Term.pi (Term.var 0 (DebugName.named test_id_A)) (sort_n 0)) in
+    let meth_typ : Term := Term.pi binder_anon (Term.var 1 (DebugName.named test_id_A)) (Term.pi binder_anon (Term.var 0 (DebugName.named test_id_A)) (sort_n 0)) in
     let meth : ClassDef := ClassDef.mk (Identifier.id "eq") meth_typ none_term in
     let no_attrs : List Attribute := List.empty in
     let param_ : Param := Param.mk test_id_A (sort_n 1) Multiplicity.many none_term no_attrs in

@@ -3,7 +3,7 @@ use lang::types {
   FieldPattern, Identifier, InductConstructor, Inductive, Instance, Literal,
   MatchCase, ModulePath, Multiplicity, NamePath, Native, NumSuffix, OpenFilter,
   Operator, Param, SortLevel, Struct, StructField, StructLitField, Term, UseFilter,
-  UseItem, Visibility, char_to_string, cubical_prim_name, level_const,
+  UseItem, Visibility, binder_anon, char_to_string, cubical_prim_name, level_const,
   package_private, priv_, pub_, show_identifier, show_module_path, show_name_path,
   show_operator,
 }
@@ -97,7 +97,7 @@ pub def show_term (t : Term) : String := match t {
         let mid := String.concat lhs lt in
         let rt := String.concat "} -> " body_str in
         String.concat mid rt,
-    pi arg ret =>
+    pi _ arg ret =>
         let arg_str := show_term arg in
         let ret_str := show_term ret in
         let lhs := String.concat "(" arg_str in
@@ -662,7 +662,7 @@ def test_show_forall_unnamed : Bool :=
 def test_show_pi : Bool :=
     let arg := Term.sort (SortLevel.concrete 1) in
     let ret := Term.sort (SortLevel.concrete 1) in
-    let t := Term.pi arg ret in
+    let t := Term.pi binder_anon arg ret in
     show_term t == "(Type -> Type)"
 
 #[test]

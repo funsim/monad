@@ -77,9 +77,9 @@ def unify_structural (a : Term) (b : Term) (scope : Scope) (locals : LocalScope)
 def unify_go (a : Term) (b : Term) (scope : Scope) (locals : LocalScope) (reduce : Bool) : Result TypeError Term :=
     match a {
         Term.hole => ok b,
-        Term.pi arg1 ret1 => match b {
+        Term.pi _ arg1 ret1 => match b {
             Term.hole => ok a,
-            Term.pi arg2 ret2 =>
+            Term.pi _ arg2 ret2 =>
                 match unify arg1 arg2 scope locals {
                     ok _ => unify ret1 ret2 scope locals,
                     err e => err e,

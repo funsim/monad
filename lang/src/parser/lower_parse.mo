@@ -43,7 +43,7 @@ use lang::types {
   ParseDecl, ParseDeclKind, ParseDef, ParseInductConstructor, ParseInductive,
   ParseInstance, ParseLiteral, ParseMatchCase, ParseNative, ParseParam,
   ParseStruct, ParseStructField, ParseStructLitField, ParseTerm, ParseTermKind,
-  QualifiedName, Struct, StructField, StructLitField, Term, sentinel,
+  QualifiedName, Struct, StructField, StructLitField, Term, binder_anon, sentinel,
   show_identifier,
 }
 // Name resolution lives HERE now, moved out of `lang/parser.mo` for real
@@ -587,7 +587,7 @@ def lower_parse_kind (ctx : ParseLowerCtx) (k : ParseTermKind) : Term :=
         // refactor.
         // R1 on both sides: a pi is entirely type-level.
         ParseTermKind.pi arg_name arg ret =>
-            Term.pi (lower_parse_term_bare ctx arg)
+            Term.pi binder_anon (lower_parse_term_bare ctx arg)
                     (lower_parse_term_bare (pi_ret_ctx arg_name ctx) ret),
         // R3: the callee is bare so a spine's inner `app`s stay visible to
         // `flatten_call_spine`; only the outermost `app` (located by

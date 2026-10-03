@@ -1,6 +1,6 @@
 use lang::types {
   Attribute, Class, ClassDef, Decl, Def, Identifier, ModulePath, NamePath, Param,
-  Term, TypeConstraint, id_eq, id_member, many, package_private, sentinel, sort_n,
+  Term, TypeConstraint, binder_anon, id_eq, id_member, many, package_private, sentinel, sort_n,
   unnamed, use_bare,
 }
 use lib::elaborate {
@@ -112,7 +112,7 @@ def test_free_vars_hole : Bool :=
 
 #[test]
 def test_free_vars_pi : Bool :=
-    let typ : Term := pi v_A v_B in
+    let typ : Term := pi binder_anon v_A v_B in
     let result : List Identifier := free_vars typ no_ids in
     id_member id_A result && id_member id_B result
 
@@ -120,7 +120,7 @@ def test_free_vars_pi : Bool :=
 
 #[test]
 def test_elaborate_type_pi_free_vars : Bool :=
-    let typ : Term := pi v_A v_A in
+    let typ : Term := pi binder_anon v_A v_A in
     let elaborated : Term := elaborate_type typ empty_constraints no_ids in
     match elaborated {
         forall dbg kind body =>
@@ -129,7 +129,7 @@ def test_elaborate_type_pi_free_vars : Bool :=
                     if id_eq n id_A
                     then
                         match body {
-                            pi a r => true,
+                            pi _ a r => true,
                             _ => false,
                         }
                     else false,
@@ -140,11 +140,11 @@ def test_elaborate_type_pi_free_vars : Bool :=
 
 #[test]
 def test_elaborate_type_no_free_vars : Bool :=
-    let typ : Term := pi v_Bool v_Bool in
+    let typ : Term := pi binder_anon v_Bool v_Bool in
     let known : List Identifier := List.cons id_Bool no_ids in
     let elaborated : Term := elaborate_type typ empty_constraints known in
     match elaborated {
-        pi _ _ => true,
+        pi _ _ _ => true,
         _ => false,
     }
 
@@ -152,7 +152,7 @@ def test_elaborate_type_no_free_vars : Bool :=
 
 #[test]
 def test_elaborate_def_free_var : Bool :=
-    let typ : Term := pi v_A v_A in
+    let typ : Term := pi binder_anon v_A v_A in
     let body : Term := var 0 (named (Identifier.id "x")) in
     let mp : NamePath := NamePath.npath (List.cons (Identifier.id "f") List.empty) in
     let d : Def := Def.mk mp typ body empty_constraints empty_attrs Visibility.package_private List.empty in
@@ -201,7 +201,7 @@ def test_elaborate_def_constraint_only_var : Bool :=
 def test_elaborate_class_method : Bool :=
     let no_attrs : List Attribute := List.empty in
     let p_A : Param := Param.mk id_A (sort_n 1) Multiplicity.many none_term no_attrs in
-    let eq_typ : Term := pi v_A (pi v_A (sort_n 0)) in
+    let eq_typ : Term := pi binder_anon v_A (pi binder_anon v_A (sort_n 0)) in
     let meth : ClassDef := ClassDef.mk (Identifier.id "eq") eq_typ none_term in
     let methods : List ClassDef := List.cons meth List.empty in
     let params : List Param := List.cons p_A List.empty in

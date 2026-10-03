@@ -6,7 +6,7 @@ use lang::types {
   Operator, Param, QualifiedName, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, ScopeInstance, Similar, SortLevel, Struct, StructField,
   StructLitField, Term, TypeConstraint, UseFilter, UseItem, Visibility,
-  attr_args, cubical_prim_of_name, f32, f64, i16, i32, i64, i8, id_member,
+  attr_args, binder_anon, cubical_prim_of_name, f32, f64, i16, i32, i64, i8, id_member,
   many, mk, name_path_similar, open_all, open_only, package_private, param_many,
   priv_, pub_, show_identifier, show_module_path, show_name_path, show_operator,
   term_peel, u16, u32, u64, u8, union_ids, use_bare, use_glob, use_items,
@@ -634,7 +634,7 @@ def scope_data_add_def_params (sd : ScopeData) (name : NamePath) (params : List 
 #[terminating]
 def strip_pi_chain_to_return_type (t : Term) : Term :=
     match t {
-        Term.pi _arg ret => strip_pi_chain_to_return_type ret,
+        Term.pi _ _arg ret => strip_pi_chain_to_return_type ret,
         Term.forall _dbg _kind body => strip_pi_chain_to_return_type body,
         _ => t,
     }
@@ -2088,8 +2088,8 @@ def resolve_open_alias_term_scoped (names : HashMap String String) (bound : List
             Term.lam dbg (resolve_open_alias_term_scoped names bound typ) (resolve_open_alias_term_scoped names (push_bound_dbg bound dbg) body),
         Term.forall dbg kind body =>
             Term.forall dbg (resolve_open_alias_term_scoped names bound kind) (resolve_open_alias_term_scoped names (push_bound_dbg bound dbg) body),
-        Term.pi arg ret =>
-            Term.pi (resolve_open_alias_term_scoped names bound arg) (resolve_open_alias_term_scoped names bound ret),
+        Term.pi b arg ret =>
+            Term.pi b (resolve_open_alias_term_scoped names bound arg) (resolve_open_alias_term_scoped names bound ret),
         Term.app fun_ arg =>
             Term.app (resolve_open_alias_term_scoped names bound fun_) (resolve_open_alias_term_scoped names bound arg),
         Term.lit value => Term.lit (resolve_open_alias_literal_scoped names bound value),
@@ -2772,7 +2772,7 @@ def def_references_class (cls_str : String) (t : Term) : Bool :=
             },
         Term.lam _ typ body => def_references_class cls_str typ || def_references_class cls_str body,
         Term.forall _ kind body => def_references_class cls_str kind || def_references_class cls_str body,
-        Term.pi arg ret => def_references_class cls_str arg || def_references_class cls_str ret,
+        Term.pi _ arg ret => def_references_class cls_str arg || def_references_class cls_str ret,
         Term.app f a => def_references_class cls_str f || def_references_class cls_str a,
         Term.lit v => literal_references_class cls_str v,
         Term.con c =>
@@ -2865,7 +2865,7 @@ def dict_param_type_placeholder (_c : TypeConstraint) : Term :=
 def prepend_dict_pis (constraints : List TypeConstraint) (typ : Term) : Term :=
     match constraints {
         List.empty => typ,
-        List.cons c rest => Term.pi (dict_param_type_placeholder c) (prepend_dict_pis rest typ),
+        List.cons c rest => Term.pi binder_anon (dict_param_type_placeholder c) (prepend_dict_pis rest typ),
     }
 
 #[partial]
@@ -3156,7 +3156,7 @@ def return_type_after_n_args (typ : Term) (n : I64) : Term :=
     else
         match typ {
             Term.forall _ _ body => return_type_after_n_args body n,
-            Term.pi _ ret => return_type_after_n_args ret (n - 1),
+            Term.pi _ _ ret => return_type_after_n_args ret (n - 1),
             _ => typ,
         }
 
@@ -4946,7 +4946,7 @@ def collect_free_param_names (typ : Term) : List Identifier :=
 def collect_bare_param_names (typ : Term) : List Identifier :=
     match term_peel typ {
         Term.forall _ _ body => collect_bare_param_names body,
-        Term.pi ptyp ret => List.append (bare_type_var_name ptyp) (collect_bare_param_names ret),
+        Term.pi _ ptyp ret => List.append (bare_type_var_name ptyp) (collect_bare_param_names ret),
         _ => List.empty,
     }
 
@@ -4958,7 +4958,7 @@ def collect_app_arg_names (t : Term) : List Identifier :=
         Term.app f a => List.append (bare_type_var_name a) (List.append (collect_app_arg_names f) (collect_app_arg_names a)),
         Term.lam _ _ body => collect_app_arg_names body,
         Term.forall _ _ body => collect_app_arg_names body,
-        Term.pi ptyp ret => List.append (collect_app_arg_names ptyp) (collect_app_arg_names ret),
+        Term.pi _ ptyp ret => List.append (collect_app_arg_names ptyp) (collect_app_arg_names ret),
         _ => List.empty,
     }
 
@@ -5067,7 +5067,7 @@ def collect_recurring_domain_names (typ : Term) : List Identifier :=
 def final_result_type (typ : Term) : Term :=
     match term_peel typ {
         Term.forall _ _ body => final_result_type body,
-        Term.pi _ ret => final_result_type ret,
+        Term.pi _ _ ret => final_result_type ret,
         _ => term_peel typ,
     }
 
@@ -5110,7 +5110,7 @@ def collect_param_app_arg_names (params : List Identifier) (t : Term) : List Ide
         Term.app f a =>
             let here := if app_head_is_param params f then bare_type_var_name a else List.empty in
             union_ids here (union_ids (collect_param_app_arg_names params f) (collect_param_app_arg_names params a)),
-        Term.pi p r => union_ids (collect_param_app_arg_names params p) (collect_param_app_arg_names params r),
+        Term.pi _ p r => union_ids (collect_param_app_arg_names params p) (collect_param_app_arg_names params r),
         Term.forall _ _ body => collect_param_app_arg_names params body,
         Term.lam _ ty body => union_ids (collect_param_app_arg_names params ty) (collect_param_app_arg_names params body),
         _ => List.empty,
@@ -5207,7 +5207,7 @@ def method_sig_bindings (classes : List Class) (cls_name : NamePath) (method_nam
 #[partial]
 def carrier_shape_candidates (typ : Term) : List Term :=
     match term_peel typ {
-        Term.pi dom ret =>
+        Term.pi _ dom ret =>
             let here := match term_peel dom {
                 Term.app _ _ => List.cons dom List.empty,
                 _ => List.empty,
@@ -5242,7 +5242,7 @@ def bind_shape_candidates (names : List Identifier) (shapes : List Term) (carrie
 def bind_params_against_args (env : List LocalTypeBinding) (ctor_owners : List CtorOwner) (def_types : HashMap String Term) (ctor_field_types : List CtorFieldTypes) (wildcards : List Identifier) (typ : Term) (args : List Term) (bindings : List (Pair Identifier Term)) : List (Pair Identifier Term) :=
     match term_peel typ {
         Term.forall _ _ body => bind_params_against_args env ctor_owners def_types ctor_field_types wildcards body args bindings,
-        Term.pi ptyp ret =>
+        Term.pi _ ptyp ret =>
             match args {
                 List.empty => bindings,
                 List.cons a rest =>
@@ -6279,7 +6279,7 @@ def lam_binder_type (written : Term) (expect : Option Term) : Term :=
             match expect {
                 Option.some e =>
                     match term_peel e {
-                        Term.pi arg _ret => arg,
+                        Term.pi _ arg _ret => arg,
                         _ => written,
                     },
                 Option.none => written,
@@ -6364,7 +6364,7 @@ def lam_body_expect (expect : Option Term) : Option Term :=
     match expect {
         Option.some e =>
             match term_peel e {
-                Term.pi _arg ret => Option.some ret,
+                Term.pi _ _arg ret => Option.some ret,
                 _ => Option.none,
             },
         Option.none => Option.none,
@@ -6495,7 +6495,7 @@ def infer_carriers_each (env : List LocalTypeBinding) (ctor_owners : List CtorOw
 def sig_arg_bindings (sig : Term) (names : List Identifier) (each : List (Option Term)) (acc : List (Pair Identifier Term)) : List (Pair Identifier Term) :=
     match term_peel sig {
         Term.forall _ _ body => sig_arg_bindings body names each acc,
-        Term.pi ptyp ret =>
+        Term.pi _ ptyp ret =>
             match each {
                 List.empty => acc,
                 List.cons c rest =>
@@ -6514,7 +6514,7 @@ def sig_arg_bindings (sig : Term) (names : List Identifier) (each : List (Option
 def sig_arg_hints (sig : Term) (names : List Identifier) (bindings : List (Pair Identifier Term)) : List (Option Term) :=
     match term_peel sig {
         Term.forall _ _ body => sig_arg_hints body names bindings,
-        Term.pi ptyp ret => List.cons (concrete_hint ptyp names bindings) (sig_arg_hints ret names bindings),
+        Term.pi _ ptyp ret => List.cons (concrete_hint ptyp names bindings) (sig_arg_hints ret names bindings),
         _ => List.empty,
     }
 
@@ -6571,12 +6571,12 @@ def sig_arg_hints (sig : Term) (names : List Identifier) (bindings : List (Pair 
 def concrete_hint (ptyp : Term) (names : List Identifier) (bindings : List (Pair Identifier Term)) : Option Term :=
     let sub := subst_carrier_bindings bindings ptyp in
     match term_peel sub {
-        Term.pi dom ret =>
+        Term.pi b dom ret =>
             match expected_carrier_of ret {
                 // A codomain of a hole or a bare universe placeholder says
                 // nothing about the body, so there is nothing to hand down.
                 Option.none => Option.none,
-                Option.some _ => Option.some (Term.pi (hint_arrow_domain names dom) ret),
+                Option.some _ => Option.some (Term.pi b (hint_arrow_domain names dom) ret),
             },
         _ => if type_mentions_any names sub then Option.none else expected_carrier_of sub,
     }
@@ -6604,7 +6604,7 @@ def type_mentions_any (names : List Identifier) (t : Term) : Bool :=
                 DebugName.unnamed => false,
             },
         Term.app f a => if type_mentions_any names f then true else type_mentions_any names a,
-        Term.pi p ret => if type_mentions_any names p then true else type_mentions_any names ret,
+        Term.pi _ p ret => if type_mentions_any names p then true else type_mentions_any names ret,
         Term.forall _ _ body => type_mentions_any names body,
         Term.lam _ ty body => if type_mentions_any names ty then true else type_mentions_any names body,
         _ => false,
@@ -6704,7 +6704,7 @@ def sig_expect_bindings (typ : Term) (names : List Identifier) (expect : Option 
 def pi_arity (sig : Term) : I64 :=
     match term_peel sig {
         Term.forall _ _ body => pi_arity body,
-        Term.pi _ ret => 1 + pi_arity ret,
+        Term.pi _ _ ret => 1 + pi_arity ret,
         _ => 0,
     }
 
@@ -7292,7 +7292,8 @@ def find_unresolved_class_calls_term (classes : List Class) (t : Term) (acc : Li
         },
     Term.lam _dbg typ body => find_unresolved_class_calls_term classes body (find_unresolved_class_calls_term classes typ acc),
     Term.forall _dbg kind body => find_unresolved_class_calls_term classes body (find_unresolved_class_calls_term classes kind acc),
-    Term.pi arg ret => find_unresolved_class_calls_term classes ret (find_unresolved_class_calls_term classes arg acc),
+    Term.pi _ arg ret =>
+        find_unresolved_class_calls_term classes ret (find_unresolved_class_calls_term classes arg acc),
     Term.app fun_ arg_ => find_unresolved_class_calls_term classes arg_ (find_unresolved_class_calls_term classes fun_ acc),
     Term.ntv native => find_unresolved_class_calls_native classes native acc,
     Term.con con_ => find_unresolved_class_calls_con classes con_ acc,
@@ -7532,7 +7533,7 @@ def resolve_class_calls_decls_go (classes : List Class) (instances : List Instan
 pub def strip_all_leading_binders (typ : Term) : Term :=
     match typ {
         Term.forall _ _ body => strip_all_leading_binders body,
-        Term.pi _ ret => strip_all_leading_binders ret,
+        Term.pi _ _ ret => strip_all_leading_binders ret,
         _ => typ,
     }
 
@@ -7998,7 +7999,7 @@ def test_add_constraint_dict_params_adds_pi_and_lam : Bool :=
     // def show_twice [Show A] (x : A) : String := Show.show x
     let show_call := Term.app (Term.var 1 (DebugName.named (Identifier.id "Show.show"))) (Term.var 0 (DebugName.named (Identifier.id "x"))) in
     let orig_term := Term.lam (DebugName.named (Identifier.id "x")) Term.hole show_call in
-    let orig_typ := Term.pi Term.hole (Term.sort (SortLevel.concrete 1)) in
+    let orig_typ := Term.pi binder_anon Term.hole (Term.sort (SortLevel.concrete 1)) in
     let constraint := TypeConstraint.mk (NamePath.npath (List.cons (Identifier.id "Show") List.empty)) (List.cons (Identifier.id "A") List.empty) in
     let d := Def.mk (NamePath.npath (List.cons (Identifier.id "show_twice") List.empty)) orig_typ orig_term
         (List.cons constraint List.empty) List.empty Visibility.package_private List.empty in
@@ -8006,7 +8007,7 @@ def test_add_constraint_dict_params_adds_pi_and_lam : Bool :=
     match d2 {
         Def.mk {typ := new_typ, term := new_term, ..} =>
             match new_typ {
-                Term.pi _ rest_typ => Similar.similar rest_typ orig_typ,
+                Term.pi _ _ rest_typ => Similar.similar rest_typ orig_typ,
                 _ => false,
             } &&
             match new_term {
@@ -8061,7 +8062,7 @@ def test_last_segment_leaves_undotted_single_segment_name_unchanged : Bool :=
 
 #[test]
 def test_lookup_def_type_finds_dotted_own_name_def_by_bare_query : Bool :=
-    let println_typ := Term.pi (Term.var 0 (DebugName.named (Identifier.id "String")))
+    let println_typ := Term.pi binder_anon (Term.var 0 (DebugName.named (Identifier.id "String")))
         (Term.app (Term.var 0 (DebugName.named (Identifier.id "IO"))) (Term.var 0 (DebugName.named (Identifier.id "Unit")))) in
     let dname : NamePath := NamePath.npath (List.cons (Identifier.id "IO.println") List.empty) in
     let d : Def := {
@@ -8229,8 +8230,9 @@ def hint_var (s : String) : Term :=
 /// parameter `T` applied to the method's own variables: `(B -> A -> B) ->
 /// B -> T A -> B`.
 def foldl_hint_sig : Term :=
-    Term.pi (Term.pi (hint_var "B") (Term.pi (hint_var "A") (hint_var "B")))
-        (Term.pi (hint_var "B") (Term.pi (Term.app (hint_var "T") (hint_var "A")) (hint_var "B")))
+    Term.pi binder_anon (Term.pi binder_anon (hint_var "B") (Term.pi binder_anon (hint_var "A") (hint_var "B")))
+        (Term.pi binder_anon (hint_var "B")
+            (Term.pi binder_anon (Term.app (hint_var "T") (hint_var "A")) (hint_var "B")))
 
 #[test]
 def test_final_result_type_peels_the_pi_chain : Bool :=
@@ -8252,7 +8254,7 @@ def test_collect_recurring_domain_names_skips_a_concrete_domain : Bool :=
     // signature -- it names a TYPE, not a parameter (`def parse (s :
     // Path) : A`), and binding it would rewrite the parameter's own
     // declared type from whatever a caller's argument happened to infer.
-    let sig : Term := Term.pi (hint_var "Path") (hint_var "A") in
+    let sig : Term := Term.pi binder_anon (hint_var "Path") (hint_var "A") in
     Bool.not (id_member (Identifier.id "Path") (collect_recurring_domain_names sig))
 
 #[test]

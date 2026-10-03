@@ -1,7 +1,7 @@
 use lang::types {
   Decl, Def, LocalScope, Location, ModulePath, Scope, Term, TypeError, app,
-  concrete, forall, hole, id, lit, named, pi, result_is_ok, sentinel, sort_n, str,
-  term_loc, unnamed, var,
+  binder_anon, concrete, forall, hole, id, lit, named, pi, result_is_ok, sentinel,
+  sort_n, str, term_loc, unnamed, var,
 }
 use lib::typecheck::unify {unify}
 use lib::typecheck::infer {type_check}
@@ -59,27 +59,27 @@ def test_unify_sort_too_small : Bool :=
 
 #[test]
 def test_unify_pi_same : Bool :=
-    let p1 : Term := Term.pi (sort_n 1) (sort_n 1) in
-    let p2 : Term := Term.pi (sort_n 1) (sort_n 1) in
+    let p1 : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
+    let p2 : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
     run_unify p1 p2
 
 #[test]
 def test_unify_pi_arg_mismatch : Bool :=
-    let p1 : Term := Term.pi (sort_n 2) (sort_n 1) in
-    let p2 : Term := Term.pi (sort_n 0) (sort_n 1) in
+    let p1 : Term := Term.pi binder_anon (sort_n 2) (sort_n 1) in
+    let p2 : Term := Term.pi binder_anon (sort_n 0) (sort_n 1) in
     let ok : Bool := run_unify p1 p2 in
     Bool.not ok
 
 #[test]
 def test_unify_pi_ret_mismatch : Bool :=
-    let p1 : Term := Term.pi (sort_n 1) (sort_n 2) in
-    let p2 : Term := Term.pi (sort_n 1) (sort_n 0) in
+    let p1 : Term := Term.pi binder_anon (sort_n 1) (sort_n 2) in
+    let p2 : Term := Term.pi binder_anon (sort_n 1) (sort_n 0) in
     let ok : Bool := run_unify p1 p2 in
     Bool.not ok
 
 #[test]
 def test_unify_pi_vs_sort : Bool :=
-    let p : Term := Term.pi (sort_n 1) (sort_n 1) in
+    let p : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
     let ok : Bool := run_unify p (sort_n 1) in
     Bool.not ok
 
@@ -93,9 +93,9 @@ def test_unify_forall_stripped : Bool :=
 
 #[test]
 def test_unify_forall_both_sides : Bool :=
-    let body_left : Term := Term.pi (sort_n 1) (sort_n 1) in
+    let body_left : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
     let f_left : Term := Term.forall (DebugName.named (Identifier.id "A")) (sort_n 1) body_left in
-    let body_right : Term := Term.pi (sort_n 1) (sort_n 1) in
+    let body_right : Term := Term.pi binder_anon (sort_n 1) (sort_n 1) in
     let f_right : Term := Term.forall (DebugName.named (Identifier.id "B")) (sort_n 1) body_right in
     run_unify f_left f_right
 
@@ -120,9 +120,9 @@ def test_unify_var_vs_different_var : Bool :=
 def test_unify_nested_pi : Bool :=
     let arg : Term := sort_n 1 in
     let inner_ret : Term := sort_n 1 in
-    let outer_ret : Term := Term.pi arg inner_ret in
-    let p1 : Term := Term.pi arg outer_ret in
-    let p2 : Term := Term.pi arg outer_ret in
+    let outer_ret : Term := Term.pi binder_anon arg inner_ret in
+    let p1 : Term := Term.pi binder_anon arg outer_ret in
+    let p2 : Term := Term.pi binder_anon arg outer_ret in
     run_unify p1 p2
 
 // --- App tests (no deep structural matching for apps yet) ---
@@ -234,7 +234,7 @@ def test_unify_distinct_level_vars_still_refuse : Bool :=
 #[test]
 def test_unify_pi_over_a_level_var_is_reflexive : Bool :=
     let s : Term := Term.sort (SortLevel.var (Identifier.id "u")) in
-    run_unify (Term.pi s s) (Term.pi s s)
+    run_unify (Term.pi binder_anon s s) (Term.pi binder_anon s s)
 
 // --- Probes: does a `Term.ctx` wrapper reach a `TypeError` payload? ---
 //
@@ -345,8 +345,8 @@ def test_probe_unify_peels_a_wrapped_operand : Bool :=
 def test_probe_unify_peels_a_nested_operand : Bool :=
     let loc : Location := { offset := 0, line := 7, column := 3 } in
     let inner : Term := Term.ctx loc (Term.sort (SortLevel.concrete 1)) in
-    let p_left : Term := Term.pi inner (sort_n 1) in
-    let p_right : Term := Term.pi (sort_n 0) (sort_n 1) in
+    let p_left : Term := Term.pi binder_anon inner (sort_n 1) in
+    let p_right : Term := Term.pi binder_anon (sort_n 0) (sort_n 1) in
     match unify p_left p_right test_scope test_locals {
         ok _ => false,
         err e => match probe_payload_loc e {

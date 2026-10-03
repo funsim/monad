@@ -1180,6 +1180,59 @@ pub type SortLevel {
     succ (inner: SortLevel),
 }
 
+/// How a binder BEHAVES — everything about a binder that is not its name.
+///
+/// This type exists so that a binder's name and its behaviour travel as one
+/// unit rather than as two parameters. They always co-occur (`pi` and `lam`
+/// are the only binders, and every binder has both), so carrying them
+/// separately would mean two fields that are only ever written together.
+pub type BinderInfo {
+    /// `(x : T) -> U` — an ordinary explicit parameter. Every `lam`'s
+    /// binder, and the only kind `pi` had before R2.
+    explicit,
+    /// `forall`'s term-level flavour: a quantified type variable, whose
+    /// domain is a real type. Named here so R2b has one place to land the
+    /// fold; nothing constructs it before then.
+    binder,
+    /// A universe-LEVEL binder, whose domain is a level rather than a type.
+    /// Today this is `forall`'s marker, recognised by `is_level_binder_kind`
+    /// testing whether the binder's `kind` term is a sort at level 0 —
+    /// a shape test on a term standing in for a property of the binder.
+    /// R2b replaces that test with this case; the comment on
+    /// `is_level_binder_kind` (`lang/typecheck/levels.mo`) is what asks for
+    /// it and records why the current marker is only safe because the
+    /// grammar has no `forall` keyword.
+    level,
+}
+
+/// A binder: what it is called, and how it behaves.
+///
+/// `name` is a `DebugName`, which is error-message metadata and NEVER
+/// identity — de Bruijn indices determine identity, and this field changes
+/// no index. `BinderInfo` is what the checker actually discriminates on.
+pub struct Binder {
+    name : DebugName,
+    info : BinderInfo,
+}
+
+/// The binder an anonymous construction site wants: nothing for the error
+/// message, an ordinary explicit parameter. A named def rather than an
+/// inline literal because a bare struct literal in argument position is a
+/// known miscompile, and because one spelling makes the hundred-odd call
+/// sites that have no name to give read identically.
+///
+/// `pub`, with `Binder`/`BinderInfo` above it, because `proofs/` is a
+/// separate mote and builds anonymous `Term.pi`s in
+/// `proofs/src/checker/sort_props.mo`. That mote's `harness.mo` records
+/// keeping `lang`'s export surface at zero as a deliberate constraint;
+/// this is the third deliberate widening (after `DebugName` for W1.2 and
+/// `level_const` for W1.4), and the alternative -- spelling the struct
+/// literal at each site -- is the miscompile trap the line above names.
+pub def binder_anon : Binder := {
+    name := DebugName.unnamed,
+    info := BinderInfo.explicit,
+}
+
 // The canonical de Bruijn term IR — what everything after the parser
 // works on. `ParseTerm` above is lowered into this.
 //
@@ -1190,7 +1243,14 @@ pub type Term {
     var (idx: I64) (dbg: DebugName),
     lam (dbg: DebugName) (typ: Term) (body: Term),
     forall (dbg: DebugName) (kind: Term) (body: Term),
-    pi (arg: Term) (ret: Term),
+    /// A function type. The binder is an ANNOTATION, exactly as `lam`'s
+    /// `dbg` is: the name never affects an index, because the parser
+    /// already binds it before `Term` exists (`lower_parse.mo`'s
+    /// `pi_ret_ctx` extends the lowering context by the arrow's own binder
+    /// when the source named one), and `term_map_children_at_depth` already
+    /// walks `ret` at depth 1. R2 only stops `pi` from DROPPING the name it
+    /// was given.
+    pi (b : Binder) (arg : Term) (ret: Term),
     app (fun: Term) (arg: Term),
     lit (value: Literal),
     ntv (native: Native),
@@ -2313,27 +2373,27 @@ def similar_term_go (a : Term) (b : Term) : Bool :=
         match a {
             var i1 d1 => match b {
                 var i2 d2 => I64.beq i1 i2 && Similar.similar d1 d2,
-                lam _ _ _ => false, forall _ _ _ => false, pi _ _ => false,
+                lam _ _ _ => false, forall _ _ _ => false, pi _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             lam d1 t1 bd1 => match b {
                 lam d2 t2 bd2 => Similar.similar d1 d2 && Similar.similar t1 t2 && Similar.similar bd1 bd2,
-                var _ _ => false, forall _ _ _ => false, pi _ _ => false,
+                var _ _ => false, forall _ _ _ => false, pi _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             forall d1 k1 bd1 => match b {
                 forall d2 k2 bd2 => Similar.similar d1 d2 && Similar.similar k1 k2 && Similar.similar bd1 bd2,
-                var _ _ => false, lam _ _ _ => false, pi _ _ => false,
+                var _ _ => false, lam _ _ _ => false, pi _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
-            pi a1 r1 => match b {
-                pi a2 r2 => Similar.similar a1 a2 && Similar.similar r1 r2,
+            pi _ a1 r1 => match b {
+                pi _ a2 r2 => Similar.similar a1 a2 && Similar.similar r1 r2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
                 app _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
@@ -2342,48 +2402,48 @@ def similar_term_go (a : Term) (b : Term) : Bool :=
             app f1 a1 => match b {
                 app f2 a2 => Similar.similar f1 f2 && Similar.similar a1 a2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
-                pi _ _ => false, lit _ => false, ntv _ => false,
+                pi _ _ _ => false, lit _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             lit v1 => match b {
                 lit v2 => Similar.similar v1 v2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
-                pi _ _ => false, app _ _ => false, ntv _ => false,
+                pi _ _ _ => false, app _ _ => false, ntv _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             ntv n1 => match b {
                 ntv n2 => Similar.similar n1 n2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
-                pi _ _ => false, app _ _ => false, lit _ => false,
+                pi _ _ _ => false, app _ _ => false, lit _ => false,
                 con _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             con c1 => match b {
                 con c2 => Similar.similar c1 c2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
-                pi _ _ => false, app _ _ => false, lit _ => false,
+                pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, hole => false,
                 sort _ => false, cubical _ => false
             },
             sort l1 => match b {
                 sort l2 => level_eq l1 l2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
-                pi _ _ => false, app _ _ => false, lit _ => false,
+                pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, con _ => false, hole => false, cubical _ => false
             },
             hole => match b {
                 hole => true,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
-                pi _ _ => false, app _ _ => false, lit _ => false,
+                pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, con _ => false,
                 sort _ => false, cubical _ => false
             },
             cubical c1 => match b {
                 cubical c2 => similar_cubical c1 c2,
                 var _ _ => false, lam _ _ _ => false, forall _ _ _ => false,
-                pi _ _ => false, app _ _ => false, lit _ => false,
+                pi _ _ _ => false, app _ _ => false, lit _ => false,
                 ntv _ => false, con _ => false, hole => false,
                 sort _ => false
             }
@@ -2437,7 +2497,7 @@ def test_term_forall : Bool :=
 def test_term_pi : Bool :=
     let arg : Term := Term.sort (SortLevel.concrete 1) in
     let ret : Term := Term.sort (SortLevel.concrete 1) in
-    let p : Term := Term.pi arg ret in
+    let p : Term := Term.pi binder_anon arg ret in
     true
 
 #[test]
@@ -2445,7 +2505,7 @@ def test_term_dep_pi : Bool :=
     // Dependent pi: pi Nat (var 0 "n") — ret references arg at index 0
     let arg : Term := Term.sort (SortLevel.concrete 0) in
     let ret : Term := Term.var 0 (DebugName.named (Identifier.id "n")) in
-    let p : Term := Term.pi arg ret in
+    let p : Term := Term.pi binder_anon arg ret in
     true
 
 #[test]

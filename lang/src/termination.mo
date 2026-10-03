@@ -421,7 +421,7 @@ def find_callees (t : Term) (names : List String) : List String :=
         Term.app fun arg => str_union (find_callees fun names) (find_callees arg names),
         Term.lam _dbg _typ inner => find_callees inner names,
         Term.ctx _loc inner => find_callees inner names,
-        Term.pi arg ret => str_union (find_callees arg names) (find_callees ret names),
+        Term.pi _ arg ret => str_union (find_callees arg names) (find_callees ret names),
         Term.forall _dbg kind inner => str_union (find_callees kind names) (find_callees inner names),
         Term.lit value =>
             match value {

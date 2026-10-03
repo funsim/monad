@@ -1,5 +1,5 @@
 use lang::types {
-  app, con, forall, hole, i64, id, if_, lam, lit, match_, mc, mk, named, npath,
+  app, binder_anon, con, forall, hole, i64, id, if_, lam, lit, match_, mc, mk, named, npath,
   num, package_private, pi, sort_n, str, unnamed, var,
 }
 use llvm::ir {emit_module}
@@ -1208,7 +1208,7 @@ def test_compile_pi_type : Bool :=
     // Pi A B. (A -> B -> A)
     let pi_body := Term.forall (DebugName.named b_id) (sort_n 1) (
         Term.lam (DebugName.unnamed) (sort_n 1) a_var) in
-    let term_ := Term.pi a_var pi_body in
+    let term_ := Term.pi binder_anon a_var pi_body in
     let def_ := Def.mk
         (NamePath.npath (List.cons id List.empty))
         (sort_n 1)

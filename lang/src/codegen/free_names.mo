@@ -31,7 +31,7 @@ def free_names_of_term (bound : List Identifier) (t : Term) : List Identifier :=
     Term.forall dbg kind body_ =>
         List.append (free_names_of_term bound kind)
             (free_names_of_term (add_bound_name bound dbg) body_),
-    Term.pi arg ret => List.append (free_names_of_term bound arg) (free_names_of_term bound ret),
+    Term.pi _ arg ret => List.append (free_names_of_term bound arg) (free_names_of_term bound ret),
     Term.app fun_ arg_ => List.append (free_names_of_term bound fun_) (free_names_of_term bound arg_),
     Term.lit lit_ => free_names_of_lit bound lit_,
     Term.ntv native => free_names_of_native bound native,
@@ -164,7 +164,7 @@ def collect_referenced_names (t : Term) (acc : List String) : List String := mat
         },
     Term.lam _dbg typ body => collect_referenced_names body (collect_referenced_names typ acc),
     Term.forall _dbg kind body => collect_referenced_names body (collect_referenced_names kind acc),
-    Term.pi arg ret => collect_referenced_names ret (collect_referenced_names arg acc),
+    Term.pi _ arg ret => collect_referenced_names ret (collect_referenced_names arg acc),
     Term.app fun_ arg_ => collect_referenced_names arg_ (collect_referenced_names fun_ acc),
     Term.ntv native => collect_referenced_names_native native acc,
     Term.con con_ => collect_referenced_names_con con_ acc,

@@ -2400,7 +2400,7 @@ def compile_db_term_ir (c : CodegenCtx) (term_ : Term) : CompileResult := match 
     Term.ntv native => compile_ntv_ir c native,
     Term.con constr => compile_con_ir c constr,
     Term.forall dbg kind body => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
-    Term.pi arg ret => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
+    Term.pi _ arg ret => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     // A sort emits nothing: a type has no runtime representation.
     Term.sort _level => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
     Term.hole => CompileResult.ok c List.empty LLVMValue.void_val List.empty List.empty List.empty,
@@ -3821,7 +3821,7 @@ def term_to_llvm_type (t : Term) : LLVMType := match term_peel t {
 /// not a `Term.pi`, so the chain would never be peeled at all.
 #[partial]
 def return_llvm_type (typ : Term) : LLVMType := match term_peel typ {
-    Term.pi _ body => return_llvm_type body,
+    Term.pi _ _ body => return_llvm_type body,
     _ => term_to_llvm_type typ,
 }
 
@@ -5742,7 +5742,7 @@ def desugar_struct_lit_def (scope : Scope) (d : Def) : Def := match d {
 def desugar_struct_lit_term (scope : Scope) (t : Term) : Term := match t {
     Term.lam dbg typ body => Term.lam dbg (desugar_struct_lit_term scope typ) (desugar_struct_lit_term scope body),
     Term.forall dbg kind body => Term.forall dbg (desugar_struct_lit_term scope kind) (desugar_struct_lit_term scope body),
-    Term.pi arg_ ret_ => Term.pi (desugar_struct_lit_term scope arg_) (desugar_struct_lit_term scope ret_),
+    Term.pi b arg_ ret_ => Term.pi b (desugar_struct_lit_term scope arg_) (desugar_struct_lit_term scope ret_),
     Term.app fun_ arg_ => Term.app (desugar_struct_lit_term scope fun_) (desugar_struct_lit_term scope arg_),
     Term.ntv native => Term.ntv (desugar_struct_lit_native scope native),
     Term.con con_ => Term.con (desugar_struct_lit_con_node scope con_),

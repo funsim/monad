@@ -5,7 +5,7 @@ use lang::types {
   LocalScope, LocalVar, Location, MatchCase, ModulePath, NamePath, NameRef,
   Native, NumSuffix, Param, Scope, ScopeClassDef, ScopeData, ScopeDef,
   ScopeError, Similar, SortLevel, StructLitField, Term, TypeConstraint,
-  TypeError, concrete, cub_hcomp, cub_i0, cub_i1, cub_interval, cub_is_one,
+  TypeError, binder_anon, concrete, cub_hcomp, cub_i0, cub_i1, cub_interval, cub_is_one,
   cub_pathp, cubical_arity,
   cubical_prim_eq, cubical_prim_name, field_access_chain,
   id_eq, id_member, level_lt, level_of_type, list_rev_loop, list_reverse, many,
@@ -83,7 +83,7 @@ pub def type_check (term : Term) (expected_type : Term) (scope : Scope) (local_t
         Term.lam dbg t body => type_check_lam dbg t body expected_type scope local_types locals,
         Term.app f a => type_check_app f a expected_type scope local_types locals,
         Term.forall dbg kind body => type_check_forall dbg kind body scope local_types locals,
-        Term.pi arg ret => type_check_pi arg ret scope local_types locals,
+        Term.pi _ arg ret => type_check_pi arg ret scope local_types locals,
         Term.con c => type_check_con c expected_type scope local_types locals,
         Term.ntv ntv => type_check_ntv ntv expected_type scope local_types locals,
         // The sole sort form -- `Prop`/`Type`/`Sort n` all lower to it. The
@@ -178,7 +178,7 @@ def mk_typed (a : Term) (b : Term) : TypedTerm :=
 /// right all along here.
 def carrier_from_expected_type (t : Term) : Option Term :=
     match t {
-        Term.pi arg_typ ret_typ =>
+        Term.pi _ arg_typ ret_typ =>
             if is_uninformative_carrier arg_typ then carrier_from_pi_chain ret_typ else Option.some arg_typ,
         Term.hole => Option.none,
         _ => Option.some t,
@@ -193,7 +193,7 @@ def carrier_from_expected_type (t : Term) : Option Term :=
 #[partial]
 def carrier_from_pi_chain (t : Term) : Option Term :=
     match t {
-        Term.pi arg_typ ret_typ =>
+        Term.pi _ arg_typ ret_typ =>
             if is_uninformative_carrier arg_typ then carrier_from_pi_chain ret_typ else Option.some arg_typ,
         _ => Option.none,
     }
@@ -305,7 +305,7 @@ def strip_n_pis (typ : Term) (n : I64) : Term :=
     else
         match typ {
             Term.forall _ _ body => strip_n_pis body n,
-            Term.pi _ ret => strip_n_pis ret (n - 1),
+            Term.pi _ _ ret => strip_n_pis ret (n - 1),
             _ => typ,
         }
 
@@ -2145,7 +2145,7 @@ def con_ref_result_type (id : Identifier) (expected_type : Term) (scope : Scope)
 def con_ref_wants_inference (expected_type : Term) : Bool :=
     match expected_type {
         Term.hole => true,
-        Term.pi _ ret => con_ref_wants_inference ret,
+        Term.pi _ _ ret => con_ref_wants_inference ret,
         _ => false,
     }
 
@@ -2466,7 +2466,7 @@ def is_hole (t : Term) : Bool :=
 #[terminating]
 def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match expected_type {
-        Term.pi arg_typ ret_typ =>
+        Term.pi _ arg_typ ret_typ =>
             // Prefer the lambda's OWN written param type `t` over `arg_typ`
             // (the type `type_check_app` infers for the ARGUMENT this
             // lambda is about to be applied to) whenever `t` isn't itself
@@ -2514,7 +2514,7 @@ def type_check_lam (dbg : DebugName) (t : Term) (body : Term) (expected_type : T
                     // found (IO (List I64))" the moment a match arm
                     // unified it. Prefer the inferred Pi there.
                     let lam_typ : Term :=
-                        if is_hole ret_typ then Term.pi bound_typ body_typ else expected_type in
+                        if is_hole ret_typ then Term.pi binder_anon bound_typ body_typ else expected_type in
                     ok (mk_typed lam_term lam_typ),
                 err e => err e,
             },
@@ -2563,7 +2563,7 @@ def type_check_lam_inferring (dbg : DebugName) (t : Term) (body : Term) (scope :
                 ok body_tt =>
                     let checked_body : Term := body_tt.term in
                     let body_typ : Term := body_tt.typ in
-                    let pi_typ : Term := Term.pi t body_typ in
+                    let pi_typ : Term := Term.pi binder_anon t body_typ in
                     let lam_term : Term := Term.lam dbg t checked_body in
                     ok (mk_typed lam_term pi_typ),
                 err e => err e,
@@ -2972,7 +2972,7 @@ def drop_params (n : I64) (params : List Term) : List Term :=
 def rebuild_pi_chain (params : List Term) (ret : Term) : Term :=
     match params {
         List.empty => ret,
-        List.cons p rest => Term.pi p (rebuild_pi_chain rest ret),
+        List.cons p rest => Term.pi binder_anon p (rebuild_pi_chain rest ret),
     }
 
 pub struct DccPair {
@@ -3101,7 +3101,7 @@ def sig_tvars_go (t : Term) (n : I64) (params : List Term) : SigInfo :=
                 let fresh : Identifier := Identifier.id (String.concat "sig_tv_" (I64.to_string n)) in
                 let placeholder : Term := Term.var sentinel (DebugName.named fresh) in
                 sig_tvars_go (term_subst 0 placeholder body) (n + 1) params,
-        Term.pi arg ret =>
+        Term.pi _ arg ret =>
             sig_tvars_go ret n (list_append params [arg]),
         _ => { params := params, ret := t },
     }
@@ -3178,9 +3178,9 @@ def solve_typevars (scope : Scope) (param : Term) (actual : Term) (subst : List 
                         },
                     DebugName.unnamed => subst,
                 },
-        Term.pi p_arg p_ret =>
+        Term.pi _ p_arg p_ret =>
             match actual_p {
-                Term.pi a_arg a_ret => solve_typevars scope p_ret a_ret (solve_typevars scope p_arg a_arg subst),
+                Term.pi _ a_arg a_ret => solve_typevars scope p_ret a_ret (solve_typevars scope p_arg a_arg subst),
                 Term.forall _ _ body => solve_typevars scope param body subst,
                 _ => subst,
             },
@@ -3466,7 +3466,7 @@ def infer_position_hole (f : Term) (a : Term) : Option TypeError :=
 def type_check_app_ordinary (a_tt : TypedTerm) (f : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
             let a_term : Term := a_tt.term in
             let a_typ : Term := a_tt.typ in
-            let f_expected : Term := Term.pi a_typ expected_type in
+            let f_expected : Term := Term.pi binder_anon a_typ expected_type in
             match type_check f f_expected scope local_types locals {
                 ok f_tt =>
                     let f_term : Term := f_tt.term in
@@ -3563,7 +3563,7 @@ def app_arg_expected_type_from_callee (f : Term) (a : Term) (scope : Scope) (loc
             Option.none => written,
             Option.some cd =>
                 match lam_binder_hint cd scope {
-                    Option.some bt => Term.pi bt Term.hole,
+                    Option.some bt => Term.pi binder_anon bt Term.hole,
                     Option.none => written,
                 },
         }
@@ -3619,7 +3619,7 @@ pub def lam_binder_hint (cd : CalleeDomain) (scope : Scope) : Option Term :=
 /// is `A -> M B`, and the lambda's own binder is its `A`).
 def binder_typ_of (dom : Term) : Term :=
     match term_peel dom {
-        Term.pi binder_typ _ret => binder_typ,
+        Term.pi _ binder_typ _ret => binder_typ,
         _ => dom,
     }
 
@@ -3642,7 +3642,7 @@ def mentions_unresolved_name (t : Term) (scope : Scope) : Bool :=
             else
                 false,
         Term.app f a => if mentions_unresolved_name f scope then true else mentions_unresolved_name a scope,
-        Term.pi p ret => if mentions_unresolved_name p scope then true else mentions_unresolved_name ret scope,
+        Term.pi _ p ret => if mentions_unresolved_name p scope then true else mentions_unresolved_name ret scope,
         Term.forall _dbg _kind body => mentions_unresolved_name body scope,
         Term.lam _dbg ty body => if mentions_unresolved_name ty scope then true else mentions_unresolved_name body scope,
         _ => false,
@@ -3686,7 +3686,7 @@ def inferred_callee_domain (f : Term) (scope : Scope) (local_types : List Term) 
 #[partial]
 def pi_domain_of (t : Term) : Option Term :=
     match term_peel t {
-        Term.pi dom _ret => if is_hole (term_peel dom) then Option.none else Option.some dom,
+        Term.pi _ dom _ret => if is_hole (term_peel dom) then Option.none else Option.some dom,
         Term.forall _dbg _kind body => pi_domain_of body,
         _ => Option.none,
     }
@@ -3821,7 +3821,7 @@ def class_method_declared_sig_bare (id : Identifier) (scope : Scope) : Option Cl
 /// Extract the return type from the function's type after application.
 def extract_pi_ret (f_term : Term) (a_term : Term) (f_typ : Term) (a_typ : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match f_typ {
-        Term.pi pi_arg pi_ret =>
+        Term.pi _ pi_arg pi_ret =>
             let app_term : Term := Term.app f_term a_term in
             // A CONSTRUCTOR's callee type is not a real signature pi: for
             // a MULTI-argument constructor the callee is itself a partial
@@ -3991,7 +3991,7 @@ def type_check_pi (arg : Term) (ret : Term) (scope : Scope) (local_types : List 
             let extended_types : List Term := List.cons arg local_types in
             match type_check ret Term.hole scope extended_types locals {
                 ok ret_tt =>
-                    let pi_term : Term := Term.pi arg ret in
+                    let pi_term : Term := Term.pi binder_anon arg ret in
                     let universe : Term :=
                         Term.sort (SortLevel.max (pi_domain_level arg_tt.term arg_tt.typ)
                             (level_of_type ret_tt.typ)) in
@@ -4231,7 +4231,7 @@ def type_check_transp_go (a_line : Term) (a_elem : Term) (expected_type : Term)
         err e => err e,
         ok line_tt =>
             match term_peel line_tt.typ {
-                Term.pi dom cod =>
+                Term.pi _ dom cod =>
                     match path_line_dom_ok dom scope local_types locals {
                         false => err (TypeError.custom
                             "transp's first argument must be a line over the interval"),
@@ -4347,8 +4347,8 @@ def type_check_hcomp_go (a_typ : Term) (a_face : Term) (a_sys : Term) (a_base : 
                             // system is checked against the very types
                             // the other two arguments established.
                             let sys_typ : Term :=
-                                Term.pi cub_interval
-                                    (Term.pi (cub_is_one face_tt.term) typ_tt.term) in
+                                Term.pi binder_anon cub_interval
+                                    (Term.pi binder_anon (cub_is_one face_tt.term) typ_tt.term) in
                             match type_check a_sys sys_typ scope local_types locals {
                                 err e => err e,
                                 ok sys_tt =>
@@ -4425,7 +4425,7 @@ def type_check_pathp_go (a_line : Term) (a_left : Term) (a_right : Term) (expect
         err e => err e,
         ok line_tt =>
             match term_peel line_tt.typ {
-                Term.pi dom cod =>
+                Term.pi _ dom cod =>
                     match path_line_dom_ok dom scope local_types locals {
                         false => err (TypeError.custom
                             "PathP's first argument must be a line over the interval"),
@@ -6245,14 +6245,14 @@ def pi_ret_test_scope : Scope := {
 def cons_promoted_sig : Term :=
     let a : Term := Term.var sentinel (DebugName.named (Identifier.id "A")) in
     let list_a : Term := Term.app (Term.var sentinel (DebugName.named (Identifier.id "List"))) a in
-    Term.pi a (Term.pi list_a list_a)
+    Term.pi binder_anon a (Term.pi binder_anon list_a list_a)
 
 /// `FromListLiteral_List_empty`'s promoted signature (`List A`) -- the
 /// other shape the failing case goes through, where the type variable
 /// sits INSIDE the first (and only) parameter rather than being it.
 def empty_promoted_sig : Term :=
     let a : Term := Term.var sentinel (DebugName.named (Identifier.id "A")) in
-    Term.pi (Term.app (Term.var sentinel (DebugName.named (Identifier.id "List"))) a) (Term.app (Term.var sentinel (DebugName.named (Identifier.id "List"))) a)
+    Term.pi binder_anon (Term.app (Term.var sentinel (DebugName.named (Identifier.id "List"))) a) (Term.app (Term.var sentinel (DebugName.named (Identifier.id "List"))) a)
 
 /// `List U8`, the type `cons`'s first argument infers to at the failing
 /// site (`Sha256.hash_bytes`'s `List.flatten [unpack_word a, ...]`).
@@ -6261,13 +6261,13 @@ def list_u8_typ : Term :=
 
 def pi_arg_of (t : Term) : Term :=
     match t {
-        Term.pi a _ => a,
+        Term.pi _ a _ => a,
         _ => Term.hole,
     }
 
 def pi_ret_of (t : Term) : Term :=
     match t {
-        Term.pi _ r => r,
+        Term.pi _ _ r => r,
         _ => Term.hole,
     }
 

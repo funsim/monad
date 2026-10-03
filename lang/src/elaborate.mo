@@ -35,7 +35,7 @@ def free_vars (typ : Term) (known_names : List Identifier) : List Identifier :=
             union_ids (free_vars typ_ known_names) (free_vars body known_names),
         Term.forall dbg kind body =>
             union_ids (free_vars kind known_names) (free_vars body known_names),
-        Term.pi arg ret =>
+        Term.pi _ arg ret =>
             union_ids (free_vars arg known_names) (free_vars ret known_names),
         Term.app fun_ arg =>
             union_ids (free_vars fun_ known_names) (free_vars arg known_names),

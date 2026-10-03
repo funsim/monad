@@ -734,7 +734,7 @@ def lower_term (ctx : LowerCtx) (t : Term) (acc : LowerAcc) : Pair (Result Lower
     Term.ntv native => lower_native ctx native acc,
     Term.con c => lower_con ctx c acc,
     Term.forall _ _ _ => lower_err LowerError.le_type_level_term acc,
-    Term.pi _ _ => lower_err LowerError.le_type_level_term acc,
+    Term.pi _ _ _ => lower_err LowerError.le_type_level_term acc,
     // A sort is a type-level term, so it has no runtime lowering.
     Term.sort _level => lower_err LowerError.le_type_level_term acc,
     Term.hole => lower_err LowerError.le_type_level_term acc,

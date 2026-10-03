@@ -9,8 +9,9 @@ use lang::types {
   Attribute, Class, ClassDef, DebugName, Decl, DeclGroup, Def, Identifier,
   InductConstructor, Inductive, Infix, Instance, LocalScope, LocalVar, Location,
   ModulePath, NamePath, NameRef, Param, Scope, ScopeData, ScopeInstance, SourceRange,
-  Struct, StructField, Term, TypeConstraint, TypeError, UseFilter, UseItem, concrete,
-  id_eq, list_reverse, many, module_path_to_string_colon, package_private, priv_,
+  Struct, StructField, Term, TypeConstraint, TypeError, UseFilter, UseItem,
+  binder_anon, concrete, id_eq, list_reverse, many, module_path_to_string_colon,
+  package_private, priv_,
   show_identifier, show_module_path, show_name_path, term_peel, union_ids,
   use_bare, use_glob, use_items, use_name, use_rename, use_sub, use_sub_rename,
   visibility_beq,
@@ -2517,7 +2518,7 @@ def strict_pos_bad (module_str : String) (type_str : String) (t : Term) (polarit
             },
         Term.app fun arg =>
             strict_pos_bad module_str type_str fun polarity || strict_pos_bad module_str type_str arg polarity,
-        Term.pi arg ret =>
+        Term.pi _ arg ret =>
             strict_pos_bad module_str type_str arg (strict_pos_flip polarity) || strict_pos_bad module_str type_str ret polarity,
         Term.forall _ kind body =>
             strict_pos_bad module_str type_str kind (strict_pos_flip polarity) || strict_pos_bad module_str type_str body polarity,
@@ -3026,7 +3027,7 @@ def test_parse_all_decls_empty : Bool :=
 def test_merge_scope_data_preserves_def_sigs : Bool :=
     let name_a : NamePath := NamePath.npath [Identifier.id "a_def"] in
     let name_b : NamePath := NamePath.npath [Identifier.id "b_def"] in
-    let sig_a : Term := Term.pi Term.hole (Term.sort (SortLevel.concrete 1)) in
+    let sig_a : Term := Term.pi binder_anon Term.hole (Term.sort (SortLevel.concrete 1)) in
     let sig_b : Term := Term.sort (SortLevel.concrete 1) in
     let sd_a : ScopeData := scope_data_add_def_sig scope_data_empty name_a sig_a in
     let sd_b : ScopeData := scope_data_add_def_sig scope_data_empty name_b sig_b in

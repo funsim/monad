@@ -4990,7 +4990,7 @@ def test_dep_pi_binds_its_own_name : Bool :=
 #[partial]
 def dep_pi_body_arg_idx (t : Term) (want : I64) : Bool :=
 	match t {
-		Term.pi _arg ret => dep_pi_app_arg_idx ret want,
+		Term.pi _ _arg ret => dep_pi_app_arg_idx ret want,
 		_ => false,
 	}
 
@@ -7720,7 +7720,7 @@ def test_t_var_bound : Bool :=
 				Term.var idx dbg =>
 					I64.beq idx 0 && String.beq rem "",
 				Term.lam _ _ _ => false, Term.forall _ _ _ => false,
-				Term.pi _ _ => false, Term.app _ _ => false,
+				Term.pi _ _ _ => false, Term.app _ _ => false,
 				Term.lit _ => false, Term.ntv _ => false,
 				Term.con _ => false, Term.sort _ => false, Term.hole => false,
 				Term.cubical _ => false
@@ -7736,7 +7736,7 @@ def test_t_var_unbound : Bool :=
 				Term.var idx dbg =>
 					I64.beq idx sentinel && String.beq rem "",
 				Term.lam _ _ _ => false, Term.forall _ _ _ => false,
-				Term.pi _ _ => false, Term.app _ _ => false,
+				Term.pi _ _ _ => false, Term.app _ _ => false,
 				Term.lit _ => false, Term.ntv _ => false,
 				Term.con _ => false, Term.sort _ => false, Term.hole => false,
 				Term.cubical _ => false
@@ -7756,7 +7756,7 @@ def test_t_var_shadow : Bool :=
 				Term.var idx dbg =>
 					I64.beq idx 1 && String.beq rem "",
 				Term.lam _ _ _ => false, Term.forall _ _ _ => false,
-				Term.pi _ _ => false, Term.app _ _ => false,
+				Term.pi _ _ _ => false, Term.app _ _ => false,
 				Term.lit _ => false, Term.ntv _ => false,
 				Term.con _ => false, Term.sort _ => false, Term.hole => false,
 				Term.cubical _ => false
