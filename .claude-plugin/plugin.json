@@ -1,7 +1,7 @@
 {
   "name": "monad-tools",
   "displayName": "Monad Tools",
-  "description": "MCP tools for the Monad language — check, symbols, hover, definition, organize_imports, all workspace-aware across dependency motes — backed by the monad-rs mcp server in this repo.",
+  "description": "Monad language support: a language server (diagnostics, hover, go-to-definition, document and workspace symbols) from the self-hosted `monad lsp`, plus MCP tools — check, symbols, hover, definition, organize_imports, all workspace-aware across dependency motes — from `monad-rs mcp`. Both binaries are built from this repo; see the README for which build each needs.",
   "version": "0.1.0",
   "author": {
     "name": "Anders Christiansen Sørby",
@@ -14,6 +14,15 @@
     "monad": {
       "command": "${CLAUDE_PLUGIN_ROOT}/target-rust/release/monad-rs",
       "args": ["mcp"]
+    }
+  },
+  "lspServers": {
+    "monad": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/target-monad/bootstrap-ci/monad",
+      "args": ["lsp"],
+      "extensionToLanguage": {
+        ".mo": "monad"
+      }
     }
   }
 }

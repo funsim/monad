@@ -1,5 +1,20 @@
 # Monad Tools — Claude Code plugin
 
+Two servers, from two different binaries built out of this repo.
+
+**A language server** — `lspServers.monad` in `plugin.json`, bound to `.mo`
+files. This is the **self-hosted** `monad lsp` (`motes/lsp`, written in Monad),
+which gives Claude Code diagnostics after edits, hover, go-to-definition, and
+document/workspace symbols through its built-in LSP tool. `rust-cli` also has
+an `lsp` subcommand, and the plugin deliberately does **not** point at it: the
+Rust servers are deprecated and the self-hosted one is the deliverable.
+
+**An MCP tool set** — described below, and unaffected by the above. The two are
+complementary rather than alternatives: LSP is what the editor-side tooling
+speaks, while the MCP tools are callable operations with arguments the LSP
+protocol has no equivalent for (`organize_imports`, `test`, and the
+`workspace: true` scans).
+
 Exposes the `monad-rs mcp` server (`rust-cli/src/mcp.rs`) as an MCP tool set for
 Claude Code, so Claude can call `check`/`symbols`/`hover`/`definition`/
 `organize_imports`/`test` directly instead of shelling out to `monad-rs
@@ -23,6 +38,40 @@ cargo build --release --package monad-cli
 This produces `target-rust/release/monad-rs`, which `plugin.json`'s
 `mcpServers.monad.command` points at via `${CLAUDE_PLUGIN_ROOT}` (the
 plugin's own root — this repo's root, when loaded locally as below).
+
+### The language server needs a different, much slower build
+
+`lspServers.monad.command` points at
+`target-monad/bootstrap-ci/monad` — the **self-hosted** compiler, which cargo
+does not produce. It comes from the bootstrap ladder:
+
+```sh
+scripts/build-self-hosted.sh "$PWD/target-monad/bootstrap-ci" --release
+```
+
+That is the path `scripts/lib/bootstrap-dir.sh` defines (per-checkout by
+design, so sibling worktrees do not share one scratch compiler), and it is what
+CI's own ladder builds, so an ordinary `compiler-checks` run leaves it in
+place. Two consequences worth knowing:
+
+* **It is absent until you run that.** The ladder interprets the compiler with
+  the Rust host and takes ~18–20 minutes cold. Until then the LSP entry points
+  at a file that does not exist; Claude Code reports the server as failed and
+  the MCP tools keep working regardless.
+* **`monad clean --all` deletes it**, since it lives under the monad target
+  directory. That is right for scratch, but it means a `clean` costs a full
+  rebuild of the language server.
+
+Verify the binary before trusting the entry — it must answer a frame, not just
+exist:
+
+```sh
+printf 'Content-Length: 58\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  | target-monad/bootstrap-ci/monad lsp
+```
+
+A working server replies with a `Content-Length` frame whose result carries
+`capabilities` and `serverInfo.name: "monad-lsp"`.
 
 ## Install (local, no marketplace/GitHub remote needed)
 
