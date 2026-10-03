@@ -43,7 +43,7 @@
 /// which this repository's own filenames avoid but which are unremarkable
 /// elsewhere -- would be handed to the checker as the literal text `%20` and
 /// fail to open. LSP URIs are RFC 3986 URIs, so decoding is not optional.
-use std::map {}
+use std::map {BTreeMap, BTreeMap.to_list}
 
 pub def docstore_uri_scheme : String := "file://"
 
@@ -95,9 +95,10 @@ pub def doc_text (d : Doc) : String := d.text
 /// `docstore_uris`/`docstore_count`, which no server path reaches -- could
 /// crash. `motes/lsp/src/checks.mo` carries the same trap on `CheckStore`.
 ///
-/// `std/src/map.mo` has no `pub` decls, so the import above is the EMPTY filter
-/// `jsonrpc.mo` documents -- naming `BTreeMap` in a filter is itself what raises
-/// the package-private warning.
+/// `std/src/map.mo` has no `pub` decls, so naming `BTreeMap` in the filter above
+/// raises `cross_mote_package_private` -- accepted deliberately, because the
+/// empty filter that avoided it is now a hard error under the enforced `use`
+/// completeness rule. See `jsonrpc.mo`'s import for the full argument.
 pub struct DocStore {
   docs : BTreeMap String Doc,
 }

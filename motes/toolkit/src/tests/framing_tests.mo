@@ -19,8 +19,9 @@
 /// order; `one_body_is`/`nth` would be exactly the kind of generic name that
 /// collides next time a tool mote adds a test helper.
 use toolkit::framing {
-  FrameRead, frame_body, frame_reason, frame_rest, framing_header_lines,
-  framing_needed, framing_read, is_need_more,
+  FrameRead, FramingMode, content_length, frame_body, frame_reason, frame_rest,
+  framing_header_lines, framing_needed, framing_read, is_need_more,
+  newline_delimited,
 }
 
 // --- Fixtures and flat helpers ---

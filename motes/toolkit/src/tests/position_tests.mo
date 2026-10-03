@@ -23,7 +23,8 @@ use toolkit::position {
   line_of_offset, offset_after_char, offset_of_wire, position_encoding_default,
   position_encoding_from_string, position_encoding_name, utf16_units_between,
   wire_of_location, wire_position_character, wire_position_line, wire_position_mk,
-  wire_range_end, wire_range_of_offsets, wire_range_of_points, wire_range_start,
+  wire_range_end, wire_range_mk, wire_range_of_offsets, wire_range_of_points,
+  wire_range_start,
 }
 
 // --- Fixtures ---

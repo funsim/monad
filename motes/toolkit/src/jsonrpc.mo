@@ -21,14 +21,18 @@
 /// every test below runnable without a socket.
 
 use lang::json {Json}
-// AN EMPTY FILTER, deliberately, and it is the idiom `cli/src/main.mo:13` and the
-// `bench/` entry points already use for this module. `std/src/map.mo` has NO
-// `pub` decls at all, so NAMING `BTreeMap` or `Map` in a `use` filter is itself
-// what raises `cross_mote_package_private` -- the filter is what the checker
-// reads, not the qualified call. An empty filter puts the class and its methods
-// into scope without claiming a visibility the module does not have, and the
-// `BTreeMap String Json` annotation below still resolves.
-use std::map {}
+// `BTreeMap` IS NAMED, and the warning that costs is the right trade.
+//
+// `std/src/map.mo` has no `pub` decls at all, so naming `BTreeMap` here raises
+// `cross_mote_package_private` -- that part of this comment's earlier advice was
+// correct, and `lang/src/json.mo:7` carries the same warning for the same reason.
+// What changed is the other side: an EMPTY filter is now a hard ERROR, because a
+// `use` line is the complete dependency declaration and a brace item names a
+// top-level declaration exactly (`MONAD_USE_COMPLETENESS=error`, the enforced CI
+// step). A warning shared with main's own corpus beats an error that fails the
+// build, and `lang/src/json.mo:7`'s `{BTreeMap, BTreeMap.to_list, empty}` is the
+// spelling to match. The 21 such warnings in this corpus all predate these motes.
+use std::map {BTreeMap}
 
 // --- Error codes ---
 //

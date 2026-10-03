@@ -53,10 +53,15 @@ use lsp::documents {
   DocumentEdit, document_change, document_close, document_edit_changed, document_edit_store,
   document_edit_uri, document_open, document_uri,
 }
-use lsp::lifecycle {lsp_choose_encoding, lsp_initialize_result, lsp_offered_encodings, lsp_root_path}
+use lsp::lifecycle {
+  lsp_choose_encoding, lsp_initialize_result, lsp_no_encodings, lsp_offered_encodings,
+  lsp_root_path,
+}
 use lsp::navigation {lsp_definition, lsp_document_symbol, lsp_hover, lsp_workspace_symbol}
 use toolkit::docstore {DocStore, docstore_empty, docstore_text, docstore_version}
-use toolkit::framing {FramingMode, framing_needed, framing_read}
+use toolkit::framing {
+  FramingMode, bad_header, frame, framing_needed, framing_read, need_more,
+}
 use toolkit::jsonrpc {
   RpcMessage, rpc_code_method_not_found, rpc_code_parse_error, rpc_encode_error,
   rpc_encode_error_no_id, rpc_encode_result, rpc_object, rpc_parse,

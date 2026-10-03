@@ -40,9 +40,12 @@ use lsp::lifecycle {
   lsp_root_path, lsp_server_info_json,
 }
 /// `PositionEncoding` the TYPE is not imported: nothing here writes it in a type
-/// annotation, so the only uses are its constructors, which resolve by their
-/// qualified name. Importing it would be an unused import, which `check` warns on.
-use toolkit::position {position_encoding_name}
+/// annotation, so the only uses are its CONSTRUCTORS. Those are named by their
+/// BARE spelling (`utf8`, not `PositionEncoding.utf8`) -- a brace item names the
+/// declaration, and a constructor is declared bare inside its type's body, even
+/// though the call sites here write it qualified. Importing the type as well
+/// would be the unused import `check` warns on.
+use toolkit::position {position_encoding_name, utf16, utf8}
 
 // --- Fixture plumbing ---
 

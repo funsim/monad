@@ -27,6 +27,7 @@ use lsp::server {
   ServerState, ServerStep, lsp_at_eof, lsp_dispatch, lsp_frame, lsp_next_read, lsp_server_new,
   server_initialized, server_step_exit, server_step_bodies, server_step_state,
 }
+use toolkit::framing {content_length}
 use toolkit::jsonrpc {rpc_parse}
 
 // --- Fixtures ---

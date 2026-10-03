@@ -1,7 +1,7 @@
 use lang::types {
-  Decl, Def, LocalScope, Location, ModulePath, Scope, Term, TypeError, app, forall,
-  hole, id, lit, named, pi, result_is_ok, sentinel, sort_n, str, term_loc, unnamed,
-  var,
+  Decl, Def, LocalScope, Location, ModulePath, Scope, Term, TypeError, app,
+  concrete, forall, hole, id, lit, named, pi, result_is_ok, sentinel, sort_n, str,
+  term_loc, unnamed, var,
 }
 use lib::typecheck::unify {unify}
 use lib::typecheck::infer {type_check}

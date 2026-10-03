@@ -23,8 +23,8 @@ use toolkit::jsonrpc {
   RpcMessage, rpc_code_internal, rpc_code_invalid_params, rpc_code_invalid_request,
   rpc_code_method_not_found, rpc_code_parse_error, rpc_encode_error,
   rpc_encode_error_no_id, rpc_encode_notification, rpc_encode_request,
-  rpc_encode_result, rpc_id, rpc_method, rpc_params, rpc_parse, rpc_version,
-  rpc_wants_reply,
+  rpc_encode_result, rpc_id, rpc_method, rpc_object, rpc_params, rpc_parse,
+  rpc_version, rpc_wants_reply,
 }
 
 // --- Helpers ---

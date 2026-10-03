@@ -44,6 +44,7 @@ use lib::navigation {
   NavTarget, nav_at, nav_at_checked, nav_target_detail, nav_target_file, nav_target_kind,
   nav_target_name, nav_target_range,
 }
+use lib::parser::core {fail, success}
 use lib::pretty {show_term}
 use lib::scope {build_scope_from_decls}
 use lib::types {
