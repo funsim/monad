@@ -560,10 +560,11 @@ def Mote.bin_targets_of_values (dir : String) (mote_name : String) (entries : Li
 
 /// The one implicit target: `src/main.mo`, named after the mote.
 ///
-/// Not a check that the file is there -- this is pure. `build_target` refuses
-/// when it is not (`error: mote \`lang\` has no [bin] target: ... does not
-/// exist`), which is how a library mote keeps needing no `[[bin]]` while a
-/// binary mote keeps building without declaring one.
+/// Not a check that the file is there -- this is pure.
+/// `choose_bin_target` (cli/src/main.mo) refuses when it is not
+/// (`error: mote \`lang\` has no [bin] target to build`), which is how a
+/// library mote keeps needing no `[[bin]]` while a binary mote keeps building
+/// without declaring one.
 def Mote.default_bin_target (dir : String) (mote_name : String) : BinTarget :=
     let t : BinTarget := {
         path := raw_path_join dir "src/main.mo",

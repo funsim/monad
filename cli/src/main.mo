@@ -474,6 +474,9 @@ def choose_bin_target (manifest : MoteManifest) (path : String) (wanted : String
         let existing <- existing_bin_targets manifest.bins List.empty;
         match existing {
             List.empty => do {
+                // Unreachable while `Mote.bin_targets` always conses a target
+                // (even `bin = []` falls through to the default); kept as
+                // defence, since the fallback below reads badly without it.
                 let declared : String := bin_names_joined manifest.bins;
                 let named : String :=
                     if String.is_empty declared
