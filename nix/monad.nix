@@ -114,26 +114,36 @@
       # cover and what `src = ../.` did not.
       #
       # `scripts/build-self-hosted.sh`'s staleness scan is the authoritative
-      # input list and is the guide here: the six trees the compiler is built
-      # from, their `.mo`/`.c`/`.h` sources and each one's `mote.toml`. That is
-      # the complete set for those trees -- enumerated rather than assumed:
-      # the six hold 137 `.mo`, 6 `mote.toml` and exactly one `.c`
+      # input list and is the guide here: the trees the compiler is built from,
+      # their `.mo`/`.c`/`.h` sources and each one's `mote.toml`. That is the
+      # complete set for those trees -- enumerated rather than assumed: they
+      # hold 179 `.mo`, 9 `mote.toml` and exactly one `.c`
       # (runtime/src/runtime.c), and no file of any other name. `.h` is in the
       # filter and matches nothing today; it is there because the script scans
       # for it, and a header added later must not silently fall outside the
       # hash that is supposed to cover it.
       #
+      # THE RULE, because this list has been wrong once: every mote the
+      # compiler's own sources IMPORT is a compiler input. `cli/mote.toml`
+      # declares `[dependencies.lsp]` and `cli/src/main.mo` has
+      # `use lsp::server`, so rung 1 -- which compiles `cli/src/main.mo` --
+      # needs `motes/lsp`, and `motes/lsp` needs `motes/toolkit`. Adding a mote
+      # to `cli/mote.toml` without adding it here fails the buildPhase with
+      # `module not found: <mote>.<module>`: the import that could not resolve,
+      # never the missing input that caused it. (Measured both ways on a tree
+      # assembled by exactly this filter: without the two motes it is exactly
+      # that error, with them `1 file(s) checked, 0 error(s)`.)
+      #
       # Three things outside the scan are kept because the build needs them:
       #
       #   * the root `mote.toml`. Its `[workspace] members` names trees this
-      #     filter drops (`bench`, `proofs`, `slow_tests`, `motes/*`), and the
-      #     fear was that the memberlist is walked eagerly and their absence
-      #     would break the load. It is not: the compiler's own source checks
-      #     clean in a tree assembled by exactly this filter (`1 file(s)
-      #     checked, 0 error(s), 3 warning(s)`) with those trees absent. The
-      #     file stays because it is the workspace-root marker
-      #     `resolve_runtime_src` walks up to find, and losing that is a
-      #     different failure from losing a member.
+      #     filter drops (`bench`, `proofs`, `slow_tests`, and the motes that
+      #     are not compiler inputs), and the fear was that the memberlist is
+      #     walked eagerly and their absence would break the load. It is not:
+      #     the compiler's own source checks clean in a tree assembled by
+      #     exactly this filter with those trees absent. The file stays because
+      #     it is the workspace-root marker `resolve_runtime_src` walks up to
+      #     find, and losing that is a different failure from losing a member.
       #   * `scripts/build-self-hosted.sh`, the one script buildPhase enters.
       #     The whole directory would work, but it would also mean a change to
       #     any CI script invalidates a 20-minute build.
@@ -142,8 +152,9 @@
       #     derivation as `commit` and `monadVersion` arguments, and the
       #     toolchain reaches it through `pkgs`.
       #
-      # 146 files and 3.7 MiB, against the whole tracked tree's 363 files and
-      # 6.5 MiB (both measured). What that buys is not a smaller build -- it is
+      # 191 files and 4.6 MiB, against the whole tracked tree's 452 files and
+      # 7.9 MiB (both measured -- re-measure rather than adjust these, they
+      # have gone stale twice). What that buys is not a smaller build -- it is
       # a SHAREABLE one: `rung1` below carries no commit, so this hash is the
       # same across two commits that differ only outside these paths, and that
       # is the prerequisite for two CI runs ever sharing the result.
@@ -167,6 +178,12 @@
             "llvm"
             "runtime"
             "build"
+            # Compiler inputs because `cli` imports them -- see THE RULE above.
+            # Not the rest of `motes/`: those are consumers of the compiler,
+            # not part of it, and keeping them out is what stops an unrelated
+            # mote's edit from invalidating a 20-minute interpretation.
+            "motes/lsp"
+            "motes/toolkit"
           ]
         );
       };

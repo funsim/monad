@@ -11,8 +11,8 @@
 # (`scripts/ci-compiler-checks.sh`), which is the same binary built by the same
 # script, so what the flake package still adds is its PACKAGING: the sandboxed
 # build, the link step that stamps the revision, and the wrapper that puts
-# llc/clang/boehmgc on PATH. Only `nix/**`, `flake.nix` and `flake.lock` can
-# break that, so only those ask for this job.
+# llc/clang/boehmgc on PATH. `nix/**`, `flake.nix`, `flake.lock` and any
+# `mote.toml` can break that, so those ask for this job.
 #
 # ALLOW-LIST, where the compiler classifier is a deny-list, and the difference
 # is the cost of being wrong in each direction. That one must not miss a
@@ -26,6 +26,12 @@
 # -- `compilerSrc` (nix/monad.nix) is built from the SOURCE TREES, not from the
 # nix expressions, so the interpretation is a store hit and only the link and
 # the wrapper are rebuilt.
+#
+# That same sentence is why the allow-list cannot be `nix/**` alone, which it
+# was until a source-side change broke the package and this job skipped: if
+# `compilerSrc` is built from the source trees, then what the package CONTAINS
+# is decided outside `nix/`. Specifically by the manifests -- see the
+# `mote.toml` arm below.
 #
 # THE DECISION STILL FAILS OPEN, in the direction that costs time: no base, an
 # all-zeros base (`github.event.before` on a new branch), an unreachable one,
@@ -66,6 +72,17 @@ while IFS= read -r path; do
   [ -n "$path" ] || continue
   case "$path" in
     nix/* | flake.nix | flake.lock) echo true; exit 0 ;;
+    # A MANIFEST, because it can change what the package has to CONTAIN. The
+    # rest of a source tree cannot: `compilerSrc` already covers those trees,
+    # so an edit inside one is a different hash of the same file list and the
+    # build either hits the store or re-interprets -- correct either way. A
+    # `mote.toml` is the exception, because it is where a new dependency is
+    # declared: `cli/mote.toml` gained `[dependencies.lsp]` and the fileset did
+    # not gain `motes/lsp`, so `nix build .#monad` broke with `module not
+    # found: lsp.server` while this classifier answered `false` and the job
+    # that would have caught it never ran. Manifest edits are rare, so paying
+    # a cold build for one is the cheap side of that trade.
+    mote.toml | */mote.toml) echo true; exit 0 ;;
   esac
 done <<< "$files"
 

@@ -30,9 +30,16 @@
 # The three callers -- check-monad-tests.sh, bootstrap-compile.sh, and
 # debug-oracle.sh -- each had their own copy of this check with a narrower
 # or wider input set. This is the single definition, at the widest coverage:
-# the six trees the compiler is built from (init, std, lang, cli, llvm,
-# runtime), their .mo/.c/.h sources, and each one's mote.toml -- a manifest
-# that carries `[link] libs`, so it decides how the mote is compiled.
+# every tree the compiler is built FROM (init, std, lang, cli, llvm, runtime,
+# build, and the motes cli imports -- motes/lsp and motes/toolkit, which reach
+# the binary through cli/mote.toml's [dependencies.lsp]), their .mo/.c/.h
+# sources, and each one's mote.toml -- a manifest that carries `[link] libs`,
+# so it decides how the mote is compiled.
+#
+# This list must match nix/monad.nix's `compilerSrc` fileset, which cites this
+# scan as authoritative. A mote missing HERE is the quiet half of the failure:
+# the build silently reuses a binary that predates the edit, where a mote
+# missing THERE at least fails the nix build loudly.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -81,7 +88,7 @@ out="$(cd -- "$out" && pwd)"
 if [ ! -x "$out/monad" ]; then
   needs_build=1
 else
-  newer="$(find init std lang cli llvm runtime build \
+  newer="$(find init std lang cli llvm runtime build motes/lsp motes/toolkit \
     \( -name '*.mo' -o -name '*.c' -o -name '*.h' -o -name mote.toml \) \
     -newer "$out/monad" -print -quit)" || {
     echo "build-self-hosted.sh: cannot scan the ladder's inputs from $PWD" >&2

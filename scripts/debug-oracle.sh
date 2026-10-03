@@ -38,9 +38,11 @@ out="$MONAD_BOOTSTRAP_DIR"
 # Reuse the binary `bootstrap-compile.sh` just built -- in CI that is the step
 # immediately before this one, in the same job. The staleness check and build
 # command live in scripts/build-self-hosted.sh, shared with the other two CI
-# scripts. Its coverage (init std lang cli llvm runtime, *.mo *.c *.h) is
-# wider than this script's own check used to be (lang cli llvm runtime, *.mo):
-# a stale binary reports failures that are really its own age, and init/std
-# are compiled into the binary just as lang/cli are.
+# scripts. Its coverage -- every tree the compiler is built from, which is
+# more than the six this comment used to name (that script's header carries
+# the live list; it has grown twice, so it is not restated here) -- is wider
+# than this script's own check used to be (lang cli llvm runtime, *.mo): a
+# stale binary reports failures that are really its own age, and init/std are
+# compiled into the binary just as lang/cli are.
 scripts/build-self-hosted.sh "$out" --release
 MONAD_BIN="$out/monad" "$root"/tools/debug_transparency_oracle.sh "$root"/examples/*.mo

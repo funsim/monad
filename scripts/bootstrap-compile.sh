@@ -163,7 +163,8 @@ ladder() {
   # A SYMLINK, and the LINK's own mtime is load-bearing. `debug-oracle.sh` --
   # the step immediately after this one in the same CI job -- runs
   # `build-self-hosted.sh` on this same directory, whose staleness scan is
-  # `find init std lang cli llvm runtime ... -newer "$out/monad"`. `ln -sfn`
+  # `find <the compiler's trees> ... -newer "$out/monad"` (that script's header
+  # has the live list; it has grown twice, so it is not repeated here). `ln -sfn`
   # stamps the link with NOW, so the scan finds nothing newer and the oracle
   # reuses this compiler; the store file's own mtime is 1970-01-01 (measured),
   # so a copy that PRESERVED it (`cp -p`, `cp -a`) would read as stale and send
