@@ -10,6 +10,15 @@ pub struct Manifest {
   pub mote: Option<MoteMeta>,
   /// `[link] libs` -- C libraries this mote links against. Empty unless declared.
   pub link_libs: Vec<String>,
+  /// `[lib] path` -- the mote's library root, the file a bare `use <mote>`
+  /// means. `None` when undeclared, which is the conventional `src/lib.mo`.
+  ///
+  /// Read but NOT resolved through: `ModulePath::to_mote_file_path` keeps its
+  /// `src/lib.mo` hardcode, so a non-default root resolves under the
+  /// self-hosted compiler and not here. Carried for the same reason
+  /// `link_libs` is -- parity with `lang/src/mote.mo` and tooling that reads
+  /// manifests -- and the asymmetry is recorded in `docs/src/modules.md`.
+  pub lib_path: Option<String>,
   pub dependencies: BTreeMap<String, Dependency>,
   /// Test-only dependencies. Visible to a mote's own test code, never used to
   /// resolve its lib or bin targets -- this is what lets `init` stay pure
@@ -105,6 +114,7 @@ pub struct LockedModule {
 struct RawManifest {
   mote: Option<RawMoteMeta>,
   link: Option<RawLink>,
+  lib: Option<RawLib>,
   #[serde(default)]
   dependencies: BTreeMap<String, RawDependency>,
   #[serde(default, rename = "dev-dependencies")]
@@ -122,6 +132,14 @@ struct RawManifest {
 struct RawLink {
   #[serde(default)]
   libs: Vec<String>,
+}
+
+/// `[lib] path = "src/lib.mo"` -- the mote's library root. A table rather
+/// than a bare string because `[[bin]]` is a table too and the pair reads as
+/// one convention; `path` is its only key today.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RawLib {
+  path: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -228,6 +246,7 @@ impl Manifest {
         edition: m.edition,
       }),
       link_libs: raw.link.map(|l| l.libs).unwrap_or_default(),
+      lib_path: raw.lib.and_then(|l| l.path),
       workspace: raw.workspace.map(|w| Workspace { members: w.members }),
       dependencies: convert_dependencies(raw.dependencies),
       dev_dependencies: convert_dependencies(raw.dev_dependencies),
@@ -616,6 +635,37 @@ edition = "2026"
     let mote = raw.mote.unwrap();
     assert_eq!(mote.name, "my-mote");
     assert_eq!(mote.edition.as_deref(), Some("2026"));
+  }
+
+  /// `[lib] path` is read, and absent is `None` rather than the default
+  /// spelled out -- the default lives in resolution, not in the manifest, and
+  /// recording it here would make "declared" and "conventional" the same
+  /// value. The Rust host does not resolve through this (see the field's own
+  /// note); the test is that the declaration survives parsing.
+  #[test]
+  fn test_parse_lib_path_is_read_and_optional() {
+    let declared = Manifest::parse_str(
+      r#"
+[mote]
+name = "game"
+version = "0.1.0"
+
+[lib]
+path = "lib/main.mo"
+"#,
+    )
+    .unwrap();
+    assert_eq!(declared.lib_path.as_deref(), Some("lib/main.mo"));
+
+    let undeclared = Manifest::parse_str(
+      r#"
+[mote]
+name = "game"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    assert_eq!(undeclared.lib_path, None);
   }
 
   /// The monad repo's own manifests, parsed from disk. These are the first

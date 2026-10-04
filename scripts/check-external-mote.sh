@@ -547,4 +547,166 @@ MONAD_ROOT="$toolchain" "$monad" check > "$work/targetless-fixed.log" 2>&1 \
   || { cat "$work/targetless-fixed.log" >&2; die "config 7: creating the library root the error named did not make the check pass"; }
 ok "config 7: a mote naming no target that exists is reported, naming both defaults, and creating one fixes it"
 
-echo "check-external-mote: an external mote loads, checks, tests and compiles in all seven configurations"
+# ---------------------------------------------------------------------------
+# 8. A library root somewhere other than `src/lib.mo`
+# ---------------------------------------------------------------------------
+#
+# `[lib] path` is a DECLARATION, and this is the configuration that proves
+# resolution follows it rather than assuming the convention. Nothing in the
+# monad workspace can prove it: all nine `[lib]` declarations there restate
+# the default, so a resolver that ignored the field entirely would pass every
+# other check in this repository. The root here is `lib/main.mo` -- a
+# different directory AND a different stem, so neither half of the convention
+# can answer by accident.
+#
+# Two motes, because the declaration has two readers: the mote itself (a bare
+# `use lib`, which rewrites to the mote's own name) and a CONSUMER naming it
+# as a dependency, which has to read the DEPENDENCY's manifest rather than its
+# own. The second is the half that needs the dependency's `mote.toml` opened;
+# a resolver that only honoured its own manifest would pass the first and fail
+# here.
+
+declared="$work/nested/declared"
+mkdir -p "$declared/lib" "$declared/src"
+cat > "$declared/lib/main.mo" <<'MONAD'
+// The library root, at the path the manifest declares and nowhere near
+// `src/lib.mo`. `pub`, because a consumer imports it across a mote boundary.
+pub def shelf_width (n : I64) : I64 := n * 3
+
+#[test]
+def test_shelf_width : Bool := I64.beq (shelf_width 4) 12
+MONAD
+cat > "$declared/src/main.mo" <<'MONAD'
+// The binary half, reaching its own library through the `lib` alias. BARE
+// `lib`, not `lib::main`: the alias rewrites to the mote's own name, so a
+// one-segment `lib` means "this mote's library root" and lands on the
+// DECLARED file, where `lib::main` would be two segments and resolve under
+// `src/` like any other module.
+use init::io {IO}
+open IO {println}
+use lib {shelf_width}
+
+def main (args : List String) : IO Unit := println (I64.to_string (shelf_width 5))
+MONAD
+cat > "$declared/mote.toml" <<TOML
+[mote]
+name = "shelf"
+version = "0.1.0"
+edition = "2026"
+
+[lib]
+path = "lib/main.mo"
+
+[[bin]]
+name = "shelf"
+path = "src/main.mo"
+
+[dependencies.init]
+path = "${root}/init"
+
+[dependencies.std]
+path = "${root}/std"
+
+[dependencies.runtime]
+path = "${root}/runtime"
+TOML
+
+cd "$declared"
+MONAD_ROOT="$toolchain" "$monad" check > "$work/declared-check.log" 2>&1 \
+  || { cat "$work/declared-check.log" >&2; die "config 8: a declared [lib] path was not resolved"; }
+ok "config 8: check resolves a library root declared outside src/"
+
+MONAD_ROOT="$toolchain" "$monad" test > "$work/declared-test.log" 2>&1 \
+  || { cat "$work/declared-test.log" >&2; die "config 8: tests in a declared library root did not run"; }
+grep -q 'test_shelf_width' "$work/declared-test.log" \
+  || { cat "$work/declared-test.log" >&2; die "config 8: the declared root's own test was never discovered"; }
+ok "config 8: test discovers the declared library root's tests"
+
+MONAD_ROOT="$toolchain" "$monad" build src/main.mo -o "$work/out8" > "$work/declared-build.log" 2>&1 \
+  || { cat "$work/declared-build.log" >&2; die "config 8: building through the lib alias failed"; }
+# The binary's own output, not just a zero exit: `lib::main` had to resolve to
+# the declared file for `shelf_width 5` to be 15 at all.
+out8="$("$work/out8" || true)"
+[ "$out8" = 15 ] \
+  || { echo "got: $out8" >&2; die "config 8: the built binary did not print the declared root's answer"; }
+ok "config 8: a bare \`use lib\` reaches the declared root and the binary runs"
+
+# The CONSUMER half: a second mote naming `shelf` as a dependency. `use shelf`
+# is one segment, so it means "that mote's library root" -- and only `shelf`'s
+# own manifest says where that is.
+consumer="$work/nested/consumer"
+mkdir -p "$consumer/src"
+cat > "$consumer/src/main.mo" <<'MONAD'
+// Imports the dependency by its BARE name, which is the case that has to read
+// the dependency's own `[lib] path`.
+use init::io {IO}
+open IO {println}
+use shelf {shelf_width}
+
+def main (args : List String) : IO Unit := println (I64.to_string (shelf_width 7))
+MONAD
+cat > "$consumer/mote.toml" <<TOML
+[mote]
+name = "consumer"
+version = "0.1.0"
+edition = "2026"
+
+[[bin]]
+name = "consumer"
+path = "src/main.mo"
+
+[dependencies.shelf]
+path = "${declared}"
+
+[dependencies.init]
+path = "${root}/init"
+
+[dependencies.std]
+path = "${root}/std"
+
+[dependencies.runtime]
+path = "${root}/runtime"
+TOML
+
+cd "$consumer"
+MONAD_ROOT="$toolchain" "$monad" check > "$work/consumer-check.log" 2>&1 \
+  || { cat "$work/consumer-check.log" >&2; die "config 8: a dependency's declared [lib] path was not resolved"; }
+ok "config 8: a consumer's \`use <dep>\` resolves the dependency's declared root"
+
+# The negative, and the reason it belongs here: when the declared file is
+# absent the gate must name the DECLARED path. An error naming `src/lib.mo`
+# would send the reader to create a file resolution will never read.
+missing="$work/nested/missing"
+mkdir -p "$missing/src"
+cat > "$missing/src/probe.mo" <<'MONAD'
+def answer : I64 := 42
+MONAD
+cat > "$missing/mote.toml" <<TOML
+[mote]
+name = "missing"
+version = "0.1.0"
+edition = "2026"
+
+[lib]
+path = "lib/root.mo"
+
+[dependencies.init]
+path = "${root}/init"
+
+[dependencies.std]
+path = "${root}/std"
+
+[dependencies.runtime]
+path = "${root}/runtime"
+TOML
+
+cd "$missing"
+miss_rc=0
+MONAD_ROOT="$toolchain" "$monad" check > "$work/missing.log" 2>&1 || miss_rc=$?
+[ "$miss_rc" -ne 0 ] \
+  || { cat "$work/missing.log" >&2; die "config 8: a declared library root that is absent was not reported"; }
+grep -q 'lib/root.mo' "$work/missing.log" \
+  || { cat "$work/missing.log" >&2; die "config 8: the error did not name the DECLARED library root"; }
+ok "config 8: an absent declared root is reported by its declared path"
+
+echo "check-external-mote: an external mote loads, checks, tests and compiles in all eight configurations"

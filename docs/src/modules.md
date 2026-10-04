@@ -192,7 +192,7 @@ order:
 | `std/src/lib.mo` | only for the exact name `std` |
 | `{dir of the importing file}/a/b.mo` | relative to the file doing the `use` |
 | `a/b.mo` | relative to the working directory |
-| `a/src/b.mo`, `a/src/lib.mo` | the head segment names a mote: `use example::greet` → `example/src/greet.mo` |
+| `a/src/b.mo`, `a/src/lib.mo` | the head segment names a mote: `use example::greet` → `example/src/greet.mo`. A bare `a` is the mote's declared `[lib] path`, defaulting to `a/src/lib.mo` |
 | `init/src/a/b.mo` | |
 | `std/src/a/b.mo` | |
 | `lang/src/a/b.mo` | |
@@ -201,14 +201,27 @@ First hit wins. `init` and `std` need their own cases because their module
 *names* no longer match their *file* names — both resolve to a `lib.mo`
 re-export hub.
 
-A mote's library root is `src/lib.mo`, and every mote has one in the sense
-that `use <mote>` resolves there. The manifest's `[lib] path` is read into
-`MoteManifest.lib_path` and `monad check` requires a mote to name at least
-one target that exists on disk — a library root, or a `[[bin]]` — but
-**resolution still hardcodes `src/lib.mo`**, so a `[lib] path` pointing
-somewhere else is recorded and checked, not yet followed. Binary targets are
-the build's business rather than resolution's; see
+A mote's library root is the file a bare `use <mote>` resolves to. It
+defaults to `src/lib.mo`, and the manifest's `[lib] path` can put it
+elsewhere — read into `MoteManifest.lib_path` and **followed by resolution**,
+so `path = "lib/main.mo"` is where `use <mote>` then reads. Only the
+one-segment case moves: a qualified `use <mote>::foo` is still
+`<mote>/src/foo.mo`, because `[lib]` declares a library *root file* and not a
+source directory.
+
+Not every mote has a library root — a binary-only mote has none, and needs
+none. What `monad check` requires is that a mote name at least one target
+that exists on disk: a library root, or a `[[bin]]`. Binary targets are the
+build's business rather than resolution's; see
 [Compiling and Running](./compiling.md) for `[[bin]]` and `--bin`.
+
+One asymmetry, deliberate: the **Rust host reads `[lib] path` but does not
+resolve through it**, keeping its `src/lib.mo` convention the way it carries
+`[link] libs` without linking anything. A mote with a non-default library
+root is compiled by the self-hosted compiler; under `monad-rs` it fails as an
+ordinary unresolved import. That host resolves its modules relative to the
+checkout and cannot be aimed at a foreign mote anyway, which is why
+`scripts/check-external-mote.sh` requires the self-hosted binary.
 
 Every one of those is anchored at the working directory or at the importing
 file, so all of them miss for a mote in its **own** repository, standing

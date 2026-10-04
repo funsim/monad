@@ -312,6 +312,21 @@ def Mote.discover_go (dir : String) (depth : I64) : IO (Option MoteManifest) := 
     }
 }
 
+/// The manifest AT `dir`, with no walk -- unlike `Mote.discover`, whose
+/// walk is right for a file's own mote and wrong for a DECLARED dependency:
+/// `[dependencies.x] path` names `x`'s directory, so a manifest further up
+/// is somebody else's. Resolution needs the dependency's own `[lib] path`.
+pub def Mote.manifest_at (dir : String) : IO (Option MoteManifest) := do {
+    let candidate := mote_toml_in dir;
+    let exists <- IO.file_exists (Path.path candidate);
+    if exists
+    then do {
+        let text <- IO.read_file (Path.path candidate);
+        return (Mote.parse_manifest dir text)
+    }
+    else return Option.none
+}
+
 // ─── Workspace members ──────────────────────────────────────────────
 
 /// Every mote directory belonging to the workspace rooted at `dir`.

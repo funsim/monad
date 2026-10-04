@@ -22,7 +22,7 @@ use lib::parser {
 use parsec::core {ParseError, ParseResult}
 use lib::parser::diagnostic {parse_error_location, render_parse_error}
 use lang::mote {
-  BinTarget, Mote.discover, Mote.manifest_of_attr, Mote.mote_attr_unknown_keys,
+  BinTarget, Mote.discover, Mote.manifest_at, Mote.manifest_of_attr, Mote.mote_attr_unknown_keys,
   Mote.parse_manifest, Mote.toolchain_candidates, Mote.toolchain_missing_hint,
   Mote.toolchain_root, Mote.workspace_members, MoteManifest,
 }
@@ -1011,29 +1011,39 @@ def resolve_via_manifest (base_dir : String) (mp : ModulePath) : IO (Option Stri
     let mote <- Mote.discover base_dir;
     match mote {
         Option.none => return Option.none,
-        Option.some m => first_existing (manifest_candidates m mp)
+        Option.some m => do {
+            let cands <- manifest_candidates m mp;
+            first_existing cands
+        }
     }
 }
 
 /// `mp`'s manifest-derived candidate files, self first: a mote may always
 /// refer to itself, so when the first segment IS this mote's name that is
 /// the answer, and the dependency list is tried only when it is not.
-def manifest_candidates (m : MoteManifest) (mp : ModulePath) : List String :=
+#[partial]
+def manifest_candidates (m : MoteManifest) (mp : ModulePath) : IO (List String) := do {
+    let deps <- mote_dep_files m mp;
     match mote_path_within m mp {
-        Option.none => mote_dep_files m mp,
-        Option.some c => List.cons c (mote_dep_files m mp)
+        Option.none => return deps,
+        Option.some c => return (List.cons c deps)
     }
+}
 
-/// The `src/` file a declared dependency's `mp` names -- `mote_path_within`'s
+/// The file a declared dependency's `mp` names -- `mote_path_within`'s
 /// mirror for a DEPENDENCY, using the manifest's `path` rather than the
 /// mote's name. `List.empty` when `mp`'s first segment is not a dependency
 /// the manifest located (undeclared, or declared without a `path`), which
 /// leaves the cascade's own answer to stand.
-def mote_dep_files (m : MoteManifest) (mp : ModulePath) : List String :=
+///
+/// IO for one arm: a BARE dependency name is that dependency's library root,
+/// and only the dependency's own manifest knows where it declared that.
+#[partial]
+def mote_dep_files (m : MoteManifest) (mp : ModulePath) : IO (List String) := do {
     match mp {
         ModulePath.mp ids =>
             match ids {
-                List.empty => List.empty,
+                List.empty => return List.empty,
                 List.cons hd rest =>
                     // `prelude` is the one module whose NAME is not its FILE
                     // name, and it belongs to `init` -- the same re-spelling
@@ -1042,15 +1052,19 @@ def mote_dep_files (m : MoteManifest) (mp : ModulePath) : List String :=
                     // one-segment by construction, so it never reaches the
                     // `rest` cases below.
                     if String.beq (identifier_to_string hd) "prelude"
-                    then mote_dep_file_of m "init" "prelude"
+                    then return (mote_dep_file_of m "init" "prelude")
                     // A one-segment path means "that mote's own library
                     // root", the same rule `mote_path_within` applies.
                     else if List.is_empty rest
-                    then mote_dep_file_of m (identifier_to_string hd) "lib"
-                    else mote_dep_file_of m (identifier_to_string hd)
-                             (module_path_to_file (ModulePath.mp rest))
+                    then do {
+                        let xs <- mote_dep_lib_file_of m (identifier_to_string hd);
+                        return xs
+                    }
+                    else return (mote_dep_file_of m (identifier_to_string hd)
+                             (module_path_to_file (ModulePath.mp rest)))
             }
     }
+}
 
 /// The one candidate file a declared dependency `dep` contributes for a
 /// module whose file stem is `stem`: `<dep dir>/src/<stem>.mo`.
@@ -1071,8 +1085,47 @@ def mote_dep_file_of (m : MoteManifest) (dep : String) (stem : String) : List St
 def mote_dep_src_root (dep_dir : String) : String :=
     String.concat (raw_path_join dep_dir "src") "/"
 
-/// `<mote>.a.b` -> `<mote dir>/src/a/b.mo`, and a bare `<mote>` -> its
-/// `src/lib.mo`. `Option.none` when the path does not name this mote.
+/// The one candidate a declared dependency's BARE name resolves to: that
+/// dependency's own library root. `dep_man` is its manifest when the caller
+/// found one at its directory (`Mote.manifest_at`); without one the
+/// conventional `<dep dir>/src/lib.mo` stands -- which is what every
+/// manifest in this tree restates, so the fallback is the usual answer and
+/// not a legacy one.
+///
+/// Pure, so all three cases are testable without a filesystem; the IO half
+/// that finds `dep_man` is `mote_dep_lib_file_of` below.
+def mote_dep_lib_files (m : MoteManifest) (dep : String) (dep_man : Option MoteManifest) : List String :=
+    match MoteManifest.dep_dir_of m dep {
+        Option.none => List.empty,
+        Option.some dep_dir =>
+            match dep_man {
+                Option.some d => List.cons (mote_lib_file_of d) List.empty,
+                Option.none => List.cons (String.concat (mote_dep_src_root dep_dir) "lib.mo") List.empty
+            }
+    }
+
+#[partial]
+def mote_dep_lib_file_of (m : MoteManifest) (dep : String) : IO (List String) := do {
+    match MoteManifest.dep_dir_of m dep {
+        Option.none => return List.empty,
+        Option.some dep_dir => do {
+            let dep_man <- Mote.manifest_at dep_dir;
+            return (mote_dep_lib_files m dep dep_man)
+        }
+    }
+}
+
+/// A mote's own library root: its declared `[lib] path`, which
+/// `Mote.lib_target_path` already spells as `<mote dir>/<declared or
+/// src/lib.mo>`. The fallback covers a `MoteManifest` built without one.
+def mote_lib_file_of (m : MoteManifest) : String :=
+    match m.lib_path {
+        Option.some p => p,
+        Option.none => String.concat (String.concat (MoteManifest.src_root m) "/") "lib.mo"
+    }
+
+/// `<mote>.a.b` -> `<mote dir>/src/a/b.mo`, and a bare `<mote>` -> the
+/// mote's library root. `Option.none` when the path does not name this mote.
 def mote_path_within (m : MoteManifest) (mp : ModulePath) : Option String :=
     match mp {
         ModulePath.mp ids =>
@@ -1083,7 +1136,7 @@ def mote_path_within (m : MoteManifest) (mp : ModulePath) : Option String :=
                     then
                         let root := String.concat (MoteManifest.src_root m) "/" in
                         match rest {
-                            List.empty => Option.some (String.concat root "lib.mo"),
+                            List.empty => Option.some (mote_lib_file_of m),
                             List.cons _ _ =>
                                 Option.some (String.concat root
                                     (String.concat (module_path_to_file (ModulePath.mp rest)) ".mo"))
@@ -4609,7 +4662,7 @@ def targetless_mote_error (m : MoteManifest) : String :=
         "error: mote `", m.name, "` has no target that exists\n",
         "  ", raw_path_join m.dir "mote.toml", " names ", named,
         " as its targets, and none of those is a file\n",
-        "  hint: create `", raw_path_join m.dir "src/lib.mo",
+        "  hint: create `", mote_lib_file_of m,
         "` for a library mote, or add a [[bin]] table naming the file a binary mote builds",
     ]
 
@@ -6783,6 +6836,13 @@ def test_elaborate_loaded_modules_resolves_file_with_no_use_decls : IO Bool := d
 def lang_manifest_fixture : String :=
   "[mote]\nname = \"lang\"\nversion = \"0.1.0\"\n\n[dependencies.init]\npath = \"../init\"\n\n[dependencies.std]\npath = \"../std\"\n\n[dependencies.llvm]\npath = \"../llvm\"\n"
 
+/// A manifest declaring a NON-default `[lib] path`, which no manifest in this
+/// tree does -- the default restated is indistinguishable from no declaration
+/// at all, so only this shape can tell "the declaration won" from "the default
+/// was returned".
+def declared_lib_fixture : String :=
+  "[mote]\nname = \"init\"\nversion = \"0.1.0\"\n\n[lib]\npath = \"lib/main.mo\"\n"
+
 /// One candidate, checked as a single-element list -- every
 /// `mote_dep_files` case below yields exactly one.
 def sole_candidate_is (xs : List String) (expected : String) : Bool :=
@@ -6823,47 +6883,85 @@ def test_src_root_of_a_named_mote_dir : Bool :=
 /// and the prelude is unreachable through the manifest at all, so a mote
 /// loaded from inside its own directory never gets its prelude.
 #[test]
-def test_mote_dep_files_reaches_prelude_through_init : Bool :=
+def test_mote_dep_files_reaches_prelude_through_init : IO Bool := do {
     match Mote.parse_manifest "" lang_manifest_fixture {
-        Option.none => false,
-        Option.some m =>
-            sole_candidate_is (mote_dep_files m prelude_module_path) "../init/src/prelude.mo"
+        Option.none => return false,
+        Option.some m => do {
+            let xs <- mote_dep_files m prelude_module_path;
+            return (sole_candidate_is xs "../init/src/prelude.mo")
+        }
     }
+}
 
 /// A one-segment path means "that mote's own library root", the same rule
-/// `mote_path_within` applies to the mote's own name.
+/// `mote_path_within` applies to the mote's own name. Nothing sits at
+/// `../init` on disk here, so this is the no-manifest fallback; the DECLARED
+/// case is the test below, where the answer is a file no default could name.
 #[test]
-def test_mote_dep_files_bare_name_is_that_motes_lib : Bool :=
+def test_mote_dep_files_bare_name_is_that_motes_lib : IO Bool := do {
+    match Mote.parse_manifest "" lang_manifest_fixture {
+        Option.none => return false,
+        Option.some m => do {
+            let init_xs <- mote_dep_files m init_module_path;
+            let std_xs <- mote_dep_files m std_module_path;
+            return (sole_candidate_is init_xs "../init/src/lib.mo"
+                    && sole_candidate_is std_xs "../std/src/lib.mo")
+        }
+    }
+}
+
+/// A dependency's declared `[lib] path` is followed, joined onto the
+/// DEPENDENCY's own directory rather than the importer's.
+#[test]
+def test_mote_dep_lib_files_follows_the_dependencys_declaration : Bool :=
+    match Mote.parse_manifest "" lang_manifest_fixture {
+        Option.none => false,
+        Option.some m => match Mote.parse_manifest "../init" declared_lib_fixture {
+            Option.none => false,
+            Option.some dep =>
+                sole_candidate_is (mote_dep_lib_files m "init" (Option.some dep)) "../init/lib/main.mo"
+        }
+    }
+
+/// ...and the two cases where no declaration is read: a directory carrying no
+/// manifest falls back to the convention, and an undeclared mote contributes
+/// NOTHING so that the cascade's own answer stands.
+#[test]
+def test_mote_dep_lib_files_without_a_manifest : Bool :=
     match Mote.parse_manifest "" lang_manifest_fixture {
         Option.none => false,
         Option.some m =>
-            sole_candidate_is (mote_dep_files m init_module_path) "../init/src/lib.mo"
-            && sole_candidate_is (mote_dep_files m std_module_path) "../std/src/lib.mo"
+            sole_candidate_is (mote_dep_lib_files m "init" Option.none) "../init/src/lib.mo"
+            && List.is_empty (mote_dep_lib_files m "jsonschema" Option.none)
     }
 
 /// A qualified path names a file inside the dependency's `src/`.
 #[test]
-def test_mote_dep_files_qualified_path_names_the_dep_file : Bool :=
+def test_mote_dep_files_qualified_path_names_the_dep_file : IO Bool := do {
     match Mote.parse_manifest "" lang_manifest_fixture {
-        Option.none => false,
-        Option.some m =>
-            sole_candidate_is
-                (mote_dep_files m (ModulePath.mp [Identifier.id "std", Identifier.id "list"]))
-                "../std/src/list.mo"
-            && sole_candidate_is
-                (mote_dep_files m (ModulePath.mp [Identifier.id "llvm", Identifier.id "ir"]))
-                "../llvm/src/ir.mo"
+        Option.none => return false,
+        Option.some m => do {
+            let list_xs <- mote_dep_files m (ModulePath.mp [Identifier.id "std", Identifier.id "list"]);
+            let ir_xs <- mote_dep_files m (ModulePath.mp [Identifier.id "llvm", Identifier.id "ir"]);
+            return (sole_candidate_is list_xs "../std/src/list.mo"
+                    && sole_candidate_is ir_xs "../llvm/src/ir.mo")
+        }
     }
+}
 
 /// An undeclared mote contributes NOTHING, so the cascade's own answer
 /// stands and the failure is the ordinary "module not found" rather than a
 /// bogus manifest path.
 #[test]
-def test_mote_dep_files_is_empty_for_an_undeclared_mote : Bool :=
+def test_mote_dep_files_is_empty_for_an_undeclared_mote : IO Bool := do {
     match Mote.parse_manifest "" lang_manifest_fixture {
-        Option.none => false,
-        Option.some m => List.is_empty (mote_dep_files m (ModulePath.mp [Identifier.id "jsonschema", Identifier.id "schema"]))
+        Option.none => return false,
+        Option.some m => do {
+            let xs <- mote_dep_files m (ModulePath.mp [Identifier.id "jsonschema", Identifier.id "schema"]);
+            return (List.is_empty xs)
+        }
     }
+}
 
 /// The prelude/init/std half: a CWD-relative candidate that MISSES must
 /// fall through to the manifest rather than returning `none`.
@@ -7177,23 +7275,29 @@ def init_self_manifest_fixture : String :=
 /// at the working directory (`dir` is `""`), which is the `raw_path_join`
 /// empty rule the rest of this section is already pinned on.
 #[test]
-def test_mote_dep_files_prelude_within_init_itself : Bool :=
+def test_mote_dep_files_prelude_within_init_itself : IO Bool := do {
     match Mote.parse_manifest "" init_self_manifest_fixture {
-        Option.none => false,
-        Option.some m =>
-            sole_candidate_is (mote_dep_files m prelude_module_path) "src/prelude.mo"
+        Option.none => return false,
+        Option.some m => do {
+            let xs <- mote_dep_files m prelude_module_path;
+            return (sole_candidate_is xs "src/prelude.mo")
+        }
     }
+}
 
 /// The same arm reached by the mote's own NAME rather than through the
-/// `prelude` re-spelling: a bare `<mote>` means that mote's `src/lib.mo`,
-/// so from inside `init/` its own lib root resolves to `src/lib.mo`.
+/// `prelude` re-spelling: a bare `<mote>` means that mote's library root, so
+/// from inside `init/` its own lib root resolves to `src/lib.mo`.
 #[test]
-def test_mote_dep_files_own_name_within_itself : Bool :=
+def test_mote_dep_files_own_name_within_itself : IO Bool := do {
     match Mote.parse_manifest "" init_self_manifest_fixture {
-        Option.none => false,
-        Option.some m =>
-            sole_candidate_is (mote_dep_files m init_module_path) "src/lib.mo"
+        Option.none => return false,
+        Option.some m => do {
+            let xs <- mote_dep_files m init_module_path;
+            return (sole_candidate_is xs "src/lib.mo")
+        }
     }
+}
 
 /// The loader is PATH-driven: hand it a file its module path could never
 /// resolve to, and it still reads THAT file. This is the invariant
