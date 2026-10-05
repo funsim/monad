@@ -6,6 +6,7 @@ use lang::types {
   binder_anon, binder_binder, binder_explicit, char, cub_i0, cub_i1, cub_ijoin,
   cub_imeet, cub_ineg,
   cub_interval, if_, many, match_, package_private, sentinel, sort_n,
+  cub,
 }
 use lib::scope {build_scope_from_decls, scope_find_inductive}
 use lib::typecheck::infer {

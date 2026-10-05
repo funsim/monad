@@ -2,6 +2,7 @@ use lang::types {
   Decl, Def, LocalScope, Location, ModulePath, Scope, Term, TypeError, app,
   binder_anon, binder_binder, binder_is_explicit, concrete, hole, id, lit, named,
   pi, result_is_ok, sentinel, sort_n, str, term_loc, unnamed, var,
+  cub, i0, i1,
 }
 use lib::typecheck::unify {unify}
 use lib::typecheck::infer {type_check}

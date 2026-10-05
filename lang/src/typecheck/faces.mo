@@ -30,6 +30,7 @@ use lib::types {
     Similar, Term,
     cub_face_eq0, cub_face_eq1, cub_i0, cub_i1, cub_imeet, cub_ijoin, cub_ineg,
     cubical_prim_eq, sentinel, term_peel,
+    face_eq0, face_eq1, i0, i1, id, ijoin, imeet, named,
 }
 use lib::typecheck::cubical {endpoint_of}
 

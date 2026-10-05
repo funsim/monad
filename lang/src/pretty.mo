@@ -9,6 +9,7 @@ use lang::types {
   cubical_prim_name, level_const,
   package_private, priv_, pub_, show_identifier, show_module_path, show_name_path,
   show_operator,
+  binder_binder,
 }
 use std::list {List.intercalate}
 

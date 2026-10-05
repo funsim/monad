@@ -19,10 +19,12 @@
 use lib::types {
   CubicalPrim, ModulePath, NamePath, Scope, ScopeData,
   cubical_prim_eq,
+  id,
 }
 use lib::module {parse_all_decls}
 use parsec::core {fail, success}
 use lib::scope {build_scope_from_decls, scope_find_cubical_prim}
+use std::list {List.length}
 
 def synthetic_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "synthetic") List.empty)
 

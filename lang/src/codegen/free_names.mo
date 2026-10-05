@@ -16,6 +16,7 @@
 use lib::types {
   Con, DebugName, FieldPattern, FieldPatternEntry, Identifier, Literal, MatchCase,
   Native, StructLitField, Term, binder_is_explicit, binder_name,
+  union_ids,
 }
 use lib::codegen::symbols {symbol_identifier}
 use lib::codegen::util {ident_in_list, identifier_eq}

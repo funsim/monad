@@ -14,6 +14,7 @@ use lang::types {
   priv_, pub_, show_identifier, show_module_path, show_name_path, show_operator,
   term_peel, u16, u32, u64, u8, union_ids, use_bare, use_glob, use_items,
   use_name, use_rename, use_sub, use_sub_rename,
+  AttrArg,
 }
 use lib::typecheck::traverse {con_map_children, native_map_children, term_map_children}
 // `collect_def_types` registers `elaborate_def`-wrapped types and needs the

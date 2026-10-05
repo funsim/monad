@@ -16,6 +16,8 @@ use lang::types {
   binder_is_explicit, binder_name, binder_named, char_to_string, concrete, empty_attrs,
   group, i64, id_eq,
   ident, param_many, sentinel, show_identifier, show_module_path, term_peel,
+  Cubical, face_eq0, face_eq1, hcomp, i0, i1, ijoin, imeet, ineg, interval,
+  is_one, pathp, transp,
 }
 use llvm::ir {
   DbgLoc, LLVMBasicBlock, LLVMDeclaration, LLVMFunction, LLVMGlobal,

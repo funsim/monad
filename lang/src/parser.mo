@@ -16,6 +16,7 @@ use lang::types {
   pt_from, pt_hole, pt_lam, pt_lit, pt_pi, pt_quote_, pt_sort, pt_var,
   pt_var_macro, pub_, sentinel, show_identifier, show_name_path, str, struct_lit,
   struct_update, term_loc, u32, u64, var, zero,
+  forall,
 }
 use std::list {List.intercalate, List.length}
 // For `HashMap` (the located parser's position table) and the monomorphic

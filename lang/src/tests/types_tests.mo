@@ -5,6 +5,7 @@ use lang::types {
   ScopeDef, ScopeError, ScopeInstance, Similar, Term, cub_i0, cub_i1, cub_imeet,
   cub_ineg, cub_interval, cubical_arity, cubical_is_endpoint, cubical_prim_eq,
   cubical_prim_of, nid, nnp, nop, package_private, sort_n, visibility_beq,
+  Location,
 }
 use lib::scope {scope_data_add_def, scope_data_add_inductive, scope_data_empty}
 

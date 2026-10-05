@@ -13,6 +13,7 @@ use lang::types {
   id_eq, id_member, level_lt, level_of_type, list_rev_loop, list_reverse, many,
   max, package_private, sentinel, show_identifier, show_name_path,
   sort_level_of, sort_n, succ, term_peel,
+  cub, cub_transp,
 }
 use lang::scope {
   ClassMethodRef, DictBinding, build_dict_field_projection_checked,
