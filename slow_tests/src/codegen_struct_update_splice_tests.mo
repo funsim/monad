@@ -1,10 +1,14 @@
 /// Regression tests for the `compose_seq` pure-argument splice
-/// corruption (fixed via `compose_seq_acc`, `lang/codegen/emit.mo`):
-/// a struct update `{ x with f := <expr> }` desugars at typecheck to a
-/// constructor application whose EVERY argument is a single-case
-/// projection match on `x` -- a BRANCHING argument, so each field
-/// value's own fragment ends in a terminator with its computed value
-/// sitting in a merge block closed `ret <phi>`. When a field's
+/// corruption (fixed via `compose_seq_acc`, `lang/codegen/emit.mo`).
+///
+/// A struct update `{ x with f := <expr> }` desugars at typecheck to a
+/// constructor application inside a single-case match on `x` -- a
+/// BRANCHING term, so the arm's value sits in a merge block closed
+/// `ret <phi>`. When these rows were written the desugaring built one
+/// projection match PER un-overridden field instead of one match over the
+/// base (`type_check_struct_update`, `lang/src/typecheck/infer.mo`,
+/// changed 2026-10-05 so the base is evaluated once); the composition
+/// hazard is the same either way, and so are these rows' numbers. When a field's
 /// expression contained a LITERAL operand (`x.f + 1`), that literal
 /// argument (no instructions, no blocks) used to be composed via plain
 /// `compose_seq`, whose `splice_into_terminal_block` rewrote the
@@ -111,3 +115,36 @@ def main (args : List String) : IO I64 := do {
 }
 "# in
     compile_source_run_expect source "test_struct_update_two_fields_at_once" 13
+
+/// A struct update whose base is a parenthesized CALL -- which did not
+/// parse at all until the base stopped being a bare identifier
+/// (`plans/implementations/2026-10-04-struct-update-paren-base-fails-to-
+/// parse.md`). It runs the whole way through, so the row covers the
+/// desugaring as well as the grammar: the override lands and both
+/// untouched fields come back from the base, which is what a wrong binder
+/// or a wrong index would change (40 + 5 + 1 = 46; an override that failed
+/// to land gives 206, and the harness compares a process exit code, so
+/// every total here stays under 256).
+///
+/// That the base is evaluated ONCE is a property of the term shape rather
+/// than of any value this program can print; it is pinned where the shape
+/// is built, by `test_struct_update_is_one_match_over_the_base`
+/// (`lang/src/typecheck/infer.mo`).
+#[test]
+def test_struct_update_paren_call_base : IO Bool :=
+    let source := r#"struct Resp {
+    status : I64,
+    body : I64,
+    tag : I64,
+}
+def make (b : I64) : Resp := { status := 200, body := b, tag := 1 : Resp }
+def bad_request (b : I64) : Resp := { (make b) with status := 40 }
+def rstatus (r : Resp) : I64 := r.status
+def rbody (r : Resp) : I64 := r.body
+def rtag (r : Resp) : I64 := r.tag
+def main (args : List String) : IO I64 := do {
+    let r : Resp := bad_request 5;
+    return (I64.add (rstatus r) (I64.add (rbody r) (rtag r)))
+}
+"# in
+    compile_source_run_expect source "test_struct_update_paren_call_base" 46

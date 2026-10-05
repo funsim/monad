@@ -109,3 +109,34 @@ def main (args : List String) : IO I64 := do {
 }
 "# in
     compile_source_run_expect source "test_let_body_void_struct_literal" 42
+
+/// The hole `materialize_terminal_ret`'s own doc comment recorded and
+/// declined to fix blind: a body shaped `let x := <branching> in I64.beq
+/// ...`. The field access is the branching subterm, so the comparison's
+/// `icmp` is spliced into a block that already ends in `ret` -- the one
+/// `i1` position the TERM-shape gate could not see, because a `let`-shaped
+/// body is an application and not a comparison. Forge hit it
+/// (`plans/implementations/2026-10-05-raw-i1-return-after-a-branching-
+/// subterm.md`) and `llc` rejected the function outright:
+/// `'%tN' defined with type 'i1' but expected 'i64'`.
+///
+/// Pre-fix this row fails at COMPILE time, not on its value -- which is
+/// why the expected number is just the comparison's own answer (1 for
+/// true, through `I64.add`), with nothing clever riding on it.
+#[test]
+def test_native_bool_ret_after_a_branching_subterm : IO Bool :=
+    let source := r#"struct Inner {
+    items : List I64,
+}
+def icount (xs : List I64) : I64 := match xs {
+    empty => 0,
+    cons _ rest => I64.add 1 (icount rest),
+    _ => 0
+}
+def seed : Inner := { items := [1, 2] : Inner }
+def two_items : Bool := let i : Inner := seed in I64.beq (icount i.items) 2
+def main (args : List String) : IO I64 := do {
+    return (if two_items then 1 else 0)
+}
+"# in
+    compile_source_run_expect source "test_native_bool_ret_after_a_branching_subterm" 1
