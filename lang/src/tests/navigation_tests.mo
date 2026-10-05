@@ -332,7 +332,7 @@ def test_a_def_in_another_module_answers_its_file : IO Bool := do {
         ParseResult.success _rem decls => do {
             let sd : ScopeData := build_scope_from_decls nt_other_module decls;
             let no_parent : Option Scope := Option.none;
-            let scope : Scope := { module_id := nt_here_module, scope := sd, parent := no_parent };
+            let scope : Scope := { module_id := nt_here_module, scope := sd, parent := no_parent, incomplete_match_ok := false };
             let no_ranges : List DeclRange := List.empty;
             let info : ModuleInfo := ModuleInfo.mk nt_other_module nt_other_file decls;
             let cache : ModuleInfoCache := module_info_cache_insert nt_other_module info module_info_cache_empty;

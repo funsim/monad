@@ -10,7 +10,8 @@ use lang::types {
   InductConstructor, Inductive, Infix, Instance, LocalScope, LocalVar, Location,
   ModulePath, NamePath, NameRef, Param, Scope, ScopeData, ScopeInstance, SourceRange,
   Struct, StructField, Term, TypeConstraint, TypeError, UseFilter, UseItem,
-  binder_anon, binder_is_explicit, binder_is_level, binder_name, concrete, id_eq,
+  binder_anon, binder_is_explicit, binder_is_level, binder_name, concrete,
+  has_incomplete_match_exemption, id_eq,
   list_reverse, many, module_path_to_string_colon, package_private, priv_,
   show_identifier, show_module_path, show_name_path, term_peel, union_ids,
   use_bare, use_glob, use_items, use_name, use_rename, use_sub, use_sub_rename,
@@ -2216,15 +2217,26 @@ def check_class_method_with_scope (m : ClassDef) (scope : Scope) (locals : Local
         }
     }
 
+/// `scope` with the def-body match-coverage check switched off, when `attrs`
+/// carries `#[allow_incomplete_match "<reason>"]` (`types.mo`). Both def-body
+/// entry points below go through here; see `validate_match_coverage`
+/// (`lang/typecheck/infer.mo`) for why one attribute is enough and why it is
+/// not `#[partial]`.
+def scope_for_def_body (attrs : List Attribute) (scope : Scope) : Scope :=
+    if has_incomplete_match_exemption attrs
+    then { scope with incomplete_match_ok := true }
+    else scope
+
 #[partial]
 def check_def_with_scope (df : Def) (scope : Scope) (locals : LocalScope) (path : Option String) (verbose : Bool) : IO (List String) :=
     match df {
-        Def.mk {name, typ, term := body, constraints := _constraints, attrs := _attrs, vis := _vis, ..} => do {
+        Def.mk {name, typ, term := body, constraints := _constraints, attrs, vis := _vis, ..} => do {
             if verbose then println ("  checking def " ++ show_name_path name) else do { return unit };
             if is_term_hole body then do {
                 return List.empty
             } else do {
                 let locals_ : LocalScope := locals_with_def_typevars typ body scope locals;
+                let body_scope : Scope := scope_for_def_body attrs scope;
                 // `typ`, not `Term.hole`: a def's declared `typ` is
                 // ALREADY the full Pi-chain matching its body's
                 // `Term.lam` chain (`lang/parser.mo`'s `build_param_pi_
@@ -2236,7 +2248,7 @@ def check_def_with_scope (df : Def) (scope : Scope) (locals : LocalScope) (path 
                 // `expected_type` threading through match-arm checking
                 // (`type_check_cases`/`type_check_case_body_checked`)
                 // was added for; it had nothing real to carry until now.
-                return (match type_check body typ scope empty_local_types locals_ {
+                return (match type_check body typ body_scope empty_local_types locals_ {
                     Result.ok _ => List.empty,
                     Result.err e => [render_type_error (show_name_path name) path e]
                 })
@@ -2289,7 +2301,8 @@ def elaborate_def_with_scope ({ name, typ, term := body, constraints, attrs, vis
         Result.ok (Def.mk name typ body constraints attrs vis params)
     else
         let locals_ : LocalScope := locals_with_def_typevars typ body scope locals in
-        match type_check body typ scope empty_local_types locals_ {
+        let body_scope : Scope := scope_for_def_body attrs scope in
+        match type_check body typ body_scope empty_local_types locals_ {
             Result.ok tt => Result.ok (Def.mk name typ (tt.term) constraints attrs vis params),
             Result.err e => Result.err (render_type_error (show_name_path name) Option.none e),
         }
@@ -2571,7 +2584,7 @@ def strict_pos_ctor_bad (module_str : String) (type_str : String) (c : InductCon
 #[partial]
 def check_strict_positivity_with_scope (scope : Scope) (ind : Inductive) (path : Option String) : List String :=
     match scope {
-        Scope.mk module_id _sd _parent =>
+        Scope.mk module_id _sd _parent _ok =>
             match ind {
                 Inductive.mk name _params _typ constructors _attrs _vis =>
                     let type_str : String := show_name_path name in
@@ -3063,6 +3076,7 @@ def test_parse_def_resolve : Bool :=
                 module_id := path,
                 scope := sd,
                 parent := no_parent,
+                incomplete_match_ok := false,
             } in
             let foo_ref : NameRef := NameRef.nid (Identifier.id "foo") in
             let no_vars : List LocalVar := List.empty in
@@ -3090,6 +3104,7 @@ def test_parse_type_resolve_inductive : Bool :=
                 module_id := path,
                 scope := sd,
                 parent := no_parent,
+                incomplete_match_ok := false,
             } in
             let color_path : NamePath := NamePath.npath [Identifier.id "Color"] in
             match scope_find_inductive color_path scope {
@@ -3111,6 +3126,7 @@ def test_parse_type_constructor_resolves : Bool :=
                 module_id := path,
                 scope := sd,
                 parent := no_parent,
+                incomplete_match_ok := false,
             } in
             let red_ref : NameRef := NameRef.nid (Identifier.id "red") in
             let no_vars : List LocalVar := List.empty in
@@ -3138,6 +3154,7 @@ def test_parse_if_body_def_resolves : Bool :=
                 module_id := path,
                 scope := sd,
                 parent := no_parent,
+                incomplete_match_ok := false,
             } in
             let name_ref : NameRef := NameRef.nid (Identifier.id "test_bool_true") in
             let no_vars : List LocalVar := List.empty in
@@ -3165,6 +3182,7 @@ def test_parse_multiple_decls_resolve : Bool :=
                 module_id := path,
                 scope := sd,
                 parent := no_parent,
+                incomplete_match_ok := false,
             } in
             let a_ref : NameRef := NameRef.nid (Identifier.id "a") in
             let no_vars : List LocalVar := List.empty in
@@ -3192,6 +3210,7 @@ def test_parse_module_builds_scope : Bool :=
                 module_id := path,
                 scope := sd,
                 parent := no_parent,
+                incomplete_match_ok := false,
             } in
             let hello_ref : NameRef := NameRef.nid (Identifier.id "hello") in
             let no_vars : List LocalVar := List.empty in
@@ -3219,6 +3238,7 @@ def test_parse_use_decl_ignored_in_scope : Bool :=
                 module_id := path,
                 scope := sd,
                 parent := no_parent,
+                incomplete_match_ok := false,
             } in
             let bar_ref : NameRef := NameRef.nid (Identifier.id "bar") in
             let no_vars : List LocalVar := List.empty in
@@ -5537,7 +5557,7 @@ def expand_decls_graph (scope : Scope) (whole_graph_decls : List Decl) (target :
 /// works there.
 #[partial]
 def rebuild_target_scope (target_mp : ModulePath) (decls : List Decl) : Scope :=
-    { module_id := target_mp, scope := build_scope_from_decls target_mp decls, parent := Option.none }
+    { module_id := target_mp, scope := build_scope_from_decls target_mp decls, parent := Option.none, incomplete_match_ok := false }
 
 /// `loaded` with the MAIN module's own `decl_list` replaced by `decls` --
 /// in both the `main_module` field and the matching entry of
@@ -5651,7 +5671,7 @@ def elaborate_loaded_modules_cached_go (file_path : String) (check_deps : Bool) 
             let target_mp : ModulePath := main_module.path;
             let scope_data : ScopeData := build_scope_from_groups dict_paramed;
             let t_scope : I64 <- bench_step verbose "  elab: build_scope_from_decls" t_dict (List.length scope_data.classes);
-            let scope : Scope := { module_id := target_mp, scope := scope_data, parent := Option.none };
+            let scope : Scope := { module_id := target_mp, scope := scope_data, parent := Option.none, incomplete_match_ok := false };
             // `target_decls` must go through the SAME infix-resolution/
             // promotion/dict-param passes as the whole graph above -- the
             // raw `main_module.decl_list` still has bare
@@ -5808,7 +5828,7 @@ def test_check_module_with_scope_all_pass : IO Bool := do {
     match result {
         ParseResult.success _ decl_list => do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
@@ -5834,7 +5854,7 @@ def test_check_module_with_scope_paramed_inductive : IO Bool := do {
     match result {
         ParseResult.success _ decl_list => do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
@@ -5863,7 +5883,7 @@ def check_diags_of_source (src : String) (module_name : String) : IO (List Strin
     match parse_all_decls src {
         ParseResult.success _ decl_list => do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             check_module_with_scope scope decl_list locals Option.none false
         },
@@ -6131,7 +6151,7 @@ def test_check_module_with_scope_accumulates_failures : IO Bool := do {
     match result {
         ParseResult.success _ decl_list => do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
@@ -6162,7 +6182,7 @@ def test_check_module_with_scope_dot_field_access_resolves : IO Bool := do {
     match result {
         ParseResult.success _ decl_list => do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
@@ -6185,7 +6205,7 @@ def test_check_module_with_scope_chained_dot_field_access_resolves : IO Bool := 
     match result {
         ParseResult.success _ decl_list => do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
@@ -6208,7 +6228,7 @@ def test_check_module_with_scope_dotted_module_path_still_resolves : IO Bool := 
     match result {
         ParseResult.success _ decl_list => do {
             let sd : ScopeData := build_scope_from_decls path decl_list;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             let diags <- check_module_with_scope scope decl_list locals Option.none false;
             return (match diags {
@@ -6652,7 +6672,7 @@ def check_synthetic_source (src : String) : IO (List String) := do {
             let promoted := promote_instance_defs resolved;
             let dict_paramed := add_constraint_dict_params_decls promoted;
             let sd : ScopeData := build_scope_from_decls path dict_paramed;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             check_module_with_scope scope dict_paramed locals Option.none false
         },
@@ -6719,7 +6739,7 @@ def test_elaborate_module_decls_rewrites_class_method_call : IO Bool := do {
             let promoted := promote_instance_defs resolved;
             let dict_paramed := add_constraint_dict_params_decls promoted;
             let sd : ScopeData := build_scope_from_decls path dict_paramed;
-            let scope : Scope := { module_id := path, scope := sd, parent := Option.none };
+            let scope : Scope := { module_id := path, scope := sd, parent := Option.none, incomplete_match_ok := false };
             let locals : LocalScope := { vars := List.empty, parent := Option.none };
             return (match elaborate_module_decls scope dict_paramed locals {
                 Result.err _ => false,

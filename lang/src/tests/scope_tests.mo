@@ -72,6 +72,7 @@ def test_scope_globals : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let g : ScopeData := scope_globals s in
     true
@@ -98,6 +99,7 @@ def test_scope_find_inductive_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let result : Result ScopeError Inductive := scope_find_inductive type_name s in
     match result {
@@ -117,6 +119,7 @@ def test_scope_find_inductive_not_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let result : Result ScopeError Inductive := scope_find_inductive lookup_name s in
     match result {
@@ -228,6 +231,7 @@ def test_scope_resolve_name_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let nref : NameRef := NameRef.nnp def_name in
     let empty_parent : Option LocalScope := Option.none in
@@ -252,6 +256,7 @@ def test_scope_resolve_name_not_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let nref : NameRef := NameRef.nnp (NamePath.npath (List.cons (Identifier.id "no_such") List.empty)) in
     let empty_parent : Option LocalScope := Option.none in
@@ -277,6 +282,7 @@ def test_builtin_type_resolves : Bool :=
         module_id := empty_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let type_name : NamePath := NamePath.npath (List.cons (Identifier.id "Type") List.empty) in
     let result : Result ScopeError ScopeDef := resolve_def_in_scope_by_name type_name s in
@@ -297,6 +303,7 @@ def test_builtin_type_inductive : Bool :=
         module_id := empty_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let type_name : NamePath := NamePath.npath (List.cons (Identifier.id "Type") List.empty) in
     let result : Result ScopeError Inductive := scope_find_inductive type_name s in
@@ -350,6 +357,7 @@ def test_build_from_modules_one_def : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let nref : NameRef := NameRef.nnp def_name in
     let empty_parent : Option LocalScope := Option.none in
@@ -393,6 +401,7 @@ def priv_fixture_resolves_from (vis : Visibility) (consumer : ModulePath) : Bool
         module_id := consumer,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let locals : LocalScope := { vars := List.empty, parent := (Option.none : Option LocalScope) } in
     let nref : NameRef := NameRef.nnp (NamePath.npath [Identifier.id "secret"]) in
@@ -438,6 +447,7 @@ def test_scope_resolve_instance_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let empty_params : List Param := List.empty in
     let key : InstanceKey := {
@@ -463,6 +473,7 @@ def test_scope_resolve_instance_not_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let empty_params : List Param := List.empty in
     let empty_constraints : List TypeConstraint := List.empty in
@@ -512,6 +523,7 @@ def test_scope_resolve_instance_matches_class : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let empty_params : List Param := List.empty in
     let key : InstanceKey := {
@@ -542,6 +554,7 @@ def test_build_scope_then_resolve_def : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let nref : NameRef := NameRef.nnp def_name in
     let empty_parent : Option LocalScope := Option.none in
@@ -574,6 +587,7 @@ def test_build_scope_then_resolve_constructor : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let nref : NameRef := NameRef.nnp true_name in
     let empty_parent : Option LocalScope := Option.none in
@@ -625,6 +639,7 @@ def test_instance_key_matches_type_args : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     // Key requesting Show I64 — should find show_i64 instance
     let key_i64 : InstanceKey := {
@@ -660,6 +675,7 @@ def test_instance_key_matches_wrong_type_args : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     // Key requesting Show String — should NOT find show_i64
     let key_string : InstanceKey := {
@@ -692,6 +708,7 @@ def test_find_inductive_by_constructor_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     // Look up by "some" constructor — should find Maybe
     match scope_find_inductive_by_constructor some_np s {
@@ -717,6 +734,7 @@ def test_find_inductive_by_constructor_not_found : Bool :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     // Look up by "nope" constructor — should NOT find
     let nope_np : NamePath := NamePath.npath (List.cons (Identifier.id "nope") List.empty) in
@@ -791,6 +809,7 @@ def test_scope_resolve_qualified_name : Bool :=
         module_id := ModulePath.mp (List.cons (Identifier.id "Main") List.empty),
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let qn : QualifiedName := { qmod := mod_path, qname := def_name } in
     let empty_parent : Option LocalScope := Option.none in
@@ -820,6 +839,7 @@ def test_scope_qualified_wrong_module_does_not_resolve : Bool :=
         module_id := ModulePath.mp (List.cons (Identifier.id "Main") List.empty),
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     } in
     let wrong : ModulePath := ModulePath.mp
         (List.cons (Identifier.id "std") (List.cons (Identifier.id "nosuch") List.empty)) in

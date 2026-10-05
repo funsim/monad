@@ -514,6 +514,19 @@ def compile_str_lit_ir (c : CodegenCtx) (s : String) : CompileResult :=
 /// miscompile class `validate_no_undesugared_struct_lits` exists to
 /// fail fast on. The dummy `ok` arm exists only so the match
 /// typechecks and is never evaluated.
+///
+/// The `allow_incomplete_match` attribute is used in exactly ONE place
+/// in the tree -- `grep -rn '^\s*#\[allow_incomplete_match'` returning a
+/// second site is a bug, and that is the whole point of it being an
+/// attribute with a mandatory reason rather than a blanket. Note that
+/// plain `grep -rn allow_incomplete_match` also matches the doc comments
+/// explaining it (`types.mo`, `module.mo`, `infer.mo`, and this one), so
+/// anchor the pattern to a line-leading `#[` to test the invariant.
+/// Phase 2's runtime trap is not
+/// reachable from Monad source (`compile_match_ir` never sees this
+/// match: it is hand-written here), so rewriting the arm would trade one
+/// self-naming trap for another with no correctness gain.
+#[allow_incomplete_match "fail-fast backstop; see the doc comment above"]
 #[partial]
 def crash_struct_lit_reached_codegen (c : CodegenCtx) : CompileResult :=
     match Bool.false {
@@ -6003,8 +6016,9 @@ pub def compile_loaded_modules_to_ir_with_debug (loaded : LoadedModules) (verbos
     let t_qualify : I64 <- Bench.now;
     // Bound before the match: `qualify_modules` is IO now (it carries the
     // stage sub-timing), and matching the ACTION itself instead of its
-    // bound result typechecks fine -- no static exhaustiveness check --
-    // then dies at runtime on the uncovered `IO.io` constructor.
+    // bound result is a match on `IO` naming none of its constructors --
+    // a compile error since Phase 1 (strict-exhaustiveness.md), a runtime
+    // death before that.
     let qualify_result <- qualify_modules verbose aliased_mods;
     match qualify_result {
       Result.err e => do {
@@ -6104,7 +6118,7 @@ pub def compile_loaded_modules_to_ir_with_debug (loaded : LoadedModules) (verbos
     let target_mp : ModulePath := match get_loaded_main loaded { ModuleInfo.mk mp_ _ _ => mp_ };
     let scope_data : ScopeData := build_scope_from_decls target_mp dict_param_decls;
     let t_scope : I64 <- bench_step verbose "  elaborate_class: build_scope_from_decls" t_elab (List.length scope_data.classes);
-    let scope : Scope := { module_id := target_mp, scope := scope_data, parent := Option.none };
+    let scope : Scope := { module_id := target_mp, scope := scope_data, parent := Option.none, incomplete_match_ok := false };
     let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
     let desugared_decls := desugar_struct_lits_decls scope dict_param_decls;
     let t_desugar : I64 <- bench_step verbose "  elaborate_class: desugar_struct_lits" t_scope (List.length desugared_decls);

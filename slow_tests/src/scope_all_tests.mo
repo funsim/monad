@@ -12,6 +12,7 @@ def make_scope (path : ModulePath) (sd : ScopeData) : Scope := {
     module_id := path,
     scope := sd,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 def name_ref (name : String) : NameRef := NameRef.nid (Identifier.id name)

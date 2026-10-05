@@ -320,8 +320,9 @@ def whnf_cubical_args (fuel : I64) (scope : Scope) (locals : LocalScope) (as : L
 /// while everything else in the two results is identical. That reuses
 /// `term_subst` -- the one walker over every `Term` constructor that
 /// already tracks binder depth -- rather than adding a bespoke
-/// free-variable walker, which with no exhaustiveness checking would be
-/// a constructor the walk silently misses.
+/// free-variable walker, which would be one more constructor for a walk
+/// to miss (the coverage check catches a miss since Phase 1 of
+/// strict-exhaustiveness.md, but the point is not to add the arm at all).
 ///
 /// Anything else stays STUCK, and that is a recorded limit, not an
 /// omission: the structural reductions (a `Term.pi` family transported

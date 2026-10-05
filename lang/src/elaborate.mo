@@ -474,11 +474,12 @@ def elaborate_decl (decl : Decl) (known_names : List Identifier) : Decl :=
         // definition/invocation the same way it does to an ordinary
         // def/inductive; whatever a macro EXPANDS into gets elaborated
         // normally once it's a real decl. See `build_scope_one_decl`'s
-        // own identical wildcard (lang/scope.mo) for why this can't be
-        // left as a non-exhaustive match at all (no static
-        // exhaustiveness check in this language — silently typechecks
-        // fine, then crashes at runtime the moment a real decl of one
-        // of these variants is matched).
+        // own identical wildcard (lang/scope.mo): the enumeration is the
+        // macro-expansion phase's, which grows as the macro layer does, so
+        // it is deliberately matched OPEN. Since Phase 1
+        // (strict-exhaustiveness.md) leaving it closed would be a compile
+        // error, so the `_` now states the choice instead of hiding an
+        // omission.
         _ => decl,
     }
 
@@ -494,9 +495,10 @@ def elaborate_decls (decl_list : List Decl) (existing_names : List Identifier) :
 // Regression tests for `elaborate_decl`'s wildcard arm covering the 3
 // macro-expansion-phase `Decl` variants (def_macro_d/decl_gen_d/
 // macro_call_d) -- see `lang/scope.mo`'s own identical-purpose tests
-// for `build_scope_one_decl` for the full rationale (no static
-// exhaustiveness check in this language; a missing arm here would
-// silently typecheck fine and only crash at RUNTIME). Each confirms
+// for `build_scope_one_decl` for the full rationale. The wildcard is what
+// keeps that enumeration open on purpose; since Phase 1 a dropped arm would
+// be a compile error rather than the silent RUNTIME crash it used to be.
+// Each confirms
 // `elaborate_decl` passes the value through unchanged (identity) --
 // the fixture and the result are structurally the same decl shape.
 

@@ -11,7 +11,8 @@ use lang::types {
 use lib::scope {build_scope_from_decls, scope_find_inductive}
 use lib::typecheck::infer {
   CalleeDomain, TypedTerm, empty_local_types, empty_locals,
-  is_uninformative_carrier, lam_binder_hint, type_check, type_check_match_case
+  is_uninformative_carrier, lam_binder_hint, type_check, type_check_match_case,
+  validate_match_coverage
 }
 
 open Term {app, hole, lam, lit, pi, var}
@@ -29,6 +30,7 @@ def test_scope : Scope := {
     module_id := empty_path,
     scope := test_sd,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 def run_check (t : Term) (e : Term) : Result TypeError TypedTerm :=
@@ -446,6 +448,7 @@ def maybe_scope : Scope :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     }
 
 #[test]
@@ -461,12 +464,21 @@ def test_match_inductive_in_scope : Bool :=
 def test_match_valid_constructor : Bool :=
     let scrutinee : Term := sort_n 1 in
     let body : Term := sort_n 1 in
-    let case_ : MatchCase := MatchCase.mc
+    let case_some : MatchCase := MatchCase.mc
         (Identifier.id "some")
         List.empty
         body
         Option.none in
-    let cases : List MatchCase := List.cons case_ List.empty in
+    // `none` is named too, and not in order to test it: since Phase 1
+    // (strict-exhaustiveness.md) a `Maybe` match omitting `none` is a
+    // coverage ERROR, so this arm is what keeps the pin about VALID
+    // constructor names rather than about exhaustiveness.
+    let case_none : MatchCase := MatchCase.mc
+        (Identifier.id "none")
+        List.empty
+        body
+        Option.none in
+    let cases : List MatchCase := List.cons case_some (List.cons case_none List.empty) in
     let t : Term := Term.lit (Literal.match_ scrutinee cases) in
     match type_check t Term.hole maybe_scope empty_local_types empty_locals {
         ok _ => true,
@@ -584,6 +596,135 @@ def test_match_branch_type_conflict : Bool :=
         err _ => true,  // Correctly detects the conflict
     }
 
+// --- Match exhaustiveness (strict-exhaustiveness.md, Phase 1) ---
+//
+// These pins call `validate_match_coverage` DIRECTLY. The rule is a pure
+// function of (cases, maybe_ind, scope), and `maybe_ind` is the whole of the
+// type information it consumes, so testing it needs no scope plumbing at all.
+// The two end-to-end pins at the end go through `type_check` instead, to
+// prove the call in `type_check_cases_accum`'s tail is live.
+
+/// A closed three-constructor inductive, declared in the order `c`, `d`, `e`
+/// -- which is the order the diagnostic must list them in.
+def cov_ctor (n : String) : InductConstructor :=
+    InductConstructor.mk
+        (NamePath.npath (List.cons (Identifier.id n) List.empty))
+        List.empty
+        (sort_n 1)
+
+def cov_ind : Inductive :=
+    Inductive.mk
+        (NamePath.npath (List.cons (Identifier.id "T") List.empty))
+        List.empty
+        (sort_n 1)
+        [cov_ctor "c", cov_ctor "d", cov_ctor "e"]
+        List.empty
+        Visibility.package_private
+
+def cov_case (n : String) : MatchCase :=
+    MatchCase.mc (Identifier.id n) List.empty (sort_n 1) Option.none
+
+def cov_ok (cases : List MatchCase) : Bool :=
+    match validate_match_coverage cases (Option.some cov_ind) test_scope {
+        ok _ => true,
+        err _ => false,
+    }
+
+def cov_msg (cases : List MatchCase) : String :=
+    match validate_match_coverage cases (Option.some cov_ind) test_scope {
+        ok _ => "",
+        err e => match e { TypeError.custom msg => msg, _ => "" },
+    }
+
+#[test]
+def test_match_covering_every_constructor_passes : Bool :=
+    cov_ok [cov_case "c", cov_case "d", cov_case "e"]
+
+#[test]
+def test_match_missing_one_constructor_is_an_error : Bool :=
+    not (cov_ok [cov_case "c", cov_case "d"])
+
+#[test]
+def test_match_missing_arm_message_names_the_type_and_constructor : Bool :=
+    String.beq (cov_msg [cov_case "c", cov_case "d"])
+        "non-exhaustive match: `T.e` is not covered (add an arm for it, or a `_` arm)"
+
+#[test]
+def test_match_missing_two_arms_listed_in_declaration_order : Bool :=
+    String.beq (cov_msg [cov_case "c"])
+        "non-exhaustive match: `T.d`, `T.e` are not covered (add arms for them, or a `_` arm)"
+
+#[test]
+def test_match_wildcard_last_covers_everything : Bool :=
+    cov_ok [cov_case "c", cov_case "_"]
+
+#[test]
+def test_match_wildcard_first_covers_everything : Bool :=
+    cov_ok [cov_case "_", cov_case "c"]
+
+#[test]
+def test_match_zero_constructor_inductive_needs_no_empty_match : Bool :=
+    // The inverse rule -- "0 constructors therefore require an empty match"
+    // -- is deliberately NOT implemented, and this is what pins that. A case
+    // naming nothing real is caught by `validate_cases_against_inductive`
+    // instead; coverage itself is vacuously satisfied with no constructors.
+    let voidish : Inductive := Inductive.mk
+        (NamePath.npath (List.cons (Identifier.id "V") List.empty))
+        List.empty (sort_n 1) List.empty List.empty Visibility.package_private in
+    match validate_match_coverage [cov_case "c"] (Option.some voidish) test_scope {
+        ok _ => true,
+        err _ => false,
+    }
+
+#[test]
+def test_match_unresolved_scrutinee_is_skipped : Bool :=
+    match validate_match_coverage [cov_case "c"] Option.none test_scope {
+        ok _ => true,
+        err _ => false,
+    }
+
+#[test]
+def test_match_incomplete_match_exemption_switches_the_rule_off : Bool :=
+    let exempt : Scope := { test_scope with incomplete_match_ok := true } in
+    match validate_match_coverage [cov_case "c"] (Option.some cov_ind) exempt {
+        ok _ => true,
+        err _ => false,
+    }
+
+#[test]
+def test_match_bare_field_pattern_name_covers_nothing : Bool :=
+    // `""` is the parser's placeholder for a bare `{ .. }` field pattern. It
+    // cannot occur once the cases are checked, so reaching it means a
+    // resolution hole -- and covering nothing over-reports, the safe way.
+    not (cov_ok [cov_case "c", cov_case "d", cov_case ""])
+
+// --- the same rule end to end, through the checker ---
+
+#[test]
+def test_match_missing_arm_is_an_error_end_to_end : Bool :=
+    let scrutinee : Term := sort_n 1 in
+    let body : Term := sort_n 1 in
+    let case_some : MatchCase := MatchCase.mc (Identifier.id "some") List.empty body Option.none in
+    let cases : List MatchCase := List.cons case_some List.empty in
+    let t : Term := Term.lit (Literal.match_ scrutinee cases) in
+    match type_check t Term.hole maybe_scope empty_local_types empty_locals {
+        ok _ => false,
+        err e => match e { TypeError.custom msg => String.contains msg "`Maybe.none`", _ => false },
+    }
+
+#[test]
+def test_match_exhaustive_arms_check_end_to_end : Bool :=
+    let scrutinee : Term := sort_n 1 in
+    let body : Term := sort_n 1 in
+    let case_some : MatchCase := MatchCase.mc (Identifier.id "some") List.empty body Option.none in
+    let case_none : MatchCase := MatchCase.mc (Identifier.id "none") List.empty body Option.none in
+    let cases : List MatchCase := List.cons case_some (List.cons case_none List.empty) in
+    let t : Term := Term.lit (Literal.match_ scrutinee cases) in
+    match type_check t Term.hole maybe_scope empty_local_types empty_locals {
+        ok _ => true,
+        err _ => false,
+    }
+
 // -------------------------------------------------------------------
 // Phase 7 of `plans/implementations/struct-field-destructuring.md`:
 // elaboration for match-case field patterns.
@@ -613,6 +754,7 @@ def point_scope : Scope :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     }
 
 /// A scrutinee whose OWN type is genuinely known to be `Point`
@@ -692,7 +834,7 @@ def test_field_pattern_bare_form_multi_constructor_is_an_error : Bool :=
     let ind : Inductive := Inductive.mk type_name empty_params (sort_n 1) cns empty_attrs Visibility.package_private in
     let decl_list : List Decl := List.cons (Decl.inductive_d ind) List.empty in
     let sd : ScopeData := build_scope_from_decls mod_path decl_list in
-    let shape_scope : Scope := { module_id := mod_path, scope := sd, parent := Option.none } in
+    let shape_scope : Scope := { module_id := mod_path, scope := sd, parent := Option.none, incomplete_match_ok := false } in
     let scrutinee : Term := Term.var 0 DebugName.unnamed in
     let types : List Term := List.cons (Term.var sentinel (DebugName.named (Identifier.id "Shape"))) List.empty in
     let fp : FieldPattern := FieldPattern.mk List.empty true in
@@ -772,6 +914,7 @@ def pair_scope : Scope :=
         module_id := mod_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     }
 
 /// `P T U` -- two DIFFERENT concrete arguments, so substituting the wrong
@@ -988,7 +1131,7 @@ def classdef_scope : Scope :=
     } in
     let base_sd : ScopeData := test_sd in
     let sd_with_cd : ScopeData := { base_sd with class_defs := List.cons scd base_sd.class_defs } in
-    { module_id := empty_path, scope := sd_with_cd, parent := Option.none }
+    { module_id := empty_path, scope := sd_with_cd, parent := Option.none, incomplete_match_ok := false }
 
 #[test]
 def test_class_method_resolve : Bool :=
@@ -1084,7 +1227,7 @@ def dup_match_checks (decl_list : List Decl) : Bool :=
     let mod_id : Identifier := Identifier.id "DupTest" in
     let mod_path : ModulePath := ModulePath.mp (List.cons mod_id List.empty) in
     let sd : ScopeData := build_scope_from_decls mod_path decl_list in
-    let dup_scope : Scope := { module_id := mod_path, scope := sd, parent := Option.none } in
+    let dup_scope : Scope := { module_id := mod_path, scope := sd, parent := Option.none, incomplete_match_ok := false } in
     let scrutinee : Term := Term.var 0 DebugName.unnamed in
     let types : List Term := List.cons (Term.var sentinel (DebugName.named (Identifier.id "Dup"))) List.empty in
     let case_ : MatchCase := MatchCase.mc (Identifier.id "d_wanted") [Identifier.id "p"] (sort_n 1) Option.none in

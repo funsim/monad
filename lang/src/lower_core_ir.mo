@@ -906,7 +906,7 @@ def natives : NativeTable := basic_native_table
 /// directly (for `find_def_body`) and builds a `Scope` from the same
 /// decl_list (for `scope_resolve_name`/`scope_find_inductive`).
 pub def lower_ctx_from_decls (path : ModulePath) (decl_list : List Decl) : LowerCtx :=
-  LowerCtx.lower_ctx (Scope.mk path (build_scope_from_decls path decl_list) Option.none) (decls_to_defs decl_list)
+  LowerCtx.lower_ctx (Scope.mk path (build_scope_from_decls path decl_list) Option.none false) (decls_to_defs decl_list)
 
 #[partial]
 def decls_to_defs (decl_list : List Decl) : List Def :=
@@ -1025,4 +1025,4 @@ def irlit_is_num (l : IrLit) (expected : I64) : Bool :=
 def dummy_ctx : LowerCtx := LowerCtx.lower_ctx dummy_scope List.empty
 
 def dummy_scope : Scope :=
-  Scope.mk (ModulePath.mp List.empty) scope_data_empty Option.none
+  Scope.mk (ModulePath.mp List.empty) scope_data_empty Option.none false

@@ -66,6 +66,7 @@ def ctx_peel_scope : Scope :=
         module_id := ctx_peel_synthetic_path,
         scope := sd,
         parent := Option.none,
+        incomplete_match_ok := false,
     }
 
 /// A named free variable -- the only head `type_head_name` answers for.

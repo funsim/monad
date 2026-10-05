@@ -149,6 +149,28 @@ def attr_args (name : Identifier) (attrs : List Attribute) : Option (List AttrAr
         List.empty => Option.none,
     }
 
+/// Whether a def opts out of the match-coverage check
+/// (`validate_match_coverage`, `lang/typecheck/infer.mo`) via
+/// `#[allow_incomplete_match "<reason>"]`.
+///
+/// The STRING argument is required: a bare `#[allow_incomplete_match]` is
+/// deliberately NOT an exemption. Unlike `has_termination_exemption` --
+/// whose argument-less `#[decreasing]` is accepted, because there the
+/// argument only records WHICH parameter shrinks -- there is nothing here
+/// to record but the reason, and an unexplained exemption is exactly the
+/// blanket this attribute exists not to be.
+def has_incomplete_match_exemption (attrs : List Attribute) : Bool :=
+    match attr_args (Identifier.id "allow_incomplete_match") attrs {
+        Option.some args => match_args_carry_a_string args,
+        Option.none => false,
+    }
+
+def match_args_carry_a_string (args : List AttrArg) : Bool :=
+    match args {
+        List.cons hd _ => match hd { AttrArg.str _ => true, _ => false },
+        List.empty => false,
+    }
+
 #[test]
 def test_attr_args_returns_the_named_attributes_args : Bool :=
     let attrs : List Attribute := [
@@ -580,7 +602,8 @@ pub type Native {
 // shape `Term.lit (Literal)`, `Term.con (Con)` and `Term.ntv (Native)`
 // already use. The alternative -- one flat `Term` variant per primitive --
 // would take `similar_term_go` below from a 10x10 hand-expanded cross
-// product to 21x21, with no exhaustiveness checking to catch a missed pair.
+// product to 21x21 -- a missed pair is a compile error since Phase 1
+// (strict-exhaustiveness.md), but 231 lines of it.
 // With this shape every generic walker grows exactly one arm, over `args`.
 //
 // `args` is positional and its length is the primitive's arity;
@@ -2960,6 +2983,15 @@ pub struct Scope {
     module_id : ModulePath,
     scope : ScopeData,
     parent : Option Scope,
+    // Read by `validate_match_coverage` (`lang/typecheck/infer.mo`), set by
+    // `lang/module.mo`'s def-body sites from `has_incomplete_match_exemption`;
+    // `false` means "checked", the safe default.
+    //
+    // Spell it at EVERY `Scope` literal -- all 69 in the tree do. Leaving it
+    // to the default sends the Rust host into an unbounded missing-field fill
+    // (`desugar_struct_literals`, `core/src/core_check.rs`) that OOMs the
+    // whole-corpus check, so the pre-commit hook can never pass.
+    incomplete_match_ok : Bool := false,
 }
 
 // Compiled or loaded module entry.

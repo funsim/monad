@@ -1128,6 +1128,143 @@ def validate_cases_against_inductive (cases : List MatchCase) (ind : Inductive) 
             },
     }
 
+// --- Match exhaustiveness (strict-exhaustiveness.md, Phase 1) ---
+//
+// A match must cover every constructor of its scrutinee's inductive. Before
+// this the self-hosted checker reported NOTHING for a missing arm, and the
+// backend compensated by making the LAST arm unconditional
+// (`build_match_chain`, lang/codegen/emit.mo) -- so a match omitting `T.e`
+// silently ran `T.d`'s body and returned a wrong value. That shipped once:
+// plans/implementations/2026-08-29-native-io-op-non-exhaustive-match-crash.md.
+//
+// Coverage is deliberately a plain TOP-LEVEL constructor-coverage test, not a
+// usefulness/full-pattern algorithm. Measured over the whole corpus (6725
+// matches, 237 files): 0 nested patterns, 0 literal patterns, 0 tuple
+// patterns, 0 guards, 0 duplicate arms, 0 arms after a catch-all -- there is
+// nothing for a general algorithm to be more precise about.
+
+/// `` `T.d` `` -- the constructor qualified by its OWN inductive's name.
+/// The qualifier is not decoration: `InductConstructor.mk`'s own `NamePath`
+/// is never type-prefixed (`constructor_bare_name`), so rendering it bare
+/// would print `` `d` `` for every type that has a `d` -- and
+/// `init/prelude.mo` really does declare both `List` and `Vec` with a
+/// `cons`.
+def quoted_ctor_path (ty : String) (np : NamePath) : String :=
+    "`" ++ ty ++ "." ++ show_identifier (constructor_bare_name np) ++ "`"
+
+/// `` `T.d`, `T.e` `` -- the missing constructors backticked and comma
+/// separated, in the caller's order (which is the inductive's DECLARATION
+/// order). Determinism matters here: the check-plan cache keys on the
+/// diagnostic text, so the same file must render byte-identically.
+def missing_ctor_names_joined (ty : String) (missing : List NamePath) : String :=
+    match missing {
+        List.empty => "",
+        List.cons hd rest =>
+            match rest {
+                List.empty => quoted_ctor_path ty hd,
+                List.cons _ _ =>
+                    String.concat (quoted_ctor_path ty hd)
+                        (String.concat ", " (missing_ctor_names_joined ty rest)),
+            },
+    }
+
+def non_exhaustive_match_message (ind : Inductive) (missing : List NamePath) : String :=
+    let listed : String := missing_ctor_names_joined (inductive_name_str ind) missing in
+    if I64.beq (List.length missing) 1
+    then "non-exhaustive match: " ++ listed ++ " is not covered (add an arm for it, or a `_` arm)"
+    else "non-exhaustive match: " ++ listed ++ " are not covered (add arms for them, or a `_` arm)"
+
+def inductive_constructors (ind : Inductive) : List InductConstructor :=
+    match ind { Inductive.mk _name _params _typ constructors _attrs _vis => constructors }
+
+/// Whether a case's own name is the `_` wildcard, spelled once
+/// (`wildcard_binder_name`) rather than re-derived here.
+def match_is_wildcard_name (name : Identifier) : Bool :=
+    Similar.similar name wildcard_binder_name
+
+/// Whether some case is `_`. A wildcard covers every constructor by
+/// definition, so `uncovered_constructors` returns before its walk.
+def match_has_wildcard_case (cases : List MatchCase) : Bool :=
+    match cases {
+        List.empty => false,
+        List.cons hd rest =>
+            match hd {
+                MatchCase.mc name _ _ _ =>
+                    if match_is_wildcard_name name then true else match_has_wildcard_case rest,
+            },
+    }
+
+/// Whether the case named `name` covers the constructor `cname` -- compared
+/// by BARE name, because `InductConstructor.mk`'s own `NamePath` is never
+/// type-prefixed while a written case names only the last segment
+/// (`constructor_bare_name`). A `_` case never reaches here (the
+/// short-circuit above); the parser's `""` bare-field-pattern placeholder
+/// matches nothing, which is over-reporting in the safe direction --
+/// deliberately the OPPOSITE of `find_inductive_for_cases_by_constructor`'s
+/// treatment of `""`, where the question is which name to scan BY, not what
+/// is covered.
+def case_name_covers (name : Identifier) (cname : NamePath) : Bool :=
+    id_eq name (constructor_bare_name cname)
+
+def case_names_cover_constructor (cases : List MatchCase) (cname : NamePath) : Bool :=
+    match cases {
+        List.empty => false,
+        List.cons hd rest =>
+            match hd {
+                MatchCase.mc name _ _ _ =>
+                    if case_name_covers name cname then true
+                    else case_names_cover_constructor rest cname,
+            },
+    }
+
+def missing_constructors_go (cases : List MatchCase) (ctors : List InductConstructor) (acc : List NamePath) : List NamePath :=
+    match ctors {
+        List.empty => list_reverse acc,
+        List.cons ctor rest =>
+            match ctor {
+                InductConstructor.mk cname _params _typ =>
+                    if case_names_cover_constructor cases cname
+                    then missing_constructors_go cases rest acc
+                    else missing_constructors_go cases rest (List.cons cname acc),
+            },
+    }
+
+/// `ind`'s constructors that no case of `cases` covers, in declaration order;
+/// empty when a `_` case is present.
+///
+/// An inductive with NO constructors (`Void`, the primitives, the synthetic
+/// `Type`/`Prop`/`Sort`/`Pred`) has nothing to cover, so this is vacuously
+/// empty and every match on one passes. Do NOT invert that into "0
+/// constructors requires an empty match" -- that rule is the hazard; this one
+/// needs no special case for them precisely because it is phrased as "every
+/// constructor is covered".
+def uncovered_constructors (cases : List MatchCase) (ind : Inductive) : List NamePath :=
+    if match_has_wildcard_case cases
+    then List.empty
+    else missing_constructors_go cases (inductive_constructors ind) List.empty
+
+/// The rule. `maybe_ind = Option.none` PASSES, and that is the honest hole:
+/// the scrutinee's type could not be resolved, which is frequent and genuine,
+/// and rejecting it would red the corpus at scale while STILL being unsound
+/// (it would reject provably exhaustive matches the resolver missed). Phase
+/// 2's per-tag runtime trap (lang/codegen/emit.mo) closes that hole at run
+/// time, on the tag actually computed, needing no static type at all.
+///
+/// A def marked `#[allow_incomplete_match "<reason>"]` opts out via
+/// `Scope.incomplete_match_ok` (set in lang/module.mo; see
+/// `has_incomplete_match_exemption`).
+def validate_match_coverage (cases : List MatchCase) (maybe_ind : Option Inductive) (scope : Scope) : Result TypeError Bool :=
+    if scope.incomplete_match_ok then ok true
+    else match maybe_ind {
+        Option.none => ok true,
+        Option.some ind =>
+            let missing : List NamePath := uncovered_constructors cases ind in
+            match missing {
+                List.empty => ok true,
+                List.cons _ _ => err (TypeError.custom (non_exhaustive_match_message ind missing)),
+            },
+    }
+
 /// Type check match cases — process all cases and unify their body types.
 def type_check_cases (cases : List MatchCase) (scrutinee_term : Term) (scrutinee_typ : Term) (maybe_ind : Option Inductive) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match type_check_cases_accum cases scrutinee_term scrutinee_typ maybe_ind expected_type scope local_types locals (Term.hole) List.empty {
@@ -1171,11 +1308,22 @@ def type_check_cases_accum (cases : List MatchCase) (scrutinee_term : Term) (scr
             },
         List.empty =>
             let reversed : List MatchCase := list_reverse acc_cases in
-            // Annotated local first -- a bare struct literal in `ok`'s
-            // argument position gets no expected type (see the matching
-            // comment in `type_check`'s `Term.hole` arm).
-            let acc : CaseAcc := { body_typ := acc_typ, cases := reversed } in
-            ok acc,
+            // Coverage is checked HERE rather than in
+            // `validate_match_constructors` (which runs before any arm is
+            // checked): only by now is every arm either a `_` or a real
+            // resolved constructor name, because
+            // `type_check_field_pattern_case` rewires a field-pattern arm
+            // into `MatchCase.mc resolved_name ... Option.none`. That is also
+            // what makes a field pattern cover its constructor for free.
+            match validate_match_coverage reversed maybe_ind scope {
+                err e => err e,
+                ok _ =>
+                    // Annotated local first -- a bare struct literal in `ok`'s
+                    // argument position gets no expected type (see the matching
+                    // comment in `type_check`'s `Term.hole` arm).
+                    let acc : CaseAcc := { body_typ := acc_typ, cases := reversed } in
+                    ok acc,
+            },
     }
 
 /// Type check a single match case arm. A `field_pattern: Option.some`
@@ -4004,9 +4152,9 @@ def extract_pi_ret_explicit (f_term : Term) (a_term : Term) (f_typ : Term) (a_ty
                 let pi_subst : List (Pair Identifier Term) := solve_typevars scope pi_arg a_typ List.empty in
                 ok (mk_typed app_term (subst_typevars_term pi_ret pi_subst)),
         // Unreachable in practice -- the dispatcher above hands this
-        // function only `Term.pi` -- but a match with no catch-all is a
-        // silent hole in a language with no exhaustiveness checking, so
-        // the old fallback stays.
+        // function only `Term.pi` -- but this match is over the full
+        // `Term`, so the fallback stays rather than enumerating 14 arms
+        // that could never be taken.
         _ => extract_non_pi_ret f_term a_term expected_type scope,
     }
 
@@ -4275,9 +4423,10 @@ def type_check_cubical (c : Cubical) (expected_type : Term) (scope : Scope)
     if Bool.not (I64.beq (List.length c.args) want) then
         err (TypeError.custom (cubical_arity_message c.prim want (List.length c.args)))
     else
-        // Every primitive gets an explicit arm: with no exhaustiveness
-        // checking, a `_ =>` here would let a future primitive silently
-        // fall into a rule that answers a dimension question about it.
+        // Every primitive gets an explicit arm: a `_ =>` here would
+        // DEFEAT the coverage check (`validate_match_coverage`) and let a
+        // future primitive fall silently into a rule that answers a
+        // dimension question about it.
         match c.prim {
             CubicalPrim.pathp => type_check_pathp c.args expected_type scope local_types locals,
             CubicalPrim.transp => type_check_transp c.args expected_type scope local_types locals,
@@ -4643,8 +4792,9 @@ def type_check_pathp_endpoints (line : Term) (a_left : Term) (a_right : Term) (s
 /// their own rules (`type_check_pathp`, `type_check_transp`,
 /// `type_check_hcomp`) because each result depends on an ARGUMENT (the
 /// line, or the type being composed in), which no prim-keyed table can
-/// state -- but the rows exist all the same: with no exhaustiveness
-/// checking a missing arm is a silent future crash, not a compile error.
+/// state -- but the rows exist all the same: they are what makes a
+/// missing arm a compile error rather than a silent future crash
+/// (`validate_match_coverage`, `lang/src/typecheck/infer.mo`).
 def cubical_result_type (prim : CubicalPrim) : Term := match prim {
     CubicalPrim.interval => sort_n 1,
     CubicalPrim.i0 => cub_interval,
@@ -5611,6 +5761,7 @@ def box_scope : Scope := {
     module_id := box_module_path,
     scope := scope_data_add_inductive scope_data_empty box_inductive,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 #[test]
@@ -5706,6 +5857,7 @@ def point_scope : Scope := {
     module_id := point_module_path,
     scope := scope_data_add_inductive scope_data_empty point_inductive,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 def point_type_ref : Term := Term.var sentinel (DebugName.named (Identifier.id "Point"))
@@ -5981,6 +6133,7 @@ def solo_scope : Scope := {
     module_id := solo_module_path,
     scope := scope_data_add_inductive scope_data_empty solo_inductive,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 def solo_mk_var : Term := Term.var sentinel (DebugName.named (Identifier.id "mk"))
@@ -6103,6 +6256,7 @@ def scale_scope : Scope := {
     module_id := scale_module_path,
     scope := build_scope_def scale_def scale_module_path scope_data_empty,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 def scale_var : Term := Term.var sentinel (DebugName.named (Identifier.id "scale"))
@@ -6340,6 +6494,7 @@ def wrap_scope : Scope := {
     module_id := wrap_module_path,
     scope := scope_data_add_inductive scope_data_empty wrap_inductive,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 def wrap_local_types : List Term := List.cons (Term.var sentinel (DebugName.named (Identifier.id "Wrap"))) empty_local_types
@@ -6377,6 +6532,7 @@ def pi_ret_test_scope : Scope := {
     module_id := ModulePath.mp (List.cons (Identifier.id "PiRetTest") List.empty),
     scope := scope_data_empty,
     parent := Option.none,
+    incomplete_match_ok := false,
 }
 
 /// `FromListLiteral.cons`'s promoted signature, exactly as

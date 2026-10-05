@@ -701,7 +701,7 @@ def compile_test_driver_with (loaded : LoadedModules) (driver_decls : List Decl)
                     // exists to fix.
                     let target_mp : ModulePath := match get_loaded_main loaded { ModuleInfo.mk mp_ _ _ => mp_ };
                     let scope_data : ScopeData := build_scope_from_decls target_mp dict_param_spliced;
-                    let scope : Scope := { module_id := target_mp, scope := scope_data, parent := Option.none };
+                    let scope : Scope := { module_id := target_mp, scope := scope_data, parent := Option.none, incomplete_match_ok := false };
                     let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
                     // Same pre-elaborate struct-literal desugaring as the
                     // compile pipeline (`compile_loaded_modules_to_ir_with_
