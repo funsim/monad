@@ -111,7 +111,9 @@ monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--verbose/-v] [
         table has one target anyway -- src/main.mo, named after the mote --
         and a library mote that declares none and has no src/main.mo is
         refused rather than guessed at.
-        `--bin <name>` picks one when a mote declares several [[bin]] targets.
+        `--bin <name>` picks one when several of a mote's [[bin]] targets
+        exist on disk -- which is what the refusal above counts, rather than
+        what the manifest declares.
         With NO <path>, builds the mote containing the working directory --
         the same default `check` and `test` have. `monad build` and
         `monad build .` are one code path.

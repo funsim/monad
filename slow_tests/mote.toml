@@ -1,5 +1,7 @@
-# Test-only mote: no lib or bin target, just #[test] defs that are too
+# Test-only mote: nothing to build or ship, just #[test] defs that are too
 # expensive for the pre-commit sweep (they are ~91% of total test runtime).
+# It carries a `src/lib.mo` hub because every mote must name one target that
+# exists, not because anything imports it.
 # `monad test slow_tests` is what runs them.
 
 [mote]

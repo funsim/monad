@@ -1,10 +1,14 @@
 // The example mote's library root -- bare `use example` resolves here.
 //
 // Deliberately EMPTY: this mote is one module (`greet.mo`) holding one def
-// (`greet`) that nothing declares `pub` and nothing imports. It exists as
-// the smallest thing that is a mote -- a manifest, a `src/` tree, a
-// dependency edge -- which is what `docs/src/getting-started.md` points a
-// new reader at.
+// (`greet`), which `examples/test_mote.mo` imports by naming the MODULE
+// (`use example::greet {greet}`) rather than through this hub -- so there is
+// nothing for the hub to re-export. `greet` is not marked `pub`, and that
+// import still checks clean, which is the package-private rule not yet being
+// enforced across mote boundaries rather than a claim that it may cross. It
+// exists as the smallest thing that is a mote -- a manifest, a `src/` tree, a
+// dependency edge -- which is what `docs/src/getting-started.md` points a new
+// reader at.
 //
 // A re-export of `greet` would be the only line this file could carry, and
 // it would be re-exporting a name whose definition is a single

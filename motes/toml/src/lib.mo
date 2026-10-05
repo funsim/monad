@@ -2,9 +2,11 @@
 //
 // One module, so this hub is thin by construction: the `Toml.Value` a
 // parsed document is, the reader that produces it, and the two lookups a
-// caller walks the result with. `lang/src/mote.mo` is the load-bearing
-// consumer -- every `mote.toml` in this repo is read through it -- and
-// these five names are the whole of what it imports.
+// caller walks the result with. That is a surface for a consumer that does
+// not exist yet: the load-bearing one, `lang/src/mote.mo`, reaches past this
+// hub to `toml::toml` for the four `Toml.Value` constructors as well, so
+// these five names are a starting point and not the whole of what a manifest
+// reader needs.
 //
 // Small rather than a mirror, as `lang/src/lib.mo` argues: `Toml.to_string`
 // and the `Toml.insert_at_steps` assembler are reached by naming the

@@ -728,28 +728,48 @@ version = "0.1.0"
 
   /// Every declared path dependency must actually resolve -- this is what
   /// catches a `path = "../foo"` pointing at a directory with no manifest.
+  ///
+  /// The members come from the root manifest's `[workspace]`, not from a list
+  /// written here: a hardcoded list silently stops covering the motes added
+  /// after it was written, which is exactly what happened -- it named eight
+  /// while the workspace had grown to twenty-one, so thirteen members' edges
+  /// went unchecked and the comment claiming otherwise was false.
   #[test]
   fn test_repo_workspace_members_resolve_their_dependencies() {
     let root = repo_root();
-    // Every member that declares dependencies, the four this workspace
-    // gained included -- the whole point of the test is to catch a
-    // `path = "../x"` that points nowhere, and a manifest not in this list
-    // is a manifest the test does not check.
-    for member in [
-      "std",
-      "lang",
-      "cli",
-      "llvm",
-      "runtime",
-      "slow_tests",
-      "bench",
-      "motes/demo",
-    ] {
-      let dir = root.join(member);
+    let workspace = Manifest::parse(&root.join("mote.toml"))
+      .unwrap()
+      .workspace
+      .expect("the repo root is a virtual workspace");
+    let members = workspace.resolve_members(&root).unwrap();
+    assert!(
+      members.len() > 8,
+      "the workspace has grown past the list this test used to hardcode; \
+       got {} members",
+      members.len()
+    );
+
+    let mut checked = 0;
+    for dir in &members {
       let manifest = Manifest::parse(&dir.join("mote.toml")).unwrap();
-      Resolver::resolve(&manifest, &dir, None)
-        .unwrap_or_else(|e| panic!("{member}'s dependencies do not resolve: {e}"));
+      // A member declaring nothing has no edges to resolve, which is not a
+      // failure -- `init` and the leaf motes are legitimately dependency-free.
+      if manifest.dependencies.is_empty() && manifest.dev_dependencies.is_empty() {
+        continue;
+      }
+      Resolver::resolve(&manifest, dir, None).unwrap_or_else(|e| {
+        panic!(
+          "{}'s dependencies do not resolve: {e}",
+          dir.strip_prefix(&root).unwrap_or(dir).display()
+        )
+      });
+      checked += 1;
     }
+    assert!(
+      checked > 8,
+      "only {checked} members declared dependencies -- fewer than the old \
+       hardcoded list, so this test would be weaker than what it replaced"
+    );
   }
 
   #[test]
