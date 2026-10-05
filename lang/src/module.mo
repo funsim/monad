@@ -6299,6 +6299,38 @@ def test_field_pattern_monomorphic_read_is_unaffected : IO Bool := do {
     return (I64.beq (List.length diags) 0)
 }
 
+// --- An `if` condition's expected type ---------------------------------
+//
+// `type_check_if` (`lang/typecheck/infer.mo`) used to hand the condition
+// the KIND `Type` as its expected type under the name `bool_typ`. Nearly
+// every condition shape ignores an expectation, so only one shape could
+// see it: a field access, which desugars to a `match` whose arm type
+// `type_check_cases` unifies against it. These two rows are that shape and
+// its guard -- `Bool` is declared in the source because
+// `check_diags_of_source` builds its scope from the source alone.
+
+def if_cond_preamble : String :=
+    "type Bool { yes, no }\ntype T { t }\nstruct Flags { x : T, done : Bool }\n"
+
+def if_cond_src (row : String) : String := if_cond_preamble ++ row
+
+/// The reported shape: `if f.done` is ordinary code and must check. Before
+/// the fix this failed with "type mismatch: expected Bool, found Type".
+#[test]
+def test_if_condition_field_access_checks : IO Bool := do {
+    let diags : List String <- check_diags_of_source (if_cond_src "def ask (f : Flags) : T := if f.done then f.x else f.x") "probe";
+    return (I64.beq (List.length diags) 0 && diags_lack "found Type" diags)
+}
+
+/// The guard: the expectation is really `Bool`, so a condition of another
+/// type is still rejected. Without this the row above would also pass for
+/// a "fix" that passed `Term.hole` and checked nothing.
+#[test]
+def test_if_condition_non_bool_is_rejected : IO Bool := do {
+    let diags : List String <- check_diags_of_source (if_cond_src "def ask2 (f : Flags) : T := if f.x then f.x else f.x") "probe";
+    return (diags_contain "type mismatch" diags && I64.beq (List.length diags) 1)
+}
+
 // --- A field read through a NON-LOCAL subject ---------------------------
 //
 // `lower_path_ids` (`lang/parser/lower_parse.mo`) settles the "module-

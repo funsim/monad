@@ -154,6 +154,21 @@ pub type LowerError {
   /// be a bare missing arm, i.e. a non-exhaustive-match crash with no
   /// named cause.
   le_struct_lit_survived,
+  /// A float literal reached lowering: the eval IR has no way to carry
+  /// one. `IrLit.ir_float` exists and every consumer already has an arm
+  /// for it, but nothing can CONSTRUCT one -- the literal arrives as
+  /// text (`Literal.flt`) and the only text-to-float conversion in the
+  /// prelude is `F64.bits_of_string`, which answers with the bit pattern
+  /// as an `I64` for codegen to emit. Closing this needs a decision
+  /// about what the eval IR should hold (the bits, the text, or a real
+  /// `F64` behind a native that does not exist yet), which is why this
+  /// is a named diagnostic rather than a silent fall-through:
+  /// `lower_literal` is `#[partial]` and a missing arm took the LAST
+  /// one, so `def main : F64 := 1.5` reported a struct-literal error and
+  /// sent its reader to the wrong file entirely.
+  /// `plans/implementations/2026-09-26-external-mote-gaps-for-forge.md`,
+  /// Gap 5.
+  le_float_literal_unsupported,
 }
 
 /// Accumulates whole-program global discovery + lowering. See this
@@ -585,6 +600,8 @@ def lower_literal (ctx : LowerCtx) (l : Literal) (acc : LowerAcc) : Pair (Result
     // `Literal.char` now carries one -- straight through, no conversion.
     Literal.char c => lower_ok (CoreIr.lit (IrLit.ir_char c)) acc,
     Literal.num n suffix => lower_ok (CoreIr.lit (IrLit.ir_num n suffix)) acc,
+    // Named, not fallen through -- see `le_float_literal_unsupported`.
+    Literal.flt _text _suffix => lower_err LowerError.le_float_literal_unsupported acc,
     Literal.if_ cond then_ else_ => lower_if ctx cond then_ else_ acc,
     Literal.match_ value cases => lower_match ctx value cases acc,
     // Backstop, not codegen: see `le_struct_lit_survived`'s own doc

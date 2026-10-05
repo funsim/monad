@@ -26,7 +26,7 @@ use lang::scope {
 }
 use lib::typecheck::name_subst {name_subst_term}
 use lib::typecheck::levels {is_level_binder_kind}
-use lib::typecheck::subst {term_permute, term_subst}
+use lib::typecheck::subst {term_permute, term_shift, term_subst}
 use lib::typecheck::unify {unify, unify_structural}
 use std::list {List.length}
 
@@ -637,8 +637,19 @@ def type_check_lit (value : Literal) (expected_type : Term) (scope : Scope) (loc
     }
 
 /// Type check an if expression.
+///
+/// The condition's expected type is `Bool`, spelled the way the parser
+/// spells a type reference. It used to be `Term.sort (concrete 1)` under
+/// the name `bool_typ` -- the KIND `Type`, not the type `Bool`. Most
+/// condition shapes never consult an expectation, so that went unnoticed
+/// until one did: a field access desugars to a `match`, and
+/// `type_check_cases` unifies the arm's real type against it, so
+/// `if f.done then ...` failed with "expected Bool, found Type" (and,
+/// before that unification existed, elaborated to a field read at index 0
+/// -- the segfault in `plans/implementations/2026-10-04-struct-field-
+/// access-as-if-cond-segfaults-nonzero-index.md`).
 def type_check_if (one : Term) (two : Term) (three : Term) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
-    let bool_typ : Term := Term.sort (SortLevel.concrete 1) in
+    let bool_typ : Term := named_type_ref "Bool" in
     match type_check one bool_typ scope local_types locals {
         ok cond_tt =>
             let cond_term : Term := cond_tt.term in
@@ -3615,19 +3626,30 @@ def type_check_sort_full (sort_term : Term) (level : SortLevel) (expected_type :
 ///
 /// Note: unlike `type_check_con`, `type_check_ntv` just below needs no
 /// equivalent treatment — it was never actually a stub needing this
-/// kind of check. Neither `Term.con` nor `Term.ntv` is ever produced by
-/// this codebase's own parser (`lang/parser.mo`) today; both exist for
-/// the lowering/pretty-printing pipeline (`lang/lower_core_ir.mo`,
-/// `lang/pretty.mo`) and hand-built test fixtures. This still closes
-/// real technical debt (`type_check_con` was silently accepting any
-/// arity/shape) and is exercised by this file's own `#[test]`s below,
-/// even though no corpus `.mo` file's `check` run currently reaches it.
+/// kind of check. Neither `Term.con` nor `Term.ntv` is produced by this
+/// codebase's own parser (`lang/parser.mo`); both exist for the
+/// lowering/pretty-printing pipeline (`lang/lower_core_ir.mo`,
+/// `lang/pretty.mo`) and hand-built test fixtures.
+///
+/// **But this def is on the compile path, and the comment that used to
+/// say otherwise is how a miscompile hid here for weeks.**
+/// `desugar_struct_lits_decls` (`lang/codegen/emit.mo`) rewrites every
+/// annotated struct literal to a `Term.con` and hands the per-arg check
+/// to the elaborate pass right after it — so every `monad build` of a
+/// program holding one reaches this def. The constructor lookup below
+/// used the wrong key until 2026-10-05, which failed elaboration for
+/// all of them; see the regression rows beside `point_scope`.
 def type_check_con (c : Con) (expected_type : Term) (scope : Scope) (local_types : List Term) (locals : LocalScope) : Result TypeError TypedTerm :=
     match c {
         mk cname typ_name num_args args =>
             match typ_name {
                 NamePath.npath ids =>
                     let full_name : NamePath := NamePath.npath (list_append ids (List.cons cname List.empty)) in
+                    // The lookup key is the BARE name: both
+                    // `build_scope_struct` and the parser register a
+                    // constructor under a one-segment path (`[mk]`), never
+                    // `[Type, mk]`. `full_name` is for the diagnostics only.
+                    let bare_con : NamePath := NamePath.npath (List.cons cname List.empty) in
                     match scope_find_inductive typ_name scope {
                         err _ =>
                             match check_con_args_untyped args scope local_types locals {
@@ -3635,7 +3657,7 @@ def type_check_con (c : Con) (expected_type : Term) (scope : Scope) (local_types
                                 err e => err e,
                             },
                         ok ind =>
-                            match find_constructor_in_inductive ind full_name {
+                            match find_constructor_in_inductive ind bare_con {
                                 Option.none => err (TypeError.unknown_constructor (NameRef.nnp full_name)),
                                 Option.some ctor =>
                                     match ctor {
@@ -4249,15 +4271,18 @@ def named_call_def_fold_app (f : Term) (args : List Term) : Term :=
     }
 
 /// Type check a struct-update expression (`{ base with field := value,
-/// ... }`) by DESUGARING it into a real `Term.con` — mirrors the Rust
-/// reference's own `desugar_struct_literals`'s `CoreLit::StructUpdate`
-/// arm (`core/src/core_check.rs`): read `base`'s own inferred type to
-/// find its registered struct fields, then for each declared field
-/// (in the struct's own declaration order) either use the update's own
-/// override value if present, or PROJECT it straight out of `base` via
-/// a single-case `match` (`struct_update_project_field` below) — the
-/// same field-access technique the reference uses (there, an inlined
-/// `Match`; here, `Literal.match_`).
+/// ... }`) by DESUGARING it into one single-case `match` over `base`
+/// whose arm rebuilds the struct as a real `Term.con`: every declared
+/// field is a binder of that arm, and each constructor argument is
+/// either the update's own override value or the binder for the field it
+/// did not touch.
+///
+/// The reference desugars the same thing per FIELD (`core/src/
+/// core_check.rs`'s `desugar_struct_literals`, which clones `base` into
+/// one projection `Match` per un-overridden field), and so did this --
+/// which is free when `base` is a variable and a repeated CALL when it is
+/// anything else. One match evaluates it once, which is what lets the
+/// base be a call at all (`struct_update_base`, `lang/parser.mo`).
 ///
 /// This used to leave a bare `Term.lit (Literal.struct_update base
 /// fields)` in place unconditionally — a term `lang/codegen/emit.mo`'s
@@ -4298,26 +4323,24 @@ def type_check_struct_update (base : Term) (fields : List StructLitField) (expec
                                             match ctor {
                                                 InductConstructor.mk con_name params _ =>
                                                     let n : I64 := List.length params in
-                                                    let names : List Identifier := struct_param_names params in
-                                                    let args : List (Option Term) :=
-                                                        struct_update_build_args params fields base_term con_name names n 0 in
-                                                    // Each override's value against the struct's own
-                                                    // DECLARED field type (`params`), not the blind
-                                                    // `Term.hole` pure-infer check this used to run
-                                                    // BEFORE the struct was even resolved -- `{ p with
-                                                    // x := 5 }` where `p.x : String` now actually
-                                                    // rejects the mismatch, mirroring
-                                                    // `type_check_struct_lit`'s own `check_con_args_
-                                                    // against_params` reuse for ordinary struct
-                                                    // literals (`args` already has the same `List
-                                                    // (Option Term)`-in-declared-order shape that
-                                                    // helper expects).
-                                                    match check_con_args_against_params args params scope local_types locals {
+                                                    let binders : List Identifier := struct_update_binders params in
+                                                    // Only the OVERRIDES are type-checked, each against
+                                                    // the struct's own DECLARED field type (`params`) --
+                                                    // `{ p with x := 5 }` where `p.x : String` rejects
+                                                    // the mismatch, the same `check_con_args_against_
+                                                    // params` reuse ordinary struct literals get. An
+                                                    // untouched field needs no check: it becomes a
+                                                    // binder of the wrapping match, typed by the
+                                                    // constructor itself.
+                                                    match check_con_args_against_params (struct_update_override_args params fields) params scope local_types locals {
                                                         err e => err e,
-                                                        ok elab_args =>
+                                                        ok elab_overrides =>
                                                             let mk_name : Identifier := struct_lit_con_name con_name in
-                                                            let c : Con := Con.mk mk_name typ_mp n elab_args in
-                                                            ok (mk_typed (Term.con c) base_typ),
+                                                            let args : List (Option Term) := struct_update_arm_args elab_overrides binders n 0 in
+                                                            let body : Term := Term.con (Con.mk mk_name typ_mp n args) in
+                                                            let no_fp : Option FieldPattern := Option.none in
+                                                            let case_ : MatchCase := MatchCase.mc mk_name binders body no_fp in
+                                                            ok (mk_typed (Term.lit (Literal.match_ base_term (List.cons case_ List.empty))) base_typ),
                                                     },
                                             }
                                     }
@@ -4334,54 +4357,70 @@ def type_check_struct_update (base : Term) (fields : List StructLitField) (expec
 def struct_update_fallback (base : Term) (fields : List StructLitField) (base_typ : Term) : Result TypeError TypedTerm :=
     ok (mk_typed (Term.lit (Literal.struct_update base fields)) base_typ)
 
-/// Bare field names of `params`, in declared order — used both as the
-/// projection `match`'s own bound-arg names and to walk the struct's
-/// declared field order when building `struct_update_build_args`.
+/// One slot per declared field: the update's own override term where it
+/// names that field, `Option.none` otherwise. `check_con_args_against_
+/// params` skips a `none`, so exactly the written values get checked.
 #[terminating]
-def struct_param_names (params : List Param) : List Identifier :=
-    match params {
-        List.empty => List.empty,
-        List.cons p rest =>
-            match p { Param.mk pname _ _ _ _ => List.cons pname (struct_param_names rest) }
-    }
-
-/// One arg per declared field, in order: the update's own override
-/// value if `fields` has one for that field name, otherwise a
-/// `struct_update_project_field` term that reads the unchanged value
-/// straight out of `base`.
-#[terminating]
-def struct_update_build_args (params : List Param) (fields : List StructLitField) (base : Term) (con_name : NamePath) (all_names : List Identifier) (total : I64) (idx : I64) : List (Option Term) :=
+def struct_update_override_args (params : List Param) (fields : List StructLitField) : List (Option Term) :=
     match params {
         List.empty => List.empty,
         List.cons p rest =>
             match p {
                 Param.mk pname _ _ _ _ =>
-                    let value : Term :=
-                        match struct_lit_find_field fields pname {
-                            Option.some override_term => override_term,
-                            Option.none => struct_update_project_field base con_name all_names total idx pname,
-                        } in
-                    List.cons (Option.some value) (struct_update_build_args rest fields base con_name all_names total (I64.add idx 1))
+                    List.cons (struct_lit_find_field fields pname) (struct_update_override_args rest fields)
             }
     }
 
-/// Build a single-case projection `match base { mk f1 f2 ... => f_idx }`
-/// term for a struct-update field that ISN'T being overridden — reads
-/// the unchanged value straight out of `base` via pattern match, the
-/// same technique the Rust reference's own struct-update desugaring
-/// uses (`core_check.rs`'s `desugar_struct_literals`, the `StructUpdate`
-/// arm, `CoreTerm::Bound((n - 1 - idx) as u32)`). `idx` is 0-based from
-/// the FRONT of the struct's declared field order; the de Bruijn index
-/// of that same field once all `total` fields are bound as this match
-/// arm's own args is `total - 1 - idx` (last-declared = innermost =
-/// index 0, this codebase's standard convention — see e.g.
-/// `lang/scope.mo`'s `add_constructors_go`).
-def struct_update_project_field (base : Term) (con_name : NamePath) (all_names : List Identifier) (total : I64) (idx : I64) (pname : Identifier) : Term :=
-    let bare_name : Identifier := struct_lit_con_name con_name in
-    let db_idx : I64 := (total - 1) - idx in
-    let no_fp : Option FieldPattern := Option.none in
-    let case_ : MatchCase := MatchCase.mc bare_name all_names (Term.var db_idx (DebugName.named pname)) no_fp in
-    Term.lit (Literal.match_ base (List.cons case_ List.empty))
+/// The wrapping match arm's binder names: one per declared field, PREFIXED.
+///
+/// The prefix is load-bearing. Codegen binds an arm's args by NAME
+/// (`bind_match_fields`, `lang/codegen/emit.mo`), so a binder spelled like
+/// the field would shadow a same-named outer variable inside the arm --
+/// and `{ r with status := status }`, a parameter passed to the field it
+/// is named after, is exactly how a struct update gets written. The
+/// override terms are shifted under these binders but keep their own
+/// names, so the shadowing would be silent and the value wrong. Same
+/// fixed-prefix trick as `lang/parser.mo`'s `__struct_param`.
+#[terminating]
+def struct_update_binders (params : List Param) : List Identifier :=
+    match params {
+        List.empty => List.empty,
+        List.cons p rest =>
+            match p {
+                Param.mk pname _ _ _ _ =>
+                    List.cons (Identifier.id (String.concat "__su_" (show_identifier pname))) (struct_update_binders rest)
+            }
+    }
+
+/// The arm's constructor args, in declared order: an overridden field's
+/// own elaborated term shifted under the arm's `total` binders, an
+/// untouched field's binder read straight back.
+///
+/// `(total - 1) - idx` is the de Bruijn index of the `idx`th declared
+/// field once all `total` of them are bound (last-declared = innermost =
+/// index 0, this codebase's convention -- see `lang/scope.mo`'s
+/// `add_constructors_go`).
+///
+/// ONE match over the base, not one per untouched field. The per-field
+/// shape re-evaluated `base` once per field it did not touch, which is
+/// free for a variable and is a repeated CALL for anything else -- and a
+/// call is what the base is now allowed to be (`struct_update_base`,
+/// `lang/parser.mo`).
+#[terminating]
+def struct_update_arm_args (overrides : List (Option Term)) (binders : List Identifier) (total : I64) (idx : I64) : List (Option Term) :=
+    match overrides {
+        List.empty => List.empty,
+        List.cons o orest =>
+            match binders {
+                List.empty => List.empty,
+                List.cons nm nrest =>
+                    let value : Term := match o {
+                        Option.some t => term_shift total t,
+                        Option.none => Term.var ((total - 1) - idx) (DebugName.named nm),
+                    } in
+                    List.cons (Option.some value) (struct_update_arm_args orest nrest total (I64.add idx 1))
+            }
+    }
 
 /// Individually type-check each present argument with no expected type
 /// (`Term.hole` — same "no information available" meaning `type_check`
@@ -4508,11 +4547,16 @@ def box_module_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "Box
 
 def box_ctor_path : NamePath := NamePath.npath (List.cons (Identifier.id "Box") List.empty)
 
-def box_ctor_full_path : NamePath := NamePath.npath (List.cons (Identifier.id "Box") (List.cons (Identifier.id "box") List.empty))
+/// A constructor's registered path is its BARE name -- what
+/// `build_scope_struct` (`lang/scope.mo`) and the parser both write.
+/// This fixture used to register `[Box, box]`, which only ever matched
+/// `type_check_con`'s own (wrong) `typ_name ++ [cname]` lookup key, so
+/// the two agreed with each other and with nothing else.
+def box_ctor_bare_path : NamePath := NamePath.npath (List.cons (Identifier.id "box") List.empty)
 
 def box_param : Param := Param.mk (Identifier.id "x") (Term.sort (SortLevel.concrete 2)) Multiplicity.many Option.none List.empty
 
-def box_constructor : InductConstructor := InductConstructor.mk box_ctor_full_path [box_param] (Term.sort (SortLevel.concrete 3))
+def box_constructor : InductConstructor := InductConstructor.mk box_ctor_bare_path [box_param] (Term.sort (SortLevel.concrete 3))
 
 def box_inductive : Inductive := Inductive.mk box_ctor_path List.empty (Term.sort (SortLevel.concrete 3)) [box_constructor] List.empty Visibility.package_private
 
@@ -4676,6 +4720,155 @@ def test_type_check_struct_lit_missing_field_ok : Bool :=
     let type_name : Option Term := Option.some point_type_ref in
     match type_check_struct_lit fields type_name Term.hole point_scope empty_local_types empty_locals {
         ok _ => true,
+        err _ => false,
+    }
+
+// --- Regression: the shape codegen's own struct-literal desugar produces ---
+//
+// `desugar_struct_lit_con` (`lang/codegen/emit.mo`) rewrites an annotated
+// literal to `Con.mk <bare ctor> <type path> n args` and leaves the per-arg
+// CHECK to the elaborate pass that follows it. That pass is `type_check_con`,
+// and it used to look the constructor up under `typ_name ++ [cname]` --
+// `[Point, mk]`, a path nothing registers -- so EVERY def holding an
+// annotated struct literal failed to elaborate, `elaborate_module_decls_
+// best_effort` kept it un-elaborated, and its field accesses reached codegen
+// as the parser's one-binder `field_access_chain` match, which
+// `bind_match_fields` reads at index 0. That is the whole of
+// `plans/implementations/2026-10-03-any-boxed-struct-reconstruction-corrupts-
+// sibling-field.md` and the `if s.bool_field` segfault filed beside it: a
+// non-zero field read silently returned field 0.
+
+/// The desugared shape itself must elaborate. Fails on the pre-fix lookup.
+#[test]
+def test_type_check_con_struct_mk_bare_path_ok : Bool :=
+    let arg : Term := Term.sort (SortLevel.concrete 1) in
+    let args : List (Option Term) := [Option.some arg, Option.some arg] in
+    let c : Con := Con.mk (Identifier.id "mk") point_type_path 2 args in
+    match type_check_con c Term.hole point_scope empty_local_types empty_locals {
+        ok _ => true,
+        err _ => false,
+    }
+
+/// The first case's binder count of a `match` sitting in one of a `Con`'s
+/// args, or -1 if nothing there is that shape. The number IS the bug: the
+/// parser builds one binder for `p.y`, and only elaboration expands it to
+/// the struct's declared field count, which is what makes `monad_get_field`
+/// read index 1 rather than 0.
+def con_first_arg_case_arity (t : Term) : I64 :=
+    match t {
+        Term.con c =>
+            match c {
+                Con.mk _ _ _ args =>
+                    first_filled_case_arity args,
+            },
+        _ => -1,
+    }
+
+/// The first FILLED slot's arity -- `struct_lit_build_args` leaves an
+/// omitted field as `Option.none`, so the interesting arg is rarely slot 0.
+def first_filled_case_arity (args : List (Option Term)) : I64 :=
+    match args {
+        List.cons a rest =>
+            match a {
+                Option.some inner => match_first_case_arity inner,
+                Option.none => first_filled_case_arity rest,
+            },
+        List.empty => -1,
+    }
+
+def match_first_case_arity (t : Term) : I64 :=
+    match t {
+        Term.lit l =>
+            match l {
+                Literal.match_ _ cases =>
+                    match cases {
+                        List.cons c _ => match c { MatchCase.mc _ cargs _ _ => List.length cargs },
+                        List.empty => -1,
+                    },
+                _ => -1,
+            },
+        _ => -1,
+    }
+
+/// A field read inside the desugared `Con` must come back EXPANDED to the
+/// struct's declared field count (2 for `Point`), not the single binder the
+/// parser wrote. Pre-fix this arity was 1 and the read compiled to field 0.
+#[test]
+def test_type_check_con_elaborates_a_field_access_arg : Bool :=
+    let subject : Term := Term.var 0 (DebugName.named (Identifier.id "p")) in
+    let read_y : Term := field_access_chain subject [Identifier.id "y"] in
+    // `y`'s slot filled, `x`'s left `Option.none` -- the sparse shape
+    // `struct_lit_build_args` produces for an omitted field, and the arity
+    // still has to be the struct's own 2.
+    let args : List (Option Term) := [Option.none, Option.some read_y] in
+    let c : Con := Con.mk (Identifier.id "mk") point_type_path 2 args in
+    let locals : LocalScope := prepend_typed_local_vars [Identifier.id "p"] [point_type_ref] empty_locals in
+    match type_check_con c Term.hole point_scope [point_type_ref] locals {
+        ok tt => I64.beq (con_first_arg_case_arity tt.term) 2,
+        err _ => false,
+    }
+
+// --- Regression: a struct update is ONE match over its base ---------
+//
+// The desugaring used to build one projection `match base { mk a b => b }`
+// per un-overridden field, cloning `base` into each -- free for a variable
+// and a repeated CALL for anything else, which is what the base is now
+// allowed to be. These rows pin the shape rather than a value: a single
+// match whose scrutinee is the base IS the "evaluated once" property, and
+// no program's output can show it.
+
+/// The scrutinee of the elaborated term, or `Option.none` if it is not a
+/// one-case match at all.
+def struct_update_scrutinee (t : Term) : Option Term :=
+    match t {
+        Term.lit l =>
+            match l {
+                Literal.match_ scrut cases =>
+                    match cases {
+                        List.cons _ rest =>
+                            match rest {
+                                List.empty => Option.some scrut,
+                                List.cons _ _ => Option.none,
+                            },
+                        List.empty => Option.none,
+                    },
+                _ => Option.none,
+            },
+        _ => Option.none,
+    }
+
+def point_update_term : Result TypeError TypedTerm :=
+    let subject : Term := Term.var 0 (DebugName.named (Identifier.id "p")) in
+    let override_ : StructLitField := StructLitField.mk (Identifier.id "x") (Term.sort (SortLevel.concrete 1)) in
+    let locals : LocalScope := prepend_typed_local_vars [Identifier.id "p"] [point_type_ref] empty_locals in
+    type_check_struct_update subject [override_] Term.hole point_scope [point_type_ref] locals
+
+/// Is this term the bound variable at `idx`?
+def term_is_bound_at (t : Term) (idx : I64) : Bool :=
+    match t {
+        Term.var i _dbg => I64.beq i idx,
+        _ => false,
+    }
+
+/// One match, and its scrutinee is the base -- `Point` has an untouched
+/// field (`y`), which is exactly what the old shape cloned the base for.
+#[test]
+def test_struct_update_is_one_match_over_the_base : Bool :=
+    match point_update_term {
+        ok tt =>
+            match struct_update_scrutinee tt.term {
+                Option.some scrut => term_is_bound_at scrut 0,
+                Option.none => false,
+            },
+        err _ => false,
+    }
+
+/// The arm binds one binder per declared field, so the untouched field can
+/// be read back from a binder instead of from a second look at the base.
+#[test]
+def test_struct_update_arm_binds_every_field : Bool :=
+    match point_update_term {
+        ok tt => I64.beq (match_first_case_arity tt.term) 2,
         err _ => false,
     }
 
@@ -4970,48 +5163,70 @@ def test_type_check_struct_update_bad_base_rejected : Bool :=
     }
 
 /// Regression test for the struct-update codegen crash fix: the checked
-/// term must be a real `Term.con` (the SAME representation
-/// `type_check_struct_lit` already produces, which
-/// `lang/codegen/emit.mo`'s `compile_db_term_ir`/`compile_con_ir`
-/// already compile correctly) — NOT a bare `Term.lit
-/// (Literal.struct_update ...)`, which `compile_lit_ir` has no real
-/// codegen for. Before this fix, `type_check_struct_update` ALWAYS
-/// produced the latter.
+/// term must be something `lang/src/codegen/emit.mo` actually compiles --
+/// NOT a bare `Term.lit (Literal.struct_update ...)`, which
+/// `compile_lit_ir` has no real codegen for and which
+/// `type_check_struct_update` ALWAYS produced before that fix.
+///
+/// The shape is now one `match` over the base whose arm rebuilds the
+/// struct as a `Term.con`; it was a bare `Term.con` with a projection
+/// `match` per untouched field until the base stopped being restricted to
+/// a variable (see `test_struct_update_is_one_match_over_the_base`). Both
+/// shapes are codegen-proven; this row asks only that it is not the
+/// un-desugared literal.
 #[test]
-def test_type_check_struct_update_desugars_to_con : Bool :=
+def test_type_check_struct_update_desugars_for_codegen : Bool :=
     let f1 : StructLitField := StructLitField.mk (Identifier.id "x") (Term.sort (SortLevel.concrete 1)) in
     let fields : List StructLitField := List.cons f1 List.empty in
     match type_check_struct_update point_var fields Term.hole point_scope point_local_types empty_locals {
-        ok tt => match tt.term {
-            Term.con _ => true,
-            _ => false,
+        ok tt => match struct_update_arm_body tt.term {
+            Option.some body => match body { Term.con _ => true, _ => false },
+            Option.none => false,
         },
         err _ => false,
     }
 
-/// The overridden field (`x`) becomes the override's own value
-/// (arg 0, matching `point_params`' declared order `x`, `y`); the
-/// UNCHANGED field (`y`) becomes a projection `match` reading it back
-/// out of `base`, not the override value and not left blank.
+/// The overridden field (`x`) becomes the override's own value (arg 0,
+/// matching `point_params`' declared order `x`, `y`); the UNCHANGED field
+/// (`y`) comes back as the arm's own BINDER for it -- not the override
+/// value, and not left blank.
 #[test]
-def test_type_check_struct_update_unchanged_field_is_projection : Bool :=
+def test_type_check_struct_update_unchanged_field_is_its_binder : Bool :=
     let f1 : StructLitField := StructLitField.mk (Identifier.id "x") (Term.sort (SortLevel.concrete 1)) in
     let fields : List StructLitField := List.cons f1 List.empty in
     match type_check_struct_update point_var fields Term.hole point_scope point_local_types empty_locals {
-        ok tt => match tt.term {
-            Term.con c => match c {
-                Con.mk _name _typ_name _arity args => match args {
-                    List.cons x_arg rest => match rest {
-                        List.cons y_arg _ =>
-                            is_type_arg x_arg && is_match_arg y_arg,
+        ok tt => match struct_update_arm_body tt.term {
+            Option.some body => match body {
+                Term.con c => match c {
+                    Con.mk _name _typ_name _arity args => match args {
+                        List.cons x_arg rest => match rest {
+                            // `y` is the LAST declared field, so its
+                            // binder is the innermost one: index 0.
+                            List.cons y_arg _ => is_type_arg x_arg && is_bound_arg y_arg 0,
+                            List.empty => false,
+                        },
                         List.empty => false,
                     },
-                    List.empty => false,
                 },
+                _ => false,
             },
-            _ => false,
+            Option.none => false,
         },
         err _ => false,
+    }
+
+/// The body of the single arm of a desugared struct update.
+#[partial]
+def struct_update_arm_body (t : Term) : Option Term :=
+    match t {
+        Term.lit l => match l {
+            Literal.match_ _scrut cases => match cases {
+                List.cons c _ => match c { MatchCase.mc _n _a body _fp => Option.some body },
+                List.empty => Option.none,
+            },
+            _ => Option.none,
+        },
+        _ => Option.none,
     }
 
 #[partial]
@@ -5026,12 +5241,9 @@ def is_type_arg (arg : Option Term) : Bool :=
     }
 
 #[partial]
-def is_match_arg (arg : Option Term) : Bool :=
+def is_bound_arg (arg : Option Term) (idx : I64) : Bool :=
     match arg {
-        Option.some t => match t {
-            Term.lit l => match l { Literal.match_ _ _ => true, _ => false },
-            _ => false,
-        },
+        Option.some t => term_is_bound_at t idx,
         Option.none => false,
     }
 

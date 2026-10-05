@@ -257,6 +257,61 @@ def tool_config_in (dir : String) : String :=
     else if String.beq dir "/" then "/.monad/config.toml"
     else String.concat dir "/.monad/config.toml"
 
+/// The directories a mote's own declared targets live in: the `[lib]`
+/// root's, then each `[[bin]]`'s, deduplicated in that order.
+///
+/// This is what a bare `monad check`/`monad test` covers, and it covers it
+/// because the alternative was the whole subtree. Walking the mote's
+/// DIRECTORY swept every `*.mo` under it, and `.mo` is also GNU gettext's
+/// extension -- so in any project that has run `devenv shell` (which
+/// materializes `.devenv/bash-bash/share/locale/*/LC_MESSAGES/bash.mo`),
+/// `monad test` reported 85 parse failures beside the 2 real files
+/// (`plans/implementations/2026-10-04-monad-test-no-path-globs-unrelated-
+/// dot-mo-files.md`). A declared target is the mote saying where its own
+/// sources are; nothing else under the directory is its business.
+///
+/// `fallback` (the mote's own directory) is the answer for an inline mote,
+/// which declares no targets at all. An explicit path argument never
+/// reaches here -- `monad test .` still means that directory, literally.
+pub def Mote.target_roots (m : MoteManifest) (fallback : String) : List String :=
+    let from_lib : List String := match m.lib_path {
+        Option.some p => List.cons (Mote.target_root_of p) List.empty,
+        Option.none => List.empty,
+    } in
+    let roots : List String := Mote.push_unique_roots (Mote.bin_target_roots m.bins) from_lib in
+    if List.is_empty roots then List.cons fallback List.empty else roots
+
+/// A target FILE's directory, with the mote root spelled the way a path
+/// expander wants it: `src/lib.mo` -> `src`, but a target at the mote root
+/// (`main.mo`) -> `.`, not `""`.
+def Mote.target_root_of (path : String) : String :=
+    let d : String := raw_parent_dir path in
+    if String.beq d "" then "." else d
+
+def Mote.bin_target_roots (bs : List BinTarget) : List String :=
+    match bs {
+        List.empty => List.empty,
+        List.cons b rest => List.cons (Mote.target_root_of (BinTarget.target_path b)) (Mote.bin_target_roots rest),
+    }
+
+/// Append each of `more` to `acc` unless it is already there -- declaration
+/// order preserved, so the `[lib]` root stays first. Hand-rolled rather
+/// than a generic fold: `acc` is the small list and the comparison is
+/// `String.beq`.
+def Mote.push_unique_roots (more : List String) (acc : List String) : List String :=
+    match more {
+        List.empty => acc,
+        List.cons r rest =>
+            let next : List String := if Mote.roots_contain acc r then acc else List.append acc (List.cons r List.empty) in
+            Mote.push_unique_roots rest next,
+    }
+
+def Mote.roots_contain (roots : List String) (wanted : String) : Bool :=
+    match roots {
+        List.empty => false,
+        List.cons r rest => if String.beq r wanted then true else Mote.roots_contain rest wanted,
+    }
+
 /// The parent of `dir`, keeping an absolute path absolute.
 ///
 /// `raw_parent_dir "/home"` is `""` -- a root child's parent is the ROOT,
@@ -1116,6 +1171,86 @@ def Mote.manifest_of_attr (dir : String) (attr : Attribute) : Option MoteManifes
 
 def mote_manifest_fixture : String :=
   "# a comment\n[mote]\nname = \"lang\"\nversion = \"0.1.2\"\n\n[lib]\npath = \"src/lib.mo\"\n\n[dependencies.init]\npath = \"../init\"\n\n[dependencies.std]\npath = \"../std\"\n"
+
+// --- What a bare `monad check`/`monad test` covers ------------------
+//
+// `Mote.target_roots` answers it from the manifest's own declared targets.
+// The rows below are the three manifest shapes that exist: a declared
+// `[lib]`, a declared `[[bin]]` somewhere other than `src/`, and a
+// manifest that declares neither and takes the conventional defaults. The
+// fourth shape -- an inline mote, which declares no targets at all -- is
+// the fallback row.
+//
+// A list of one string per row, compared by joining: `List.length` plus a
+// `String.beq` per element reads worse than one comparison of the rendered
+// list, and the rendering is what a reader can check against a manifest.
+
+def roots_joined (roots : List String) : String :=
+    match roots {
+        List.empty => "",
+        List.cons r rest =>
+            if List.is_empty rest then r else String.concat r (String.concat "," (roots_joined rest)),
+    }
+
+/// A manifest that declares no targets at all, so the conventional
+/// defaults are what `Mote.target_roots` has to work from.
+def no_target_manifest_fixture : String :=
+  "[mote]\nname = \"plain\"\nversion = \"0.1.0\"\n"
+
+/// A declared `[lib] path = "src/lib.mo"` means the mote's sources are
+/// under `src`, not under the whole mote directory.
+#[test]
+def test_target_roots_of_a_lib_manifest : Bool :=
+    match Mote.parse_manifest "lang" mote_manifest_fixture {
+        Option.none => false,
+        Option.some m => String.beq (roots_joined (Mote.target_roots m "lang")) "lang/src",
+    }
+
+/// A `[[bin]]` outside `src/` is covered where it actually lives -- the
+/// row that fails if the roots are hardcoded to `src`.
+/// `two_bin_manifest_fixture` declares `src/main.mo` and
+/// `src/bin/tool.mo`, so both roots appear and neither is invented.
+#[test]
+def test_target_roots_of_a_bin_outside_src : Bool :=
+    match Mote.parse_manifest "cli" two_bin_manifest_fixture {
+        Option.none => false,
+        Option.some m => String.beq (roots_joined (Mote.target_roots m "cli")) "cli/src,cli/src/bin",
+    }
+
+/// A `[lib]` and a `[[bin]]` in the same directory (this repository's own
+/// `cli/mote.toml`) is ONE root: the dedup is what keeps the same
+/// directory from being walked twice.
+#[test]
+def test_target_roots_dedup_a_shared_directory : Bool :=
+    match Mote.parse_manifest "cli" bin_manifest_fixture {
+        Option.none => false,
+        Option.some m => String.beq (roots_joined (Mote.target_roots m "cli")) "cli/src",
+    }
+
+/// A manifest that declares no targets still gets the conventional ones
+/// (`src/lib.mo` and `src/main.mo`), which share that one root.
+#[test]
+def test_target_roots_of_the_conventional_defaults : Bool :=
+    match Mote.parse_manifest "plain" no_target_manifest_fixture {
+        Option.none => false,
+        Option.some m => String.beq (roots_joined (Mote.target_roots m "plain")) "plain/src",
+    }
+
+/// A target at the mote root has no directory component, and `""` is not a
+/// path a walk can be given -- `.` is.
+#[test]
+def test_target_roots_of_a_root_level_target : Bool :=
+    String.beq (Mote.target_root_of "main.mo") "."
+
+/// An inline mote declares no targets at all, so the fallback (the mote's
+/// own directory) is the answer rather than an empty list -- an empty one
+/// would make a bare command cover nothing and report success.
+#[test]
+def test_target_roots_falls_back_for_an_inline_mote : Bool :=
+    match Mote.manifest_of_attr "examples" attr_mote_self_hosted {
+        Option.none => false,
+        Option.some m => String.beq (roots_joined (Mote.target_roots m "examples")) "examples",
+    }
 
 #[test]
 def test_parse_manifest_reads_name_and_deps : Bool :=

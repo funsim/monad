@@ -484,7 +484,10 @@ def list_i64_len (xs : List I64) : I64 := match xs {
 }
 
 #[partial]
-def llvm_value_type (val : LLVMValue) : LLVMType := match val {
+/// `pub`: `lang/codegen/emit.mo`'s `terminal_ret_is_raw_i1` asks this same
+/// question of a value it is about to `ret` -- see that def for why the
+/// term-shape test it replaces could not answer it.
+pub def llvm_value_type (val : LLVMValue) : LLVMType := match val {
     int_ x => i64_,
     int32_ x => i32_,
     bool_ x => i1_,

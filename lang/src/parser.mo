@@ -5644,8 +5644,30 @@ def struct_lit_parser (input: String) : ParseResult ParseTerm :=
 #[partial]
 def struct_lit_open (r : ParseResult String) : ParseResult ParseTerm :=
     match r {
-        success rem _ => struct_update_try (variable (skip_docstrings (skip_spaces rem))) rem,
+        success rem _ => struct_update_try (struct_update_base (skip_docstrings (skip_spaces rem))) rem,
         fail e => fail e
+    }
+
+/// The base of a `{ base with field := v }`: a bare identifier, or a
+/// PARENTHESIZED expression.
+///
+/// `variable` alone was the whole rule, so the base could only ever be a
+/// name -- `{ (Response.ok_text msg) with status := 400u16 }` did not fail
+/// with a message about struct updates, it failed with
+/// "did not fully parse", which reads like a paren-counting mistake
+/// anywhere else in the file
+/// (`plans/implementations/2026-10-04-struct-update-paren-base-fails-to-
+/// parse.md`). Parens are the only way a call result can appear here at
+/// all, since an unparenthesized application would swallow the `with`.
+///
+/// A failure here still backtracks: `struct_update_try`'s `fail` arm
+/// re-parses from the `{` as an ordinary struct literal, which is what
+/// keeps `{ x := 1 }` (whose first field name parses as a variable) working.
+#[partial]
+def struct_update_base (input : String) : ParseResult ParseTerm :=
+    match variable input {
+        success rem base => success rem base,
+        fail _ => paren_expr input,
     }
 
 /// `{ base with field := value, ... }` is tried FIRST (mirrors the
@@ -8607,6 +8629,53 @@ def test_struct_update_backtrack_to_plain_literal : Bool :=
             match out.kind {
                 ParseTermKind.lit l => match l {
                     ParseLiteral.struct_lit fields _ => I64.beq (List.length fields) 2,
+                    _ => false
+                },
+                _ => false
+            },
+        fail _ => false
+    }
+
+/// The base spellings the grammar has to accept, and the reason they are
+/// not obvious: `variable` alone WAS the whole rule, so the base could only
+/// ever be a name. Parens are the only way a call result can be one --
+/// an unparenthesized application would swallow the `with` -- which makes
+/// `{ (Response.ok_text msg) with status := 400u16 }` the shape the fix
+/// exists for. Mirrors `core/src/parser.rs`'s `parse_struct_update_base`;
+/// the two must not drift on which spellings exist.
+#[test]
+def test_struct_update_paren_base : Bool :=
+    let ctx : ParseLowerCtx := { binders := List.empty, locs := Option.none } in
+    match expression "{ (p1) with x := 10 }" {
+        success rem out =>
+            String.beq rem "" &&
+            match out.kind {
+                ParseTermKind.lit l => match l {
+                    ParseLiteral.struct_update _base fields => I64.beq (List.length fields) 1,
+                    _ => false
+                },
+                _ => false
+            },
+        fail _ => false
+    }
+
+/// The shape the whole widening is for -- and the one that also has to reach
+/// lowering with the call intact, not as the call's head.
+#[test]
+def test_struct_update_call_base : Bool :=
+    let msg : Identifier := Identifier.id "msg" in
+    let ctx : ParseLowerCtx := { binders := List.cons msg List.empty, locs := Option.none } in
+    match expression "{ (Response.ok_text msg) with status := 2 }" {
+        success rem out =>
+            String.beq rem "" &&
+            match out.kind {
+                ParseTermKind.lit l => match l {
+                    ParseLiteral.struct_update base fields =>
+                        I64.beq (List.length fields) 1 &&
+                        match base.kind {
+                            ParseTermKind.app _ _ => true,
+                            _ => false
+                        },
                     _ => false
                 },
                 _ => false

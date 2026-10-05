@@ -19,7 +19,7 @@ use lang::types {
 use llvm::ir {
   DbgLoc, LLVMBasicBlock, LLVMDeclaration, LLVMFunction, LLVMGlobal,
   LLVMInstruction, LLVMModule, LLVMType, LLVMValue, NativeOp, ParamPair,
-  PhiPair, emit_module, llvm_symbol_ref, show_llvm_type
+  PhiPair, emit_module, llvm_symbol_ref, llvm_value_type, show_llvm_type
 }
 use runtime::natives {runtime_native_functions}
 use lang::codegen::validate {
@@ -1002,7 +1002,14 @@ def materialize_void (c : CodegenCtx) (v : LLVMValue) : MaterializedVal := match
 /// then map 1/0 -> Bool.true/false's own tags (1/2) the same way.
 #[partial]
 def materialize_native_bool_arg (c : CodegenCtx) (t : Term) (v : LLVMValue) : MaterializedVal :=
-    if term_is_native_bool_op t
+    box_raw_i1_if c (term_is_native_bool_op t) v
+
+/// The boxing itself, under a decision the caller has already made --
+/// `materialize_native_bool_arg` decides from the TERM, and
+/// `materialize_terminal_ret` from the emitted value (`terminal_ret_is_raw_i1`).
+#[partial]
+def box_raw_i1_if (c : CodegenCtx) (needs_boxing : Bool) (v : LLVMValue) : MaterializedVal :=
+    if needs_boxing
     then
         match fresh_temp c {
             CtxStrPair.mk ctx1 zext_temp =>
@@ -3825,6 +3832,66 @@ def emit_type_head_is_io_go (t : Term) : Bool := match t {
     _ => false,
 }
 
+/// Is this def's declared return type `IO Unit`?
+///
+/// `unwrap_io_return_blocks` reads the `IO` box's field 0 and returns it,
+/// which is right for an `IO I64` and wrong for an `IO Unit`: `Unit` is its
+/// own 0-field allocation (`alloc_constructor 0 0`, below), so the pointer
+/// to it became the process's exit code -- 144 here, 96 in another devenv,
+/// never 0. Since `main : IO Unit` is what nearly every program declares,
+/// that made a successful exit unreliable for the common case
+/// (`plans/implementations/2026-10-04-main-unit-return-exits-garbage-code.md`).
+#[partial]
+pub def emit_type_is_io_unit (t : Term) : Bool :=
+    emit_type_is_io_unit_go (strip_all_leading_binders t)
+
+#[partial]
+def emit_type_is_io_unit_go (t : Term) : Bool := match t {
+    Term.app f arg => emit_type_head_is_io_go f && emit_term_head_name_is arg "Unit",
+    _ => false,
+}
+
+#[partial]
+def emit_term_head_name_is (t : Term) (wanted : String) : Bool := match t {
+    Term.var _idx dbg => match dbg {
+        DebugName.named id_ => String.beq (symbol_identifier id_) wanted,
+        DebugName.unnamed => false,
+    },
+    Term.app f _arg => emit_term_head_name_is f wanted,
+    Term.ctx _loc inner => emit_term_head_name_is inner wanted,
+    _ => false,
+}
+
+/// `ret 0` in every block that ends in a bare `ret`, for an `IO Unit`
+/// `main`. The sibling of `unwrap_io_return_blocks`, and the alternative to
+/// it rather than an addition: there is no payload worth reading here, only
+/// a `Unit` pointer nobody can use as an exit code. The effects already
+/// happened -- the value being discarded is the result of evaluating them,
+/// not the evaluation.
+#[partial]
+def zero_return_blocks (blocks : List LLVMBasicBlock) : List LLVMBasicBlock := match blocks {
+    List.empty => List.empty,
+    List.cons b rest =>
+        match b {
+            LLVMBasicBlock.mk label instrs =>
+                List.cons (LLVMBasicBlock.mk label (zero_return_instrs instrs)) (zero_return_blocks rest),
+        },
+}
+
+#[partial]
+def zero_return_instrs (instrs : List LLVMInstruction) : List LLVMInstruction := match instrs {
+    List.empty => List.empty,
+    List.cons i rest =>
+        match rest {
+            List.empty =>
+                match i {
+                    LLVMInstruction.ret _v => List.cons (LLVMInstruction.ret (LLVMValue.int_ 0)) List.empty,
+                    _ => List.cons i List.empty,
+                },
+            List.cons _ _ => List.cons i (zero_return_instrs rest),
+        },
+}
+
 /// Fixes a genuine, previously-undiagnosed native-codegen bug: a `main`
 /// declared `IO _` (e.g. `def main : IO I64 := IO.io 5`) used to have
 /// its RAW returned pointer (a boxed `IO.io` constructor VALUE, from
@@ -4395,16 +4462,56 @@ pub struct TerminalBlocks {
 /// of them therefore call this BEFORE `retarget_terminal_ret`, which
 /// must find (and rewrite) the post-boxing `ret <boxed>`.
 ///
-/// Residual gap, noted not fixed: a body shaped
-/// `let x := <branching> in I64.beq ...` reaches the same hole with a
-/// let-shaped body `term_is_native_bool_op` answers `false` to. Nothing
-/// in the corpus hits it today; fixing blind would mean guessing.
+/// That residual gap -- a body shaped `let x := <branching> in I64.beq
+/// ...`, which `term_is_native_bool_op` answers `false` to -- is closed by
+/// `terminal_ret_is_raw_i1` just below, which asks the emitted VALUE
+/// instead of the term.
+
+/// Does the block closing with `ret target_val` compute that value with an
+/// i1-producing instruction?
+///
+/// This is the residual gap the comment above used to record as unfixable
+/// without guessing: a body shaped `let x := <branching> in I64.beq ...`
+/// is an application, not a comparison, so `term_is_native_bool_op` says
+/// `false` and nothing boxes the raw `i1` the comparison still left in the
+/// terminal block. Forge hit it (`I64.beq (archetype_count
+/// fresh.storage.archetypes) 1`) and `llc` rejected it: `'%tN' defined
+/// with type 'i1' but expected 'i64'`. The term shape cannot answer the
+/// question; the VALUE can, and the value is the only thing `ret i64`
+/// objects to.
+#[partial]
+def terminal_ret_is_raw_i1 (blocks : List LLVMBasicBlock) (target_val : LLVMValue) : Bool := match blocks {
+    List.empty => false,
+    List.cons b rest =>
+        match b {
+            LLVMBasicBlock.mk _label instrs =>
+                if block_ends_with_ret_of instrs target_val
+                then instrs_assign_raw_i1 instrs target_val
+                else terminal_ret_is_raw_i1 rest target_val,
+        },
+}
+
+#[partial]
+def instrs_assign_raw_i1 (instrs : List LLVMInstruction) (target_val : LLVMValue) : Bool := match instrs {
+    List.empty => false,
+    List.cons i rest =>
+        if instr_assigns_raw_i1 i target_val then true else instrs_assign_raw_i1 rest target_val,
+}
+
+#[partial]
+def instr_assigns_raw_i1 (i : LLVMInstruction) (target_val : LLVMValue) : Bool := match i {
+    LLVMInstruction.assign name v =>
+        llvm_value_eq (LLVMValue.var_ name) target_val
+            && String.beq (show_llvm_type (llvm_value_type v)) "i1",
+    _ => false,
+}
+
 #[partial]
 def materialize_terminal_ret (already_terminated : Bool) (ctx : CodegenCtx) (term_ : Term) (val : LLVMValue) (blocks : List LLVMBasicBlock) : TerminalBlocks :=
     if not already_terminated
     then { ctx := ctx, blocks := blocks, val := val }
     else
-        match materialize_native_bool_arg ctx term_ val {
+        match box_raw_i1_if ctx (term_is_native_bool_op term_ || terminal_ret_is_raw_i1 blocks val) val {
             { ctx := ctx1, instrs := box_instrs, val := boxed } =>
                 match box_instrs {
                     List.empty => { ctx := ctx, blocks := blocks, val := val },
@@ -4477,7 +4584,10 @@ def compile_db_def_ir_body (c : CodegenCtx) (fn_name : String) (typ : Term) (ter
         // See `unwrap_io_return_blocks`'s own doc comment: an `IO`-typed
         // `main` needs its returned value's payload unwrapped before it
         // reaches the C runtime's plain-`int`-returning `main()`.
-        let needs_io_unwrap := ends_with_main fn_name && emit_type_head_is_io typ in
+        // `IO Unit` takes the `ret 0` route, every other `IO A` the unwrap
+        // -- see `emit_type_is_io_unit`.
+        let main_io_unit := ends_with_main fn_name && emit_type_is_io_unit typ in
+        let needs_io_unwrap := ends_with_main fn_name && emit_type_head_is_io typ && Bool.not main_io_unit in
         match compile_db_term_ir c0 body {
             CompileResult.ok ctx_r instrs_r val_r blocks_r funcs_r globals_r =>
                 match val_r {
@@ -4514,7 +4624,7 @@ def compile_db_def_ir_body (c : CodegenCtx) (fn_name : String) (typ : Term) (ter
                                 // is already used.
                                 let tco_ctx := tco.ctx in
                                 let tco_blocks := tco.blocks in
-                                let all_blocks := if needs_io_unwrap then unwrap_io_return_blocks tco_blocks 0 else tco_blocks in
+                                let all_blocks := if main_io_unit then zero_return_blocks tco_blocks else if needs_io_unwrap then unwrap_io_return_blocks tco_blocks 0 else tco_blocks in
                                 let main_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ all_blocks true (dbg_loc_of_body body) in
                                 { ctx := tco_ctx, funcs := (List.cons main_func funcs_r), globals := globals_r, externs := List.empty }
                         },
@@ -4563,7 +4673,7 @@ def compile_db_def_ir_body (c : CodegenCtx) (fn_name : String) (typ : Term) (ter
                         // inlined into each `if`/else arm.
                         let tco_ctx := tco.ctx in
                         let tco_blocks := tco.blocks in
-                        let all_blocks := if needs_io_unwrap then unwrap_io_return_blocks tco_blocks 0 else tco_blocks in
+                        let all_blocks := if main_io_unit then zero_return_blocks tco_blocks else if needs_io_unwrap then unwrap_io_return_blocks tco_blocks 0 else tco_blocks in
                         let main_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ all_blocks true (dbg_loc_of_body body) in
                         { ctx := tco_ctx, funcs := (List.cons main_func funcs_r), globals := globals_r, externs := List.empty }
                 },
