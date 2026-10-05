@@ -21,7 +21,7 @@ use lib::types {
   cubical_prim_eq,
 }
 use lib::module {parse_all_decls}
-use lib::parser::core {fail, success}
+use parsec::core {fail, success}
 use lib::scope {build_scope_from_decls, scope_find_cubical_prim}
 
 def synthetic_path : ModulePath := ModulePath.mp (List.cons (Identifier.id "synthetic") List.empty)
