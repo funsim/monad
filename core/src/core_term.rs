@@ -308,11 +308,11 @@ pub enum CoreLit {
     /// needing to re-resolve a name itself.
     type_name: Option<Atom>,
   },
-  /// Unlike `crate::term::Literal::StructUpdate` (whose `base` is a bare
-  /// `Identifier`), `base` here is a resolved `CoreTerm` — `base` is a
-  /// genuine *variable occurrence* (the struct value being updated), not
-  /// a label, so it must go through the same `Bound`/`Free` resolution as
-  /// any other variable reference, not stay a name.
+  /// `base` is a resolved `CoreTerm`: the struct value being updated is a
+  /// genuine expression, not a label, so it goes through the same
+  /// `Bound`/`Free` resolution as any other term. `crate::term::Literal::
+  /// StructUpdate`'s own `base` carried a bare `Identifier` until
+  /// 2026-10-05 -- which is why a parenthesized base could not be parsed.
   StructUpdate {
     base: Box<CoreTerm>,
     fields: Map<Identifier, CoreTerm>,

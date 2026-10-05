@@ -581,22 +581,18 @@ impl<'p> Raiser<'p> {
             // `children` — split it off before zipping the rest against
             // `keys`.
             let field_results = children.split_off(1);
+            // Whatever the base raised to IS the base now -- `Literal::
+            // StructUpdate` carries a `Term`, so a parenthesized base
+            // round-trips instead of tripping an "expected a bare Var"
+            // panic.
             let base_t = children.pop().unwrap().into_term();
-            let base_id = match base_t {
-              Term::Var {
-                name: NameRef::Id(id),
-              } => id,
-              other => panic!(
-                "raise_core: StructUpdate base must raise to a bare local Var, got {other:?}"
-              ),
-            };
             let fields_t: crate::Map<Identifier, Term> = keys
               .into_iter()
               .zip(field_results.into_iter().map(Res::into_term))
               .collect();
             Res::Term(Term::Lit {
               value: Literal::StructUpdate {
-                base: base_id,
+                base: Box::new(base_t),
                 fields: fields_t,
               },
             })

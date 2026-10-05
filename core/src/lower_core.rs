@@ -371,18 +371,6 @@ fn resolve_free_name(ctx: &mut LowerContext, name: &Identifier) -> Atom {
   }
 }
 
-/// Resolve a bare local-variable `Identifier` occurrence (not wrapped in a
-/// `NameRef`) the same way `lower_var` resolves `NameRef::Id` — used for
-/// `Literal::StructUpdate`'s `base`, which is a genuine variable reference
-/// in `Term` (unlike `CoreLit::StructUpdate::base`, see `core_term.rs`'s
-/// doc comment on why it's a resolved `CoreTerm` there, not a name).
-fn lower_ident_var(ctx: &mut LowerContext, name: &Identifier) -> CoreTerm {
-  match ctx.find_bound(name) {
-    Some(idx) => CoreTerm::Bound(idx),
-    None => CoreTerm::Free(resolve_free_name(ctx, name)),
-  }
-}
-
 fn lower_lit(ctx: &mut LowerContext, lit: &Literal) -> Result<CoreLit, LowerError> {
   match lit {
     Literal::Str { value } => Ok(CoreLit::Str {
@@ -429,7 +417,7 @@ fn lower_lit(ctx: &mut LowerContext, lit: &Literal) -> Result<CoreLit, LowerErro
       })
     }
     Literal::StructUpdate { base, fields } => {
-      let base_c = lower_ident_var(ctx, base);
+      let base_c = lower_term(ctx, base)?;
       let mut out = crate::Map::new();
       for (name, value) in fields {
         out.insert(name.clone(), lower_term(ctx, value)?);
@@ -1015,7 +1003,9 @@ mod test {
     fields.insert(id("x"), num(1));
     let term = Term::Lit {
       value: Literal::StructUpdate {
-        base: id("point"),
+        base: Box::new(Term::Var {
+          name: crate::term::NameRef::Id(id("point")),
+        }),
         fields,
       },
     };

@@ -1426,7 +1426,12 @@ pub enum Literal {
     type_name: Option<Box<Term>>,
   },
   StructUpdate {
-    base: Identifier,
+    /// The struct being updated. A `Term`, not an `Identifier`: the base
+    /// may be any parenthesized expression (`{ (Response::ok_text msg)
+    /// with status := 400 }`), which is the only way a call result can
+    /// appear in that position. It was a bare name until 2026-10-05, and
+    /// the parser could therefore accept nothing else.
+    base: Box<Term>,
     fields: Map<Identifier, Term>,
   },
   /// Runtime term value (produced by eval of Quote)

@@ -1766,3 +1766,112 @@ fn test_unused_def_warnings_five_cases() {
   assert!(unused_names.contains("unused def `genuinely_dead_private_def`"));
   assert!(unused_names.contains("unused def `call_it`"));
 }
+
+// ─── cross-mote `pub` warnings across a GROUPED directory ────────────
+//
+// The target mote used to be resolved by joining the module path's first
+// segment onto the cwd -- `Path::new("http").join("mote.toml")` -- which is
+// true only for a mote that is a direct child of the cwd and named after
+// its directory. Every mote under `motes/` (and every planned `pkgs/`
+// library) therefore dropped out of the inventory with no warning, no note
+// and no count; `plans/implementations/cross-mote-pub-unenforced-for-motes.md`.
+// The resolution now goes through the workspace member list, so the target
+// side is manifest-derived exactly like `here`.
+
+/// A real source path inside a mote under the grouped `motes/` directory.
+/// The file need not exist -- `mote_name_of_file` walks up to a `mote.toml`.
+fn motes_src(mote: &str, rel: &str) -> std::path::PathBuf {
+  std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../motes"))
+    .join(mote)
+    .join("src")
+    .join(rel)
+}
+
+/// `import_src` as a real file at `file`, importing `target_src` registered
+/// at `target_path`. The importer's own module is never registered, because
+/// the check asks about the TARGET only.
+fn cross_mote_warnings(
+  import_src: &str,
+  target_src: &str,
+  target_path: &[&str],
+  file: &std::path::PathBuf,
+) -> Vec<Diagnostic> {
+  let mut loaded = default_modules().unwrap();
+  loaded.add_module(module_at(
+    ModulePath::new(target_path.iter().map(|s| id(*s)).collect()),
+    target_src,
+  ));
+  cross_mote_package_private_warnings(
+    &module_at(ModulePath::top("importer"), import_src),
+    &loaded,
+    Some(file),
+  )
+}
+
+/// The headline case. `motes/moose` imports `motes/http`, whose manifest is
+/// at `motes/http/mote.toml` -- not at `<cwd>/http/mote.toml`, which is
+/// where the old rule looked and, from a cargo test binary's cwd, never
+/// found. A package-private `Body` must be inventoried.
+#[test]
+fn test_cross_mote_warning_resolves_a_grouped_mote() {
+  let warnings = cross_mote_warnings(
+    "use http::types {Body}\n\ndef f : I64 := 0\n",
+    "struct Body { bytes : List U8 }\n",
+    &["http", "types"],
+    &motes_src("moose", "client.mo"),
+  );
+  assert_eq!(warnings.len(), 1, "unexpected: {warnings:?}");
+  assert!(warnings[0].message.contains("`Body`"), "{:?}", warnings[0]);
+  assert!(
+    warnings[0].message.contains("from mote `http`"),
+    "{:?}",
+    warnings[0]
+  );
+}
+
+/// The other direction: the same edge with the declaration marked `pub` is
+/// silent, so the row above cannot pass by warning unconditionally.
+#[test]
+fn test_cross_mote_warning_is_silent_for_a_pub_declaration() {
+  let warnings = cross_mote_warnings(
+    "use http::types {Body}\n\ndef f : I64 := 0\n",
+    "pub struct Body { bytes : List U8 }\n",
+    &["http", "types"],
+    &motes_src("moose", "client.mo"),
+  );
+  assert!(warnings.is_empty(), "unexpected: {warnings:?}");
+}
+
+/// A mote that IS a direct child of the repository root still warns -- the
+/// case the old rule handled, pinned so the workspace walk cannot trade one
+/// blind spot for another.
+#[test]
+fn test_cross_mote_warning_still_resolves_a_root_level_mote() {
+  let warnings = cross_mote_warnings(
+    "use std::io {Socket}\n\ndef f : I64 := 0\n",
+    "struct Socket { fd : I64 }\n",
+    &["std", "io"],
+    &init_src("helper.mo"),
+  );
+  assert_eq!(warnings.len(), 1, "unexpected: {warnings:?}");
+  assert!(
+    warnings[0].message.contains("from mote `std`"),
+    "{:?}",
+    warnings[0]
+  );
+}
+
+/// A name no manifest declares is not a mote, so no boundary is crossed --
+/// `use io {IO}` names a MODULE of the importer's own mote, and importing
+/// `std::io`'s `Socket` from a mote named `io` is a self-import, not an
+/// edge. Without this the set lookup would make every first segment a mote.
+#[test]
+fn test_cross_mote_warning_ignores_a_name_that_is_no_mote() {
+  let warnings = cross_mote_warnings(
+    "use notamote::types {Thing}\n\ndef f : I64 := 0\n",
+    "struct Thing { x : I64 }\n",
+    &["notamote", "types"],
+    &motes_src("moose", "client.mo"),
+  );
+  assert!(warnings.is_empty(), "unexpected: {warnings:?}");
+}

@@ -390,6 +390,45 @@ fn test_struct_val() {
   );
 }
 
+/// The base of a struct update: a bare identifier, or a PARENTHESIZED
+/// expression. `identifier` alone was the whole rule, so a call result could
+/// not be a base at all -- and parens are the only way one can be, since an
+/// unparenthesized application would swallow the `with`. Mirrors
+/// `lang/src/parser.mo`'s `struct_update_base`; the two implementations must
+/// not drift on which spellings exist.
+#[test]
+fn test_struct_update_base_spellings() {
+  let p = |s: &'static str| struct_or_update_parser::<()>(s.into());
+  // The parser wraps a term in `Term::Ctx` for source-location metadata; the
+  // rule is about the shape underneath it.
+  let strip = |t: Term| match t {
+    Term::Ctx { term, .. } => *term,
+    other => other,
+  };
+  let base_of = |s: &'static str| match p(s.into()).unwrap().1 {
+    Term::Lit {
+      value: Literal::StructUpdate { base, fields },
+      ..
+    } => {
+      assert_eq!(fields.len(), 1, "expected exactly one field in `{s}`");
+      strip(*base)
+    }
+    other => panic!("expected a struct update for `{s}`, got {other:?}"),
+  };
+
+  similar!(base_of("{ p with x := 1 }"), var("p"));
+  similar!(base_of("{ (p) with x := 1 }"), var("p"));
+
+  // The shape the widening exists for.
+  assert!(
+    matches!(
+      base_of("{ (Response.ok_text msg) with status := 2 }"),
+      Term::App { .. }
+    ),
+    "expected a call base"
+  );
+}
+
 #[test]
 fn test_term() {
   let term = |s: &'static str| term::<()>(s.into());

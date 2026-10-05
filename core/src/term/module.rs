@@ -3932,11 +3932,10 @@ fn collect_literal_names(lit: &Literal, refs: &mut References, bound: &mut Binde
       }
     }
     Literal::StructUpdate { base, fields } => {
-      // `base` here is an ordinary expression — nearly always a local —
-      // and not a type name, so a bound `base` is not a reference at all.
-      if !bound.contains(base) {
-        refs.add_bare(NamePath::single(base.clone()));
-      }
+      // `base` is an ordinary expression — nearly always a local, and
+      // since 2026-10-05 possibly a parenthesized call — so it is walked
+      // like any other child rather than read as a name.
+      collect_term_names(base, refs, bound);
       for t in fields.values() {
         collect_term_names(t, refs, bound);
       }
@@ -4373,6 +4372,63 @@ pub fn unused_def_warnings(loaded: &LoadedModules) -> Vec<(ModulePath, Diagnosti
 /// Reported per importing FILE rather than per declaration, because that
 /// is where the fix usually is: either the import is wrong or the
 /// declaration should be `pub`.
+/// Every mote name declared by the workspace the given file belongs to.
+///
+/// `here` is derived from a MANIFEST (`mote_name_of_file` walks up to a
+/// `mote.toml` and reads its declared `name`), so the target side has to be
+/// too, or the two halves of "do these cross a boundary" are computed by
+/// different rules. It used to be a path join against the working
+/// directory -- `Path::new("http").join("mote.toml")` -- which is true only
+/// for a mote that sits at the repository root and named after its own
+/// directory. Every mote under `motes/` therefore dropped out of the
+/// inventory silently: no warning, no note, no count, and nothing checks a
+/// count (`plans/implementations/cross-mote-pub-unenforced-for-motes.md`).
+///
+/// Falls back to the importing mote's own declared dependency names when
+/// there is no workspace above it, which is the external-mote case: a mote
+/// built on its own with path deps still has edges worth warning about.
+fn workspace_mote_names(path: Option<&std::path::PathBuf>) -> Set<String> {
+  let mut names: Set<String> = Set::default();
+  let Some(dir) = path.and_then(|p| p.parent()) else {
+    return names;
+  };
+  let Some((manifest_path, manifest)) = crate::term::mote::Manifest::discover(dir) else {
+    return names;
+  };
+  let mote_dir = manifest_path.parent().unwrap_or(std::path::Path::new("."));
+  // The importing mote's own declared dependencies, by name: the only
+  // answer available without a workspace, and correct for an external mote.
+  names.extend(manifest.dependencies.keys().cloned());
+  names.extend(manifest.dev_dependencies.keys().cloned());
+  // The workspace, if the mote is in one. `discover` stops at the first
+  // manifest, which for a member is the member's own, so the root is found
+  // by continuing upward from it.
+  let mut cursor: Option<std::path::PathBuf> = mote_dir.parent().map(|p| p.to_path_buf());
+  while let Some(up) = cursor.take() {
+    let Some((root_path, root)) = crate::term::mote::Manifest::discover(&up) else {
+      break;
+    };
+    let root_dir = root_path
+      .parent()
+      .unwrap_or(std::path::Path::new("."))
+      .to_path_buf();
+    if let Some(ws) = &root.workspace {
+      if let Ok(dirs) = ws.resolve_members(&root_dir) {
+        for d in dirs {
+          if let Ok(m) = crate::term::mote::Manifest::parse(&d.join("mote.toml")) {
+            if let Some(mote) = m.mote {
+              names.insert(mote.name);
+            }
+          }
+        }
+      }
+      break;
+    }
+    cursor = root_dir.parent().map(|p| p.to_path_buf());
+  }
+  names
+}
+
 pub fn cross_mote_package_private_warnings(
   module: &Module,
   loaded: &LoadedModules,
@@ -4382,6 +4438,10 @@ pub fn cross_mote_package_private_warnings(
     // Script mode: a file outside any mote crosses no mote boundary.
     return Vec::new();
   };
+  // Every mote NAME the importing file's workspace declares, resolved once
+  // for the whole module rather than per `use`: the per-use test below is a
+  // set lookup, and the manifests are read once.
+  let known_motes = workspace_mote_names(path);
   module
     .get_uses()
     .iter()
@@ -4396,7 +4456,7 @@ pub fn cross_mote_package_private_warnings(
         .first()
         .map(|i| i.as_str().to_string())
         .filter(|m| m != &here)
-        .filter(|m| std::path::Path::new(m).join("mote.toml").is_file())?;
+        .filter(|m| known_motes.contains(m.as_str()))?;
       let UseFilter::Items(items) = &u.filter else {
         return None;
       };
