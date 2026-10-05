@@ -50,6 +50,15 @@
 #      above it: an external mote is a workspace of one, so the member half of
 #      that gate has nothing to say and the loaded-module half is the only
 #      thing that can report it. Ends by creating the file the error named.
+#   8. A dependency whose library root is declared somewhere other than the
+#      conventional `src/lib.mo` -- the manifest's `[lib] path` has to be what
+#      a consumer's `use <dep>` resolves, and the error for an absent root has
+#      to name the DECLARED path rather than the conventional one.
+#   9. A bare `test`/`check` on a mote with a vendor tree -- `devenv shell`
+#      leaves a `.devenv/` whose gettext catalogs are also `*.mo`. The no-path
+#      forms cover a mote's DECLARED target roots; only an explicit path is
+#      literal, and the second half of this configuration pins that as a
+#      deliberate non-goal rather than an oversight.
 #
 # Configuration 3 also compiles and RUNS a binary, which is the only
 # assertion that covers the C runtime end to end: the program prints through
@@ -709,4 +718,72 @@ grep -q 'lib/root.mo' "$work/missing.log" \
   || { cat "$work/missing.log" >&2; die "config 8: the error did not name the DECLARED library root"; }
 ok "config 8: an absent declared root is reported by its declared path"
 
-echo "check-external-mote: an external mote loads, checks, tests and compiles in all eight configurations"
+# ---------------------------------------------------------------------------
+# 9. Bare `test`/`check` covers a mote's DECLARED targets, not its subtree
+# ---------------------------------------------------------------------------
+
+# The filed symptom, reproduced as an external mote rather than as the
+# todo-app: `devenv shell` materializes a `.devenv/` holding a nix-fetched
+# `bash`, whose gettext locale catalogs carry the `.mo` extension too. A bare
+# `monad test` used to walk the whole subtree, so 85 binary catalogs each
+# reported a parse failure and buried the two real files.
+#
+# The rule is that the no-path forms resolve a mote's declared target roots
+# (`[lib] path`, then each `[[bin]] path`); only an explicit path is literal.
+# `plans/implementations/2026-10-04-monad-test-no-path-globs-unrelated-dot-mo-files.md`.
+discovery="$work/nested/discovery"
+mkdir -p "$discovery/src"
+cat > "$discovery/src/lib.mo" <<'MONAD'
+def answer : I64 := 42
+
+#[test]
+def test_answer : Bool := I64.beq answer 42
+MONAD
+cat > "$discovery/mote.toml" <<TOML
+[mote]
+name = "discovery"
+version = "0.1.0"
+edition = "2026"
+
+[lib]
+path = "src/lib.mo"
+
+[dependencies.init]
+path = "${root}/init"
+
+[dependencies.std]
+path = "${root}/std"
+
+[dependencies.runtime]
+path = "${root}/runtime"
+TOML
+
+# The vendor tree. Deliberately binary: a file that merely fails to contain
+# tests would pass this configuration for the wrong reason.
+catalog="$discovery/.devenv/bash-bash/share/locale/af/LC_MESSAGES"
+mkdir -p "$catalog"
+printf '\xde\x12\x04\x95\x00\x00\x00\x00\x02\x00\x00\x00\x1c\x00\x00\x00' > "$catalog/bash.mo"
+
+cd "$discovery"
+disc_log="$work/test9.log"
+MONAD_ROOT="$toolchain" "$monad" test > "$disc_log" 2>&1 \
+  || { cat "$disc_log" >&2; die "config 9: bare 'monad test' failed on a mote with a vendor tree"; }
+grep -q "1/1 total tests passed" "$disc_log" \
+  || { cat "$disc_log" >&2; die "config 9: the mote's own test did not run and pass"; }
+if grep -q '\.devenv' "$disc_log"; then
+  cat "$disc_log" >&2
+  die "config 9: bare 'monad test' walked the vendor tree instead of the declared root"
+fi
+ok "config 9: bare test covers only the mote's declared target roots"
+
+# The other half of the rule, pinned so it is not "fixed" by accident: an
+# EXPLICIT path is literal. `monad test .` means that directory, so the
+# vendor tree is walked and its catalog reported -- skipping dot-directories
+# inside the walk is a deliberate non-goal, not an oversight.
+literal_log="$work/test9-literal.log"
+MONAD_ROOT="$toolchain" "$monad" test . > "$literal_log" 2>&1 || true
+grep -q '\.devenv' "$literal_log" \
+  || { cat "$literal_log" >&2; die "config 9: an explicit path stopped being literal"; }
+ok "config 9: an explicit path is still literal (the vendor tree is walked)"
+
+echo "check-external-mote: an external mote loads, checks, tests and compiles in all nine configurations"
