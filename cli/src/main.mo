@@ -12,8 +12,8 @@ use lang::codegen::emit {compile_db_module_with_debug, compile_loaded_modules_to
 use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, ElaboratedModules, FileCheckAndCache, LoadedModules, ModuleInfo, ModuleInfoCache, bench_step, check_file_cached, check_module_with_scope, elaborate_loaded_modules, elaborate_loaded_modules_cached, elaborate_module_decls_best_effort, expand_check_paths, extract_directory, load_file_modules, load_module_with_info, module_name_from_path, module_info_cache_empty, resolve_runtime_src, try_parse_decls, try_parse_decls_strict}
 use lang::scope {resolve_class_calls_decls}
 use lang::mote {
-  Mote.discover, Mote.discover_config_target_dir, Mote.workspace_members,
-  MoteManifest, BinTarget,
+  Mote.discover, Mote.discover_config_target_dir, Mote.target_roots,
+  Mote.workspace_members, MoteManifest, BinTarget,
 }
 use build::closure {Build.input_hash}
 use build::store {
@@ -765,6 +765,7 @@ def show_lower_error (e : LowerError) : String :=
         LowerError.le_type_level_term => "type-level term reached lowering",
         LowerError.le_con_hole_before_filled_arg => "constructor hole before a filled arg",
         LowerError.le_struct_lit_survived => "struct literal reached lowering un-desugared (give the literal an explicit `: StructName` annotation, or bind it to an annotated local)",
+        LowerError.le_float_literal_unsupported => "float literals are not supported by `monad eval` (the eval IR cannot carry one yet); `monad test` and `monad build` compile them correctly",
         LowerError.le_in_def path inner => String.concat "in def " (String.concat (show_module_path path) (String.concat ": " (show_lower_error inner))),
     }
 
@@ -1083,8 +1084,9 @@ def resolve_target_paths (verb : String) (subcommand : String) (files : List Str
                 // and located, so the two cases differ in the path
                 // only.
                 let dir := if String.beq manifest.dir "" then "." else manifest.dir;
+                let roots : List String := Mote.target_roots manifest dir;
                 println (verb ++ " mote " ++ manifest.name ++ " (" ++ dir ++ ")");
-                return (Option.some (List.cons dir List.empty))
+                return (Option.some roots)
             }
         }
     }
