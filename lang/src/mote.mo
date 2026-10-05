@@ -1351,21 +1351,32 @@ def test_lib_path_defaults_to_src_lib : Bool :=
         }
     }
 
+/// A manifest declaring a library root that is NOT the default -- a different
+/// directory and a different stem, so neither half of the convention can
+/// answer by accident. No manifest in this repo has one, which is why the
+/// fixture is written here rather than borrowed.
+def declared_lib_manifest_fixture : String :=
+  "[mote]\nname = \"lang\"\nversion = \"0.1.0\"\n\n[lib]\npath = \"lib/main.mo\"\n"
+
 /// ...and a declared `[lib] path` wins over that default.
+///
+/// Against a NON-default path, necessarily: `mote_manifest_fixture` declares
+/// `src/lib.mo`, which is what an absent `[lib]` already yields, so this test
+/// read the same string whether the declaration was honoured or ignored.
 #[test]
 def test_lib_path_reads_the_declaration : Bool :=
-    match Mote.parse_manifest "lang" mote_manifest_fixture {
+    match Mote.parse_manifest "lang" declared_lib_manifest_fixture {
         Option.none => false,
         Option.some m => match m.lib_path {
             Option.none => false,
-            Option.some p => String.beq p "lang/src/lib.mo"
+            Option.some p => String.beq p "lang/lib/main.mo"
         }
     }
 
 /// `[[bin]] path` is joined like a dependency path, so `build` needs no
 /// join of its own.
 #[test]
-def test_bin_path_is_joined_onto_the_mote_dir : Bool :=
+def test_bin_target_path_is_joined_onto_the_mote_dir : Bool :=
     match Mote.parse_manifest "cli" bin_manifest_fixture {
         Option.none => false,
         Option.some m =>
@@ -1500,7 +1511,7 @@ def test_tool_config_in_names_the_root_and_the_cwd : Bool :=
 
 /// The config's one setting, joined onto the config's own directory so the
 /// answer is usable as stored -- the `raw_path_join` rule the manifest's
-/// `[bin] path` follows. A relative value is relative to the `.monad/`
+/// `[[bin]] path` follows. A relative value is relative to the `.monad/`
 /// directory the config was found in, not to the CWD, which is what makes an
 /// absolute invocation of a file inside the tree give an absolute directory.
 #[test]

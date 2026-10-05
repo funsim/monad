@@ -172,7 +172,7 @@ def compile_out_name (requested : String) (target : BinTarget) : String :=
 /// distinguish themselves, is an error rather than a guess -- and the
 /// guess this rules out is subtler than it used to be. `MoteManifest.bins`
 /// supplies a CONVENTIONAL target (`src/main.mo`, named after the mote)
-/// for a manifest that declares no bin table, so "declares no `[bin]`" is
+/// for a manifest that declares no bin table, so "declares no `[[bin]]`" is
 /// no longer the same question as "has nothing to build". Both are
 /// answered by the same test: a target is built only if its file exists.
 /// A library mote -- `lang`, `std`, `llvm`, `init`, `runtime` -- declares
@@ -452,7 +452,7 @@ def choose_bin_target (manifest : MoteManifest) (path : String) (wanted : String
         match bin_named manifest.bins wanted {
             Option.none => do {
                 return (Result.err (String.concat_all [
-                    "error: mote `", manifest.name, "` declares no [bin] target named `", wanted, "`",
+                    "error: mote `", manifest.name, "` declares no [[bin]] target named `", wanted, "`",
                     "\n  declared: ", bin_names_joined manifest.bins,
                     "\nhint: `monad build ", path, " --bin <name>` names one of those",
                 ]))
@@ -462,7 +462,7 @@ def choose_bin_target (manifest : MoteManifest) (path : String) (wanted : String
                 if there then do { return (Result.ok b) }
                 else do {
                     return (Result.err (String.concat_all [
-                        "error: mote `", manifest.name, "`'s [bin] target `", wanted, "` names a file that is not there",
+                        "error: mote `", manifest.name, "`'s [[bin]] target `", wanted, "` names a file that is not there",
                         "\n  ", BinTarget.target_path b,
                         "\nhint: create it, or fix `path` in ", path, "/mote.toml",
                     ]))
@@ -480,12 +480,12 @@ def choose_bin_target (manifest : MoteManifest) (path : String) (wanted : String
                 let declared : String := bin_names_joined manifest.bins;
                 let named : String :=
                     if String.is_empty declared
-                    then "declares no [bin] table"
+                    then "declares no [[bin]] table"
                     else String.concat "names " declared;
                 return (Result.err (String.concat_all [
-                    "error: mote `", manifest.name, "` has no [bin] target to build",
+                    "error: mote `", manifest.name, "` has no [[bin]] target to build",
                     "\n  it ", named, ", and none of those files exist",
-                    "\nhint: a library mote needs no [bin] table -- `monad build <path>",
+                    "\nhint: a library mote needs no [[bin]] table -- `monad build <path>",
                     "/src/<file>.mo` still builds one file directly",
                 ]))
             },
@@ -493,7 +493,7 @@ def choose_bin_target (manifest : MoteManifest) (path : String) (wanted : String
                 if List.is_empty rest then do { return (Result.ok b) }
                 else do {
                     return (Result.err (String.concat_all [
-                        "error: mote `", manifest.name, "` has several [bin] targets and no way to pick",
+                        "error: mote `", manifest.name, "` has several [[bin]] targets that exist and no way to pick",
                         "\n  buildable: ", bin_names_joined existing,
                         "\nhint: `monad build ", path, " --bin <name>` picks one",
                     ]))
@@ -526,7 +526,7 @@ def build_target (path : String) (out_name : String) (bin : String) (verbose : B
                         let src := BinTarget.target_path target;
                         let name : String := compile_out_name out_name target;
                         println (String.concat_all [
-                            "building mote `", manifest.name, "`'s [bin] target `",
+                            "building mote `", manifest.name, "`'s [[bin]] target `",
                             BinTarget.target_name target, "`: ", src,
                         ]);
                         build_cached src (Path.path name) verbose debug no_cache
@@ -2005,7 +2005,7 @@ def print_help : IO I64 {
     println "         Compile a .mo source file, or a mote, to a native binary";
     println "         <path> may be a mote DIRECTORY, in which case its [[bin]] target is built";
     println "           (`monad build cli` builds cli/src/main.mo as `monad`)";
-    println "         --bin <name> picks one of a mote's several [[bin]] targets";
+    println "         --bin <name> picks one when several [[bin]] targets exist on disk";
     println "           (a mote declares none, but builds `src/main.mo` as its own name, when";
     println "            `src/main.mo` exists and no [[bin]] table does)";
     println "         With no <path>, builds the mote containing the working directory";
