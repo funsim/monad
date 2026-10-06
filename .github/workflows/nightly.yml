@@ -8,61 +8,45 @@ on:
 permissions:
   contents: write
 
+# One group for the whole matrix, so the legs of a night cannot race each other
+# into creating the same `nightly-<date>` tag, and so a night never cancels the
+# one before it: a release is not idempotent the way a CI run is, and the tag
+# the legs agree on is derived from the clock rather than from the commit.
 concurrency:
   group: nightly-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   # Same suppression as ci.yml: the devShell's shellHook runs the full
-  # pre-commit sweep on every `nix develop -c` entry, and the nightly job
-  # only needs to build and verify the binary. The sweep runs once per
-  # pipeline in ci.yml's pre-commit-checks job; nothing here needs it.
+  # pre-commit sweep on every `nix develop -c` entry, and these jobs only need
+  # to build and verify the binary. The sweep runs once per pipeline in ci.yml's
+  # pre-commit-checks job; nothing here needs it.
   DEVENV_SKIP_TASKS: "1"
 
 jobs:
-  nightly:
+  # The native leg. It is also the one that seeds the binary cache with rung 1,
+  # which is what makes the cross legs below affordable: rung 1 is one ~26
+  # minute interpretation of the compiler by the Rust host, every platform's
+  # binary is that same `.ll` relinked, and a cross leg that had to pay the
+  # interpretation again would cost a night what three self-compiles cost.
+  # `needs:` on the cross job is what orders the two.
+  linux-native:
     if: github.repository == 'monad-lang/monad'
     runs-on: [self-hosted, linux]
     # Hang guard: the self-compile has no deadline of its own (the CI
     # bootstrap task streams a --verbose stage trace instead), so this
     # is the only thing that stops a wedged run from holding the runner.
     timeout-minutes: 90
+    outputs:
+      tag: ${{ steps.nightly.outputs.tag }}
+      date: ${{ steps.nightly.outputs.date }}
     steps:
       - uses: actions/checkout@v5
 
-      # The interpreter that builds this artifact comes from the flake, the
-      # same way the `bootstrap` job in ci.yml takes its host: a 2s store
-      # lookup for a host that is already built, in place of the cold
-      # `cargo run --release --` this job used to pay for on every merge to
-      # main -- and it is cold every time, because actions/checkout cleans
-      # the target directories at the start of every job and this job runs
-      # once per merge.
-      #
-      # MONAD_HOST_BIN is the knob scripts/build-self-hosted.sh already takes
-      # for exactly this; scripts/nightly-release.sh routes its build through
-      # that script, so setting it here is the whole change. The script also
-      # points the packaged host's stdlib at THIS checkout (MONAD_STDLIB),
-      # which a store host needs: the path it reads init/src from is compiled
-      # in, and for a store build that path exists only while the build that
-      # made it runs.
-      - name: Build the host from the flake
-        run: |
-          host="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
-          echo "MONAD_HOST_BIN=$host/bin/monad-rs" >> "$GITHUB_ENV"
-
-      # Push the host this job builds, so a later commit substitutes rather than
-      # rebuilding it (~3 min). `cachix` is the devshell's (devenv.nix): the
-      # runner host has none.
-      - name: Push the host to the binary cache
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        run: |
-          paths="$(nix build --no-link --print-out-paths --accept-flake-config .#monadHost)"
-          nix develop --no-pure-eval --accept-flake-config -c scripts/push-to-cache.sh $paths
-
-      # The whole build -- compile, verification, staged artifacts and the
-      # `tag`/`date` outputs the release step below reads -- happens inside
-      # this one dev-shell entry. Two things drive the shape of it:
+      # The whole build -- the flake's `.#monad`, which is rung 1 plus this
+      # commit's relink, the verification, the staged artifacts and the
+      # `tag`/`date` outputs the release job reads -- happens inside this one
+      # dev-shell entry. Two things drive the shape of it:
       #
       #   * a bare `run:` gets the RUNNER HOST's PATH, not the devenv's,
       #     which is how `file` went missing here while devenv.nix listed it;
@@ -73,48 +57,158 @@ jobs:
       #     (Note it is the *outputs*, not the cost of a second entry, that
       #     decide this. A dev-shell entry is now cheap: DEVENV_SKIP_TASKS=1 is
       #     set at the workflow level above, so the shellHook's devenv-tasks
-      #     invocation is suppressed. The outputs argument still holds --
-      #     writing them here rather than in a second `nix develop -c` avoids
-      #     a second way for the release job to fail over something unrelated
-      #     to the release.)
+      #     invocation is suppressed.)
       #
       # The script is called directly rather than through
       # `devenv tasks run monad:nightly` (which is the local equivalent):
       # devenv-tasks captures a task's stdout and shows it only on failure,
       # which would swallow the `file` output, the recorded commit and the
-      # compile's --verbose stage trace -- the evidence that says what got
-      # published.
+      # compile's stage trace -- the evidence that says what got published.
       - name: Build and verify the nightly binary
         id: nightly
         run: |
           nix develop --no-pure-eval --accept-flake-config -c \
-            scripts/nightly-release.sh
+            scripts/nightly-release.sh x86_64-linux
+
+      # What the cross legs are about to need, pushed now that it exists. All
+      # three are named because a build input is NOT in the output closure
+      # `cachix push` walks -- rung 1 alone would stay uncached, which is the
+      # expensive one. `cachix` is the devshell's (devenv.nix): the runner host
+      # has none. The same three are pushed by ci.yml's `flake-package` job on
+      # the same commit; this is the copy that matters when the nightly wins
+      # the race against it.
+      - name: Push the ladder to the binary cache
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          paths="$(nix build --no-link --print-out-paths --accept-flake-config \
+            .#monadHost .#monadRung1 .#monad)"
+          nix develop --no-pure-eval --accept-flake-config -c scripts/push-to-cache.sh $paths
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: monad-x86_64-linux
+          path: |
+            dist/monad-nightly-x86_64-linux
+            dist/monad-src-x86_64-linux.tar.gz
+            dist/commit.txt
+            dist/monad-src.tar.gz
+          if-no-files-found: error
+
+  # Every platform Linux does not run natively, cross-built from the leg above
+  # and verified under emulation. A matrix because the legs differ in one field
+  # and in nothing else -- the flake output they publish, which
+  # scripts/nightly-release.sh derives from the label.
+  linux-cross:
+    needs: linux-native
+    if: github.repository == 'monad-lang/monad'
+    strategy:
+      # A red riscv64 is an experimental platform going red. It is not a reason
+      # to abandon the aarch64 build, and it is not a reason to publish nothing
+      # -- the release job below runs anyway, over whatever artifacts exist.
+      fail-fast: false
+      matrix:
+        platform: [aarch64-linux, riscv64-linux]
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      # No `id:`: a cross leg's `tag`/`date` are not the release's. Only the
+      # native leg's outputs are, and they are the answer to "which night is
+      # this" -- a leg that crosses midnight while a runner queues would
+      # otherwise be able to name a different date than the one released.
+      - name: Build and verify the nightly binary
+        run: |
+          nix develop --no-pure-eval --accept-flake-config -c \
+            scripts/nightly-release.sh ${{ matrix.platform }}
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: monad-${{ matrix.platform }}
+          path: |
+            dist/monad-nightly-${{ matrix.platform }}
+            dist/monad-src-${{ matrix.platform }}.tar.gz
+            dist/commit.txt
+          if-no-files-found: error
+
+  # One release, one `tag_name`, one upload. Four jobs creating the same tag
+  # concurrently is a real conflict -- softprops/action-gh-release@v2 appends to
+  # an existing tag, but two first-creators race -- so the legs upload artifacts
+  # and this job is the only one that touches the release.
+  release:
+    needs: [linux-native, linux-cross]
+    # `always()` so a failed cross leg cannot take the release down with it.
+    # `needs:` alone would: a job whose dependency failed is SKIPPED, not run,
+    # which is the opposite of what `fail-fast: false` above is for. The native
+    # leg is still required -- it is the one that proves the artifact runs, and
+    # it is where the tag comes from.
+    if: |
+      always() && !cancelled()
+      && needs['linux-native'].result == 'success'
+    runs-on: [self-hosted, linux]
+    steps:
+      # One directory per leg, so a name carried by more than one leg is still
+      # one file per leg here -- which is what the check below needs.
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      # The legs' `commit.txt` files are not copies of one another. The native
+      # leg's is what its own binary REPORTS -- `monad version`, the revision
+      # baked in at link time -- while a cross leg's is what the tree and the
+      # flake's stamp say, because a cross binary cannot run on the runner that
+      # built it. Comparing them is what turns that difference in provenance
+      # into one claim about the release: every asset here is the same
+      # revision. It is also the only thing asserting anything at all about a
+      # cross leg's binary.
+      - name: Every leg built the same revision
+        run: |
+          cat artifacts/*/commit.txt | sort -u > commits.txt
+          cat commits.txt
+          test "$(wc -l < commits.txt)" -eq 1
+
+      # Flattened, because a release takes files and not trees. Two names are
+      # carried by more than one leg and neither is a choice between different
+      # bytes: `commit.txt`, which the check above just proved is one revision
+      # across every leg, and `monad-src.tar.gz`, which is one archive written
+      # under two names by `scripts/stage-mote-sources.sh` (a hard link). What
+      # survives this is therefore whichever copy got there last, and the
+      # release is the same release either way.
+      - name: Collect the artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -l release
 
       - name: Create nightly prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.nightly.outputs.tag }}
-          name: Nightly ${{ steps.nightly.outputs.date }}
+          tag_name: ${{ needs['linux-native'].outputs.tag }}
+          name: Nightly ${{ needs['linux-native'].outputs.date }}
           body: |
-            Automated nightly build of the bootstrapped `monad` binary from `main`.
+            Automated nightly build of the bootstrapped `monad` compiler from `main`.
 
             Commit: ${{ github.sha }}
 
-            This binary is produced by the self-hosted compiler
-            (`cli/src/main.mo`) compiling itself, run through the Rust
-            `monad-rs` reference interpreter. Built on a self-hosted
-            Linux x86_64 runner with Nix devenv.
+            One `monad-nightly-<platform>` binary per platform, each with a
+            `monad-src-<platform>.tar.gz` beside it holding the `init`, `std`,
+            `llvm` and `runtime` mote sources. `monadup` unpacks that beside the
+            binary, and the compiler then resolves `use std::…` and the C runtime
+            from that directory as a toolchain root — which is what lets a mote
+            in its own repository build without a compiler checkout. (Older tags
+            have no such asset: `monadup` installs the binary alone and says
+            what is missing.)
 
-            `monad-src-x86_64-linux.tar.gz` holds the `init`, `std`, `llvm`
-            and `runtime` mote sources. `monadup` unpacks it beside the binary,
-            and the compiler then resolves `use std::…` and the C runtime
-            from that directory as a toolchain root — which is what lets a
-            mote in its own repository build without a compiler checkout.
-            (Older tags have no such asset: `monadup` installs the binary
-            alone and says what is missing.)
+            * `x86_64-linux` — built and verified natively.
+            * `aarch64-linux` — cross-built and verified under QEMU.
+            * `riscv64-linux` — **experimental**, cross-built and verified under
+              QEMU. Nothing here runs it natively, and `monadup` installs it
+              only on a riscv64 machine.
+
+            `monad-src.tar.gz` is the same mote sources under a
+            platform-neutral name, for a tool that would rather not know which
+            platform it is on.
           prerelease: true
           make_latest: false
-          files: |
-            dist/monad-nightly-x86_64-linux
-            dist/monad-src-x86_64-linux.tar.gz
-            dist/commit.txt
+          files: release/*

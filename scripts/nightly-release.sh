@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# Build the nightly release artifact: one self-compile of the self-hosted
-# compiler, staged into <root>/dist/ exactly where the release step in
-# .github/workflows/nightly.yml uploads from.
+# Build the nightly release artifact: the self-hosted compiler, staged into
+# <root>/dist/ exactly where the release step in .github/workflows/nightly.yml
+# uploads from.
+#
+# The binary itself comes from the flake -- `.#monad` for this machine's
+# platform, `.#monad-<platform>` for one it only cross-builds -- and that is
+# what a matrix of legs can afford. Both are rung 1, ONE ~26-minute
+# interpretation of the compiler by the Rust host, relinked per target in
+# seconds; a leg that ran its own interpretation would pay that cost again for
+# every platform, and three legs would cost a night three self-compiles.
 #
 # This used to be four inline `run:` lines in that workflow, and the first
 # of them -- `file dist/monad-nightly-x86_64-linux` -- was the only command
@@ -19,9 +26,7 @@
 # argument, comes from an ambient MONAD_PLATFORM and then from this machine's
 # own label; see scripts/lib/platform-label.sh. A cross leg must pass its
 # TARGET's label, since the binary it stages is named after the platform it is
-# for and not after the runner that produced it -- and the `check` below, which
-# is what makes the published artifact a verified one, is only meaningful where
-# that binary runs. A cross leg's verification is its derivation's checkPhase.
+# for and not after the runner that produced it.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,6 +39,25 @@ MONAD_PLATFORM="${1:-${MONAD_PLATFORM:-}}"
 # shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
 . "$root/scripts/lib/platform-label.sh"
 bin="$root/dist/monad-nightly-${MONAD_PLATFORM}"
+# One name and not `commit-<platform>.txt`, even with several legs: an
+# installed `monadup` resolves this asset from the releases API by exact name
+# (`scripts/monadup`, `do_install`), so a per-leg name is a release no shipped
+# installer can read. The legs' copies hold the same revision -- the release
+# job asserts that before uploading -- so the one the release keeps is not a
+# choice between different answers.
+commit_file="$root/dist/commit.txt"
+
+# Which flake output holds this platform's binary, and whether that binary can
+# be run by the machine that built it. The two questions have the same answer,
+# and it is the one `MONAD_PLATFORM` and `MONAD_NATIVE_PLATFORM` disagree on: a
+# cross leg stages a binary for a platform it is not.
+if [ "$MONAD_PLATFORM" = "$MONAD_NATIVE_PLATFORM" ]; then
+  attr=monad
+  runs_here=yes
+else
+  attr="monad-${MONAD_PLATFORM}"
+  runs_here=no
+fi
 
 # A self-hosted runner's workspace is dirty across runs and the release step
 # uploads whatever is in dist/ -- clear it, so a failed build can never
@@ -41,50 +65,69 @@ bin="$root/dist/monad-nightly-${MONAD_PLATFORM}"
 rm -rf "$root/dist"
 mkdir -p "$root/dist"
 
-# The revision the artifact will claim is exported by
-# scripts/build-self-hosted.sh below (`git -C` that checkout, unless the
-# environment already names one) -- one definition, so the nightly cannot
-# disagree with the ladder's own rung-1 builds about which commit they are.
-# That export is why this script no longer carries its own copy: it is read
-# by the compiler at LINK time, in whichever process does the linking, and
-# the host doing that here is `cargo run --release --`, whose own baked-in
-# answer is the literal "unknown" (`build_commit_define`, llvm/src/link.mo).
-
 cd "$root"
 
-# The build itself is scripts/build-self-hosted.sh -- the same rung-1 command
-# the bootstrap job runs -- rather than a second copy of the compile line, so
-# the two cannot drift in their flags, their stack rlimit, or their stdlib
-# handling. It writes `<out-dir>/monad`; the release step uploads a name with
-# the platform in it, so the file is moved rather than rebuilt.
+# `nix build` and not an in-workflow self-compile, because the flake's `monad`
+# IS that self-compile: rung 1 is `scripts/build-self-hosted.sh` run inside a
+# derivation (`nix/monad.nix`), and `.#monad` relinks its `.ll` with this
+# commit's revision. Taking it from the store is what lets every leg of a
+# night's matrix share one interpretation -- and it is the same command
+# ci.yml's `flake-package` job and `checks.bootstrap` already build, so it is
+# a path in daily use rather than a new one.
 #
-# MONAD_HOST_BIN is the knob that keeps this from being a cold build: CI's
-# `nightly` job sets it from the flake (`nix build .#monadHost`), which is
-# the SAME host `compiler-checks` uses and is a 2s store lookup there,
-# where an unqualified `cargo run --release --` was a cold fat-LTO build
-# (~10 min, since actions/checkout cleans the target directories at the start
-# of every job).
-# Unset -- a local `devenv tasks run monad:nightly` -- it falls back to
-# cargo, which is what a developer with no flake host has.
-scripts/build-self-hosted.sh "$root/dist" --verbose --release
-mv "$root/dist/monad" "$bin"
+# The revision the artifact claims is then baked by the flake, not by this
+# script: `MONAD_BUILD_COMMIT` from `self.shortRev` at LINK time, in whichever
+# process does the linking -- which is why the check below is on the BINARY's
+# answer rather than on an environment variable this script could set.
+out="$(nix build --no-link --print-out-paths --accept-flake-config ".#${attr}")"
+# `share/monad/monad` and NOT `bin/monad`: the latter is `makeWrapper`'s script,
+# a store path's worth of environment around the real binary, and a consumer
+# installing this artifact has no store to run it out of. What is published is
+# the binary the wrapper wraps -- the same bare ELF `build-self-hosted.sh`
+# leaves in `dist/` -- so a release's artifact does not change shape here.
+install -m755 "$out/share/monad/monad" "$bin"
 test -x "$bin"
-chmod +x "$bin"
 file "$bin"
 
-# What the binary says it was built from. An unidentifiable published
-# artifact is a real defect, not a cosmetic one -- so an empty or "unknown"
-# line fails here. This is the check that would have caught the export above
-# going missing, which is what makes it worth keeping even though the export
-# now sets the value deliberately.
-"$bin" version > "$root/dist/commit.txt"
-cat "$root/dist/commit.txt"
-grep -qvE '^$|^unknown$' "$root/dist/commit.txt"
+if [ "$runs_here" = yes ]; then
+  # What the binary says it was built from. An unidentifiable published
+  # artifact is a real defect, not a cosmetic one -- so an empty or "unknown"
+  # line fails here. It is also what the release job compares the other legs'
+  # `commit.txt` against, which is the only thing tying a cross-built asset to
+  # the revision this release says it is.
+  "$bin" version > "$commit_file"
+  cat "$commit_file"
+  grep -qvE '^$|^unknown$' "$commit_file"
 
-# The binary that ships has to do the job it was built for: the same ~12s
-# front-end sweep `monad:bootstrap-compile` runs in ci.yml, on the exact
-# artifact being published.
-"$bin" check cli/src/main.mo
+  # The binary that ships has to do the job it was built for: the same ~12s
+  # front-end sweep `monad:bootstrap-compile` runs in ci.yml, on the exact
+  # artifact being published.
+  "$bin" check cli/src/main.mo
+else
+  # Neither of those can run here: a cross binary does not execute on the
+  # machine that built it, which is what makes it cross. Its verification is
+  # the derivation's own `checkPhase`, which ran as part of the `nix build`
+  # above -- it compiles an allocating probe with this binary under qemu and
+  # runs it (nix/monad.nix, `crossMonadFor`). Said out loud rather than
+  # skipped, because a verification that quietly stops happening is worse
+  # than one that never existed.
+  echo "nightly-release: ${MONAD_PLATFORM} does not run here; verified by the ${attr} checkPhase (qemu)"
+
+  # Not `git rev-parse --short HEAD`: nix's shortRev is seven characters and
+  # this repository's git spells the same revision in eight, so a tree-derived
+  # answer differs for a reason that is not a defect. The stamp is read out of
+  # the derivation instead -- the `--set MONAD_BUILD_COMMIT` in the install
+  # phase -- which is what the binary itself would say if it could be asked.
+  stamped="$(nix eval --raw ".#${attr}.installPhase" \
+    | sed -n 's/^.*--set MONAD_BUILD_COMMIT \([^ ]*\).*$/\1/p')"
+  if [ -z "$stamped" ]; then
+    echo "nightly-release: .#${attr}'s install phase carries no MONAD_BUILD_COMMIT, so" >&2
+    echo "  this leg cannot say which revision it just published" >&2
+    exit 1
+  fi
+  printf '%s\n' "$stamped" > "$commit_file"
+  cat "$commit_file"
+fi
 
 # The second artifact: `init`/`std`/`runtime`, which is what lets the binary
 # above compile anything OUTSIDE a compiler checkout. `monadup` unpacks it
