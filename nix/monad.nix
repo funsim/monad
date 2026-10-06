@@ -97,11 +97,17 @@
       # found`. Splicing keeps one command one command whatever is passed, and
       # the empty string leaves the continuation pointing at a blank line,
       # which ends the command exactly where the flags do.
-      installPhaseWith = extraFlag: ''
+      #
+      # `extraPath` is prefixed to the wrapper's PATH and is empty for the
+      # native target. It has to reach the INSTALLED compiler and not only the
+      # phase that linked it: `llvm/src/link.mo` compiles `runtime.c` and links
+      # through the bare name `clang`, so a user's build with the packaged
+      # compiler links with whatever that name finds.
+      installPhaseWith = extraFlag: extraPath: ''
         runHook preInstall
         install -Dm755 "$PWD/monad" $out/share/monad/monad
         makeWrapper $out/share/monad/monad $out/bin/monad \
-          --prefix PATH : ${runtimePath} \
+          --prefix PATH : ${extraPath}${runtimePath} \
           --set NIX_LDFLAGS "-L${gcLib}/lib" \
           --set NIX_CFLAGS_COMPILE "-isystem ${gcDev}/include" \
           --set LIBRARY_PATH "${gcLib}/lib" \
@@ -262,13 +268,14 @@
           runHook postBuild
         '';
 
-        # `""` for the extra flag, so this wrapper sets no revision: rung 1 has
-        # none to set. The `.ll` is installed ahead of the shared step because
-        # that step is a complete phase, hooks and all, and `install` needs none
-        # of them.
+        # `""` for both, so this wrapper sets no revision and puts nothing
+        # ahead of the runtime PATH: rung 1 has no revision to set, and it is
+        # this machine's code whatever the target below is for. The `.ll` is
+        # installed ahead of the shared step because that step is a complete
+        # phase, hooks and all, and `install` needs none of them.
         installPhase = ''
           install -Dm644 "$PWD/monad.ll" $out/share/monad/monad.ll
-          ${installPhaseWith ""}
+          ${installPhaseWith "" ""}
         '';
 
         meta = {
@@ -305,7 +312,20 @@
       # `runtime/src/runtime.c` is `Runtime.c_path`, a literal, and it is used
       # RELATIVE because that is what the compiler passes; an absolute path
       # produces a different object file from the same source.
-      monad = pkgs.stdenv.mkDerivation {
+      #
+      # It is a function of its TARGET, which is the one axis these three
+      # commands have left: the IR is rung 1's and so carries THIS machine's
+      # triple, and the cc that compiles `runtime.c` and links has to be the
+      # target's own. Both splices below are inline in the phase rather than
+      # lines of their own, because an empty one has to contribute nothing at
+      # all -- a blank line would already be a different phase, and the native
+      # argv being provably unchanged is the point of the shape.
+      #
+      #   * `llcFlags`: `-mtriple=<t>` and whatever else llc needs, leading
+      #     space included.
+      #   * `ccPath`: a directory to put first on PATH, reaching the phase's
+      #     `clang` and the installed compiler's.
+      monadFor = { llcFlags ? "", ccPath ? null }: pkgs.stdenv.mkDerivation {
         pname = "monad";
         version = monadVersion;
 
@@ -339,9 +359,9 @@
           # directory -- so the finished binary should name no store path of
           # rung 1's. That is checked after the build with `nix-store -q
           # --references` on this derivation's output, not asserted here.
-          install -Dm644 ${rung1}/share/monad/monad.ll "$PWD/monad.ll"
+          ${lib.optionalString (ccPath != null) "export PATH=${ccPath}:$PATH\n"}install -Dm644 ${rung1}/share/monad/monad.ll "$PWD/monad.ll"
 
-          llc -filetype=obj "$PWD/monad.ll" -o "$PWD/monad.o"
+          llc -filetype=obj${llcFlags} "$PWD/monad.ll" -o "$PWD/monad.o"
           clang -pthread -c runtime/src/runtime.c \
             "-DMONAD_BUILD_COMMIT=\"${commit}\"" \
             -o "$PWD/monad_runtime.o"
@@ -350,7 +370,8 @@
           runHook postBuild
         '';
 
-        installPhase = installPhaseWith "--set MONAD_BUILD_COMMIT ${commit}";
+        installPhase = installPhaseWith "--set MONAD_BUILD_COMMIT ${commit}"
+          (lib.optionalString (ccPath != null) "${ccPath}:");
 
         meta = {
           description = "The self-hosted Monad compiler";
@@ -359,6 +380,10 @@
           mainProgram = "monad";
         };
       };
+
+      # The native target, spelled as the empty spec: every default is the
+      # answer that leaves the native phase and the wrapper byte-identical.
+      monad = monadFor { };
 
       # `nix run .#monad`; the same program under two names, because
       # `apps.default` is what a bare `nix run` resolves and the named one is
