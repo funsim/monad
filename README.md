@@ -64,15 +64,17 @@ is on by default.
 
 ## Quick start
 
-```bash
-cat > /tmp/hello.mo << 'EOF'
-use io {IO}
+```monad,check
+use std::io {}
 open IO {println}
 
 def main (args : List String) : IO Unit := println "Hello, World!"
-EOF
+```
 
-monad run /tmp/hello.mo
+Save that as `hello.mo`, then:
+
+```bash
+monad run hello.mo
 ```
 
 `monad run` compiles and executes in one step — a Monad program is always a
@@ -80,7 +82,7 @@ native binary. To keep the binary, use `monad build` with an absolute output
 path:
 
 ```bash
-monad build /tmp/hello.mo -o "$PWD/hello"
+monad build hello.mo -o "$PWD/hello"
 ./hello
 ```
 

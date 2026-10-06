@@ -33,6 +33,15 @@ syntax the book documents as unimplemented, or a fragment quoted from the
 standard library for illustration. Every ignored block should have prose beside
 it saying which.
 
+`docs/src` is opt-out like that, but the two files outside it — `AGENTS.md` and
+the root `README.md` — are **opt-in**: a bare ` ```monad ` there is skipped, and
+` ```monad,check ` asks for the check. Both are prose rather than sample
+programs, so the fences worth compiling are the ones making a claim a reader
+copies. Each must contribute at least one checked block, which the script
+enforces: for an opt-in file a missing tag is an unchecked claim, not a
+deliberate omission, and the README's program sat inside a ` ```bash ` heredoc —
+invisible to the extractor — until that pin existed.
+
 ## Stale after the mote conversion
 
 The mote workspace conversion landed after this book was rewritten, so a few

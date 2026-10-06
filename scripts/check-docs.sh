@@ -28,6 +28,11 @@
 #                   prose here saying why this is not valid", and for a
 #                   fragment there is nothing to say.
 #
+#   README.md       OPT-IN, same tags as AGENTS.md. The landing page is
+#                   prose about installing and invoking the compiler; the
+#                   quick start's program is the one fence making a claim a
+#                   reader copies, so it is the one tagged ```monad,check.
+#
 # So AGENTS.md is opt-in, and the fences worth checking are the ones that
 # make a CLAIM a reader would copy: a `use` line, a declaration form, a
 # complete example. That is the class that has actually been wrong here --
@@ -36,6 +41,13 @@
 #
 # ```monad,check is honoured in docs/src too, so a chapter can opt a
 # fragment in for the same reason.
+#
+# MUST_CHECK pins the opt-in files. Their default is `skip`, so losing the
+# `,check` suffix -- or reshaping the block so the extractor stops seeing it,
+# which is how README.md's program hid inside a ```bash heredoc for its whole
+# life -- would otherwise drop the file silently and stay green. The pin
+# demands at least one checked block from each, because for an opt-in file an
+# absent tag is an unchecked claim rather than a deliberate omission.
 #
 # Blocks are checked in isolation, so each ```monad block must stand on its
 # own: its own `use`/`open` lines, its own type annotations. That is a
@@ -83,8 +95,11 @@ total=0
 skipped=0
 declare -a blocks=()
 declare -a origins=()
+# Blocks queued per source file, for the MUST_CHECK pin below.
+declare -A checked_in=()
+declare -a must_check=(AGENTS.md README.md)
 
-for md in docs/src/*.md AGENTS.md; do
+for md in docs/src/*.md AGENTS.md README.md; do
   [ -f "$md" ] || continue
   # Resolved BEFORE the loop, not inside it: a `$(basename "$md" ...)` in the
   # body of a `while ... done < "$md"` reads as writing the file it redirects
@@ -123,6 +138,7 @@ for md in docs/src/*.md AGENTS.md; do
             printf '%s' "$buf" > "$f"
             blocks+=("$f")
             origins+=("$md:$start")
+            checked_in["$md"]=$(( ${checked_in["$md"]:-0} + 1 ))
           else
             skipped=$((skipped + 1))
           fi
@@ -133,6 +149,7 @@ for md in docs/src/*.md AGENTS.md; do
           printf '%s' "$buf" > "$f"
           blocks+=("$f")
           origins+=("$md:$start")
+          checked_in["$md"]=$(( ${checked_in["$md"]:-0} + 1 ))
           ;;
         monad,ignore)
           skipped=$((skipped + 1))
@@ -144,6 +161,21 @@ for md in docs/src/*.md AGENTS.md; do
     buf+="$line"$'\n'
   done < "$md"
 done
+
+# The opt-in files, each of which must still be contributing something. See
+# MUST_CHECK in the header: this is what keeps the gate from going quiet.
+missing=0
+for md in "${must_check[@]}"; do
+  [ -f "$md" ] || continue
+  if [ "${checked_in["$md"]:-0}" -eq 0 ]; then
+    echo "check-docs: $md contributed no checked block -- it is opt-in, so a" >&2
+    echo "  fence it should check needs the \`\`\`monad,check tag (a bare" >&2
+    echo "  \`\`\`monad is skipped there, and a block inside another fence," >&2
+    echo "  a \`\`\`bash heredoc say, is not extracted at all)." >&2
+    missing=1
+  fi
+done
+[ "$missing" -eq 0 ] || exit 1
 
 if [ "$total" -eq 0 ] && [ "$skipped" -eq 0 ]; then
   echo "check-docs: no \`\`\`monad blocks found at all -- is the tag right?" >&2
