@@ -52,16 +52,6 @@
     let
       monadHost = config.packages.monadHost;
 
-      # The generated runtime includes `<gc.h>` and links `-lgc`, so both the
-      # header and the library have to be reachable from a bare `clang`. They
-      # are passed TWO ways on purpose: the `NIX_*` variables are what nixpkgs'
-      # wrapped clang reads, and `LIBRARY_PATH`/`CPATH` are what any clang
-      # reads. Which of the two carries the flag depends on whether the `clang`
-      # found first is the wrapped one, and there is no reason to depend on
-      # that.
-      gcLib = lib.getLib pkgs.boehmgc;
-      gcDev = lib.getDev pkgs.boehmgc;
-
       # What the packaged compiler needs at RUNTIME, as opposed to at build
       # time: every `monad build` shells out to `llc` and `clang` by bare
       # name (llvm/src/link.mo), plus `mkdir`/`rm` for the link stage's own
@@ -80,6 +70,18 @@
       # The install step both derivations share. `$PWD/monad` is where each
       # buildPhase leaves the binary, and the wrapper supplies the runtime PATH
       # and the gc paths exactly as the single derivation always did.
+      #
+      # `gc` is the collector the binary was linked against -- `pkgs.boehmgc`
+      # natively, and that target's own on a cross leg. The generated runtime
+      # includes `<gc.h>` and links `-lgc`, so both the header and the library
+      # have to be reachable from a bare `clang`, and they are passed TWO ways
+      # on purpose: the `NIX_*` variables are what nixpkgs' wrapped clang
+      # reads, and `LIBRARY_PATH`/`CPATH` are what any clang reads. Which of
+      # the two carries the flag depends on whether the `clang` found first is
+      # the wrapped one, and there is no reason to depend on that. A CROSS cc
+      # reads neither -- nixpkgs' wrapper overwrites `LIBRARY_PATH` and drops a
+      # hand-set `NIX_LDFLAGS`, measured -- which is why a cross leg's shim
+      # carries the same two flags as argv (`crossMonadFor`).
       #
       # `extraFlag` is spliced in as the LAST continuation of the `makeWrapper`
       # call, and it is either another `makeWrapper` argument or the empty
@@ -103,15 +105,15 @@
       # phase that linked it: `llvm/src/link.mo` compiles `runtime.c` and links
       # through the bare name `clang`, so a user's build with the packaged
       # compiler links with whatever that name finds.
-      installPhaseWith = extraFlag: extraPath: ''
+      installPhaseWith = gc: extraFlag: extraPath: ''
         runHook preInstall
         install -Dm755 "$PWD/monad" $out/share/monad/monad
         makeWrapper $out/share/monad/monad $out/bin/monad \
           --prefix PATH : ${extraPath}${runtimePath} \
-          --set NIX_LDFLAGS "-L${gcLib}/lib" \
-          --set NIX_CFLAGS_COMPILE "-isystem ${gcDev}/include" \
-          --set LIBRARY_PATH "${gcLib}/lib" \
-          --set CPATH "${gcDev}/include" \
+          --set NIX_LDFLAGS "-L${lib.getLib gc}/lib" \
+          --set NIX_CFLAGS_COMPILE "-isystem ${lib.getDev gc}/include" \
+          --set LIBRARY_PATH "${lib.getLib gc}/lib" \
+          --set CPATH "${lib.getDev gc}/include" \
           ${extraFlag}
         runHook postInstall
       '';
@@ -268,14 +270,15 @@
           runHook postBuild
         '';
 
-        # `""` for both, so this wrapper sets no revision and puts nothing
-        # ahead of the runtime PATH: rung 1 has no revision to set, and it is
-        # this machine's code whatever the target below is for. The `.ll` is
+        # `""` for the flag and the path, so this wrapper sets no revision and
+        # puts nothing ahead of the runtime PATH: rung 1 has no revision to
+        # set, and it is this machine's code whatever the target below is for.
+        # The collector is the native one, because so is the code. The `.ll` is
         # installed ahead of the shared step because that step is a complete
         # phase, hooks and all, and `install` needs none of them.
         installPhase = ''
           install -Dm644 "$PWD/monad.ll" $out/share/monad/monad.ll
-          ${installPhaseWith "" ""}
+          ${installPhaseWith pkgs.boehmgc "" ""}
         '';
 
         meta = {
@@ -325,7 +328,17 @@
       #     space included.
       #   * `ccPath`: a directory to put first on PATH, reaching the phase's
       #     `clang` and the installed compiler's.
-      monadFor = { llcFlags ? "", ccPath ? null }: pkgs.stdenv.mkDerivation {
+      #   * `gc`: the target's collector, which the phase links `-lgc` against
+      #     and the wrapper points `clang` at.
+      #   * `checkPhase`: how to prove the result RUNS, for a target this
+      #     machine cannot execute directly. Null for the native target, which
+      #     runs in front of whoever built it.
+      monadFor = {
+        gc ? pkgs.boehmgc,
+        llcFlags ? "",
+        ccPath ? null,
+        checkPhase ? null,
+      }: pkgs.stdenv.mkDerivation ({
         pname = "monad";
         version = monadVersion;
 
@@ -348,7 +361,7 @@
           pkgs.bash
           pkgs.coreutils
         ];
-        buildInputs = [ pkgs.boehmgc ];
+        buildInputs = [ gc ];
 
         buildPhase = ''
           runHook preBuild
@@ -370,7 +383,7 @@
           runHook postBuild
         '';
 
-        installPhase = installPhaseWith "--set MONAD_BUILD_COMMIT ${commit}"
+        installPhase = installPhaseWith gc "--set MONAD_BUILD_COMMIT ${commit}"
           (lib.optionalString (ccPath != null) "${ccPath}:");
 
         meta = {
@@ -379,11 +392,103 @@
           license = lib.licenses.asl20;
           mainProgram = "monad";
         };
-      };
+      } // lib.optionalAttrs (checkPhase != null) {
+        # `//` on the ARGUMENT and not on the derivation: `doCheck` and
+        # `checkPhase` are read out of the environment mkDerivation builds, so
+        # setting them on its RESULT would put them outside the derivation and
+        # the check would never run.
+        doCheck = true;
+        inherit checkPhase;
+      });
 
       # The native target, spelled as the empty spec: every default is the
       # answer that leaves the native phase and the wrapper byte-identical.
       monad = monadFor { };
+
+      # A cross target: the same three commands, with llc told the triple the
+      # IR is FOR -- rung 1's header says this machine's, because that is where
+      # it was interpreted -- and a `clang` shim standing in for the target's
+      # own cc.
+      #
+      # The gc flags have to be ARGV in the shim and not environment in the
+      # phase: nixpkgs' wrapped cross cc overwrites `LIBRARY_PATH` and drops a
+      # hand-set `NIX_LDFLAGS`, so `-lgc` never reaches its linker -- measured,
+      # as a compile that succeeds and a link that fails, which reads as a gc
+      # bug. The shim reaches the INSTALLED compiler too and not only the phase
+      # that linked it: `llvm/src/link.mo` calls bare `clang` for a user's
+      # build as well.
+      #
+      # `checkPhase` runs what it built, which is all a cross leg can honestly
+      # claim: `checks.bootstrap`'s ladder costs ~20 minutes natively and hours
+      # under emulation, so the ladder stays native and a cross target has to
+      # be shown to RUN -- and to allocate, because a mis-detected cross
+      # collector fails at run time rather than at build time.
+      crossMonadFor =
+        { crossPkgs, triple, llcFlags }:
+        let
+          gc = crossPkgs.boehmgc;
+          shim = pkgs.writeShellScriptBin "clang" ''
+            exec ${crossPkgs.stdenv.cc}/bin/${crossPkgs.stdenv.cc.targetPrefix}cc \
+              -isystem ${lib.getDev gc}/include \
+              -L${lib.getLib gc}/lib \
+              "$@"
+          '';
+          # qemu, which is the CROSS platform's `emulator` applied to the
+          # NATIVE pkgs. Applied to the cross set it answers nixpkgs' binfmt
+          # wrapper instead -- correct on a machine with binfmt_misc, and
+          # unusable in a sandbox.
+          emulator = crossPkgs.stdenv.hostPlatform.emulator pkgs;
+        in
+        monadFor {
+          inherit gc llcFlags;
+          ccPath = "${shim}/bin";
+          checkPhase = ''
+            runHook preCheck
+
+            # The target's own `clang`, which is what the binary below calls
+            # when it compiles a program's runtime and links it.
+            export PATH=${shim}/bin:$PATH
+
+            # `--target` is spelled out because this binary runs somewhere
+            # else: it probes `clang -dumpmachine` for its native triple, and
+            # under qemu that probe still answers for the x86_64 host.
+            cat > allocprobe.mo <<'EOF'
+            #![mote { name := "allocprobe", deps := [init] }]
+
+            open IO {println}
+
+            #[decreasing n]
+            def grow (n : I64) (s : String) : String :=
+                if I64.lt n 1 then s else grow (n - 1) (s ++ "xxxxxxxxxxxxxxxxxxxx")
+
+            def main (args : List String) : IO Unit :=
+                println (grow 3000 "allocprobe-ok")
+            EOF
+
+            ${emulator} "$PWD/monad" build allocprobe.mo --target ${triple} -o "$PWD/allocprobe"
+
+            # Asserted on stdout and not on the exit status, which has been
+            # both 0 and non-zero for a program that succeeded; a crash leaves
+            # the marker missing, and that is the claim being made.
+            ${emulator} "$PWD/allocprobe" > allocprobe.out || true
+            grep -q '^allocprobe-ok' allocprobe.out
+            # 3000 appends of 20 bytes, so a heap that is not being collected
+            # to completion -- or a recursion that did not run to completion --
+            # cannot reach this.
+            test "$(wc -c < allocprobe.out)" -gt 60000
+
+            runHook postCheck
+          '';
+        };
+
+      # The aarch64-linux output: cross-built here, published by the nightly.
+      # Nothing in this flake runs on aarch64-linux, which is why it is an
+      # output of x86_64-linux rather than a flake system.
+      monadAarch64Linux = crossMonadFor {
+        crossPkgs = pkgs.pkgsCross.aarch64-multiplatform;
+        triple = "aarch64-unknown-linux-gnu";
+        llcFlags = " -mtriple=aarch64-unknown-linux-gnu";
+      };
 
       # `nix run .#monad`; the same program under two names, because
       # `apps.default` is what a bare `nix run` resolves and the named one is
@@ -394,13 +499,20 @@
       };
     in
     {
-      packages.monad = monad;
-      packages.default = monad;
-      # Rung 1 on its own, for CI's bootstrap ladder: it is what makes the
-      # interpretation a store hit across commits that do not touch the
-      # compiler's sources, and it is where the `.ll` that ladder compares
-      # against now comes from.
-      packages.monadRung1 = rung1;
+      packages = {
+        monad = monad;
+        default = monad;
+        # Rung 1 on its own, for CI's bootstrap ladder: it is what makes the
+        # interpretation a store hit across commits that do not touch the
+        # compiler's sources, and it is where the `.ll` that ladder compares
+        # against now comes from.
+        monadRung1 = rung1;
+      } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+        # Named for the platform it is FOR, which is not one this flake
+        # declares: it is cross-built, so it belongs to the system that builds
+        # it, and to that system alone.
+        monad-aarch64-linux = monadAarch64Linux;
+      };
 
       apps.monad = app;
       apps.default = app;
