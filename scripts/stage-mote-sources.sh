@@ -34,12 +34,26 @@
 # WORKSPACE rather than four loose motes, so a human can `monad check -w`
 # in it and `monadup`'s directory is directly usable as `MONAD_ROOT`.
 #
-# Usage: scripts/stage-mote-sources.sh [out_dir]   (default: <root>/dist)
+# The archive is written under the platform's name AND under the
+# platform-neutral one. The tree is the same on every platform -- only the name
+# is not -- and both names have a reader: an installed `monadup` resolves
+# `monad-src-<platform>.tar.gz` through the releases API, which is why the
+# per-platform names exist at all, and `monadup` falls back to the neutral name,
+# which is what lets a leg stop publishing the per-platform copies without
+# making a release look source-less. See scripts/monadup's do_install_sources.
+#
+# Usage: scripts/stage-mote-sources.sh [out_dir] [platform]
+#   (defaults: <root>/dist, and this machine's platform)
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 out_dir="${1:-$root/dist}"
-asset="$out_dir/monad-src-x86_64-linux.tar.gz"
+MONAD_PLATFORM="${2:-}"
+# shellcheck source=scripts/lib/platform-label.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/platform-label.sh"
+asset="$out_dir/monad-src-${MONAD_PLATFORM}.tar.gz"
+neutral="$out_dir/monad-src.tar.gz"
 
 # Dependency order, not alphabetical: `llvm` before `runtime`, which declares
 # it, and both after `init`/`std`, which they declare. The order is cosmetic
@@ -78,8 +92,11 @@ cat > "$staging/mote.toml" <<'TOML'
 members = ["init", "std", "llvm", "runtime"]
 TOML
 
-rm -f "$asset"
+rm -f "$asset" "$neutral"
 tar -czf "$asset" -C "$staging" "${members[@]}" mote.toml
+# A hard link, not a copy: same directory, same bytes, one inode -- and the
+# release uploads each name separately, so nothing downstream can tell.
+ln -f "$asset" "$neutral"
 
 # The archive is the artifact; assert its shape here rather than in the
 # release step, so a wrong member list fails the build that produced it.
@@ -95,5 +112,5 @@ for want in "${member_manifests[@]}" llvm/src/ir.mo runtime/src/runtime.c mote.t
     || { echo "stage-mote-sources: '$want' is not in $asset" >&2; exit 1; }
 done
 
-echo "stage-mote-sources: wrote $asset"
+echo "stage-mote-sources: wrote $asset and $neutral"
 wc -c < "$asset" | sed 's/^/stage-mote-sources: /;s/$/ bytes/'

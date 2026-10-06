@@ -3,27 +3,39 @@
 # monadup — manage monad nightly builds from GitHub releases.
 #
 # Subcommands:
-#   install [nightly-YYYY-MM-DD]  Download and install a nightly (latest if no tag)
-#   list                         List installed nightlies (* marks active)
-#   use nightly-YYYY-MM-DD       Switch the active nightly (updates symlink)
-#   default                      Install latest and set it as active
-#   uninstall nightly-YYYY-MM-DD Remove a downloaded nightly
-#   update                       Download latest, remove all older ones
-#   self-install                 Copy this script into ~/.monad/bin/monadup
-#   upgrade                      Re-download the latest monadup script and replace itself
+#   install [nightly-YYYY-MM-DD-<rev>]  Download and install a nightly (latest if no tag)
+#   list                                List installed nightlies (* marks active)
+#   use nightly-YYYY-MM-DD-<rev>        Switch the active nightly (updates symlink)
+#   default                             Install latest and set it as active
+#   uninstall nightly-YYYY-MM-DD-<rev>  Remove a downloaded nightly
+#   update                              Download latest, remove all older ones
+#   self-install                        Copy this script into ~/.monad/bin/monadup
+#   upgrade                             Re-download the latest monadup script and replace itself
 #
 # Environment:
 #   MONAD_HOME  Installation root (default: $HOME/.monad)
 #   MONADUP_API_URL  Releases API base URL, for testing the install path
 #                    against a local fixture (default: GitHub's)
+#   MONADUP_UNAME  The `<system> <machine>` pair `uname -sm` would print, so
+#                  the platform table below can be driven from one machine
+#                  (scripts/check-monadup.sh)
 #
 # A version directory holds the binary AND the mote sources it needs:
 #
 #   ~/.monad/downloads/<tag>/
-#     monad-nightly-x86_64-linux   the compiler
+#     monad-nightly-<platform>     the compiler
 #     commit.txt                    what it was built from
 #     init/  std/  runtime/         the mote sources
 #     mote.toml                     generated: those three as a workspace
+#
+# `<platform>` is this machine's, spelled `<arch>-<os>` the way the release
+# names its assets: x86_64-linux, aarch64-linux, riscv64-linux, aarch64-darwin.
+# Two things fall back to the x86_64-linux pair rather than erroring -- a
+# machine that matches none of those, and a release published before that
+# platform's nightly existed -- because the x86_64 pair is the one every
+# release has had since the first, and an install that cannot find its own
+# platform's assets is better off with an older release's than with a
+# diagnostic.
 #
 # The last three are what make the directory a TOOLCHAIN ROOT: a mote in its
 # own repository can then `monad check`/`test`/`compile` with no compiler
@@ -37,12 +49,36 @@
 set -euo pipefail
 
 REPO="monad-lang/monad"
-ASSET_NAME="monad-nightly-x86_64-linux"
-# The mote sources (`init`, `std`, `runtime`) that ship beside the binary.
-# Both URLs below are derived from the release the binary came from, so this
-# is the only other name the API lookup needs to know: asset URLs are
-# `<release base>/<asset name>` for every asset of a release.
-SRC_ASSET_NAME="monad-src-x86_64-linux.tar.gz"
+
+# The platform whose assets this install wants, in the `<arch>-<os>` style the
+# release names them, and the pair every nightly has had since the first.
+#
+# Deliberately its own copy of the table in scripts/lib/platform-label.sh: this
+# script is published standalone into a user's ~/.monad/bin, with no checkout to
+# source from. The two differ in one place on purpose -- an unrecognised machine
+# FALLS BACK here rather than erroring, because an install on a machine nobody
+# built a nightly for is better served by the historical pair than by a
+# diagnostic. A machine that IS recognised, installing a release that predates
+# its platform, is handled separately, by the chain in parse_release_json.
+FALLBACK_PLATFORM="x86_64-linux"
+UNAME_SM="${MONADUP_UNAME:-$(uname -sm)}"
+case "$UNAME_SM" in
+  "Darwin arm64" | "Darwin aarch64") PLATFORM="aarch64-darwin" ;;
+  "Linux aarch64" | "Linux arm64") PLATFORM="aarch64-linux" ;;
+  "Linux riscv64") PLATFORM="riscv64-linux" ;;
+  "Linux x86_64" | "Linux amd64") PLATFORM="x86_64-linux" ;;
+  *)
+    PLATFORM="$FALLBACK_PLATFORM"
+    echo "monadup: note: no nightly is published for '${UNAME_SM}'; installing the ${FALLBACK_PLATFORM} artifacts"
+    ;;
+esac
+
+# The mote sources (`init`, `std`, `runtime`) that ship beside the binary, under
+# the platform-neutral name as well as the per-platform one. Both URLs are
+# derived from the release the binary came from, so these are the only other
+# names the API lookup needs to know: asset URLs are `<release base>/<asset
+# name>` for every asset of a release.
+NEUTRAL_SRC_ASSET="monad-src.tar.gz"
 # Overridable so the fetch-and-unpack path can be driven against a local
 # fixture (`file://` URLs work, `curl -fsSL` reads them) instead of GitHub --
 # which is the only way this path gets tested at all. See
@@ -54,6 +90,19 @@ RAW_BASE="https://raw.githubusercontent.com/${REPO}/main/scripts/monadup"
 # Helpers
 # ---------------------------------------------------------------------------
 
+# The two asset names a platform's nightly carries. One definition, because the
+# binary and its sources have to be looked up and installed as a PAIR: the
+# sources are per-platform in their NAME only -- the tree they hold is the same
+# on every platform -- but a release that has one platform's binary and
+# another's sources is a release nobody can explain.
+bin_asset() {
+  echo "monad-nightly-$1"
+}
+
+src_asset() {
+  echo "monad-src-$1.tar.gz"
+}
+
 monad_home() {
   echo "${MONAD_HOME:-$HOME/.monad}"
 }
@@ -64,14 +113,14 @@ err() {
 }
 
 # Resolve the latest nightly-* tag from the GitHub releases API.
-# Sets global LATEST_TAG and LATEST_URL.
+# Sets the LATEST_* globals parse_release_json documents.
 fetch_latest_nightly() {
   local json
   json=$(curl -fsSL "$API_URL") || err "failed to query GitHub API (network or rate limit)"
   parse_release_json "$json" ""
 }
 
-# Fetch a specific release by tag. Sets global LATEST_TAG and LATEST_URL.
+# Fetch a specific release by tag. Sets the LATEST_* globals.
 fetch_specific_release() {
   local tag="$1"
   local json
@@ -79,63 +128,113 @@ fetch_specific_release() {
   parse_release_json "$json" "$tag"
 }
 
-# Parse the releases JSON and extract the nightly tag + binary download URL.
-# Arguments: json, optional expected tag (empty = find latest nightly-*)
-parse_release_json() {
+# The tag of the release `$json` describes (an object, for one release asked
+# for by name) or names (an element of the releases array). `$expected` is the
+# tag the caller asked for; empty means "newest `nightly-*`", which the API
+# returns first.
+#
+# jq where there is one and jq's own indexing rather than `| head -1`, which
+# would close the pipe under jq and turn `set -o pipefail` into a silent failure
+# of the whole substitution. python3 otherwise, for the machines with no jq.
+json_release_tag() {
   local json="$1"
   local expected="$2"
-  local tag url
 
   if command -v jq >/dev/null 2>&1; then
     if [[ -n "$expected" ]]; then
-      tag=$(echo "$json" | jq -r '.tag_name')
-      url=$(echo "$json" | jq -r ".assets[] | select(.name == \"${ASSET_NAME}\") | .browser_download_url")
+      jq -r '.tag_name' <<< "$json"
     else
-      tag=$(echo "$json" | jq -r '.[] | select(.tag_name | startswith("nightly-")) | .tag_name' | head -1)
-      url=$(echo "$json" | jq -r ".[] | select(.tag_name == \"${tag}\") | .assets[] | select(.name == \"${ASSET_NAME}\") | .browser_download_url")
+      jq -r '[.[] | select(.tag_name | startswith("nightly-"))][0].tag_name // empty' <<< "$json"
     fi
   elif command -v python3 >/dev/null 2>&1; then
-    if [[ -n "$expected" ]]; then
-      tag=$(python3 -c "
+    python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-print(d['tag_name'])
-" <<< "$json")
-      url=$(python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for a in d.get('assets', []):
-    if a['name'] == '${ASSET_NAME}':
-        print(a['browser_download_url'])
-" <<< "$json")
-    else
-      tag=$(python3 -c "
-import json, sys
+expected = sys.argv[1]
 data = json.load(sys.stdin)
-for r in data:
-    if r['tag_name'].startswith('nightly-'):
-        print(r['tag_name'])
-        break
-" <<< "$json")
-      url=$(python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for r in data:
-    if r['tag_name'] == '${tag}':
-        for a in r.get('assets', []):
-            if a['name'] == '${ASSET_NAME}':
-                print(a['browser_download_url'])
-" <<< "$json")
-    fi
+if expected:
+    print(data['tag_name'])
+else:
+    for r in data:
+        if r['tag_name'].startswith('nightly-'):
+            print(r['tag_name'])
+            break
+" "$expected" <<< "$json"
   else
     err "neither jq nor python3 is available (need one for JSON parsing)"
   fi
+}
 
+# The download URL of asset `$name` in release `$tag` of `$json`, or nothing at
+# all when that release carries no such asset. `$tag` is a parameter because
+# `$json` is either one release or the whole releases array, and the caller is
+# the only place that knows which.
+json_asset_url() {
+  local json="$1"
+  local tag="$2"
+  local name="$3"
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg t "$tag" --arg n "$name" '
+      (if type == "array" then (.[] | select(.tag_name == $t)) else . end)
+      | .assets[] | select(.name == $n) | .browser_download_url' <<< "$json"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import json, sys
+tag, name = sys.argv[1], sys.argv[2]
+data = json.load(sys.stdin)
+if isinstance(data, list):
+    data = next((r for r in data if r['tag_name'] == tag), {})
+for a in data.get('assets', []):
+    if a['name'] == name:
+        print(a['browser_download_url'])
+" "$tag" "$name" <<< "$json"
+  else
+    err "neither jq nor python3 is available (need one for JSON parsing)"
+  fi
+}
+
+# Resolve the release's tag and its two assets, into LATEST_TAG, LATEST_URL,
+# LATEST_PLATFORM, LATEST_ASSET and LATEST_SRC_ASSET.
+#
+# Arguments: json, optional expected tag (empty = find latest nightly-*).
+#
+# The platform is resolved HERE rather than by the caller because this is where
+# the assets are, and it is a CHAIN rather than a single name: a nightly
+# published before the other platforms existed ships the x86_64-linux pair
+# alone, and an aarch64 machine installing one of those wants that binary -- it
+# runs, under emulation -- rather than an error about a release that is fine.
+# This used to hard-error on a missing asset, so without the chain the fallback
+# would never get its turn. A release with neither is named for what was looked
+# for AND the machine asking: "no asset" on its own reads as a broken release.
+parse_release_json() {
+  local json="$1"
+  local expected="$2"
+  local tag p
+
+  tag=$(json_release_tag "$json" "$expected")
   [[ -n "$tag" ]] || err "no nightly release found"
-  [[ -n "$url" ]] || err "no asset '${ASSET_NAME}' found in release '${tag}'"
 
+  local platforms=("$PLATFORM")
+  [[ "$PLATFORM" == "$FALLBACK_PLATFORM" ]] || platforms+=("$FALLBACK_PLATFORM")
+
+  for p in "${platforms[@]}"; do
+    LATEST_URL=$(json_asset_url "$json" "$tag" "$(bin_asset "$p")")
+    if [[ -n "$LATEST_URL" ]]; then
+      LATEST_PLATFORM="$p"
+      break
+    fi
+  done
+
+  [[ -n "${LATEST_URL:-}" ]] \
+    || err "release '${tag}' has no $(bin_asset "$PLATFORM") asset, and no $(bin_asset "$FALLBACK_PLATFORM") one either, so it ships no binary for this machine (${PLATFORM})"
+
+  if [[ "$LATEST_PLATFORM" != "$PLATFORM" ]]; then
+    echo "monadup: note: ${tag} ships no $(bin_asset "$PLATFORM") binary; installing the $(bin_asset "$LATEST_PLATFORM") one"
+  fi
+
+  LATEST_ASSET="$(bin_asset "$LATEST_PLATFORM")"
+  LATEST_SRC_ASSET="$(src_asset "$LATEST_PLATFORM")"
   LATEST_TAG="$tag"
-  LATEST_URL="$url"
 }
 
 # ---------------------------------------------------------------------------
@@ -149,13 +248,13 @@ do_install() {
   local home_dir="$1"
   local dl_dir="${home_dir}/downloads"
   local target_dir="${dl_dir}/${LATEST_TAG}"
-  local binary="${target_dir}/${ASSET_NAME}"
+  local binary="${target_dir}/${LATEST_ASSET}"
 
   # Checked before anything is written: unpacking the sources is part of the
   # install now, and discovering `tar` is missing AFTER the binary has landed
   # would leave a half-installed version directory.
   command -v tar >/dev/null 2>&1 \
-    || err "tar is not available (needed to unpack ${SRC_ASSET_NAME}); install tar, or fetch the binary by hand from the release"
+    || err "tar is not available (needed to unpack ${LATEST_SRC_ASSET}); install tar, or fetch the binary by hand from the release"
 
   if [[ -x "$binary" ]]; then
     echo "monadup: ${LATEST_TAG} already installed"
@@ -164,7 +263,7 @@ do_install() {
     echo "monadup: downloading ${LATEST_TAG}..."
     curl -fsSL -o "$binary" "$LATEST_URL" || err "failed to download binary"
     curl -fsSL -o "${target_dir}/commit.txt" \
-      "${LATEST_URL%/"${ASSET_NAME}"}/commit.txt" \
+      "${LATEST_URL%/"${LATEST_ASSET}"}/commit.txt" \
       || err "failed to download commit.txt"
     chmod +x "$binary"
     echo "monadup: installed ${LATEST_TAG}"
@@ -207,20 +306,28 @@ do_install_sources() {
     return 0
   fi
 
-  local url="${LATEST_URL%/"${ASSET_NAME}"}/${SRC_ASSET_NAME}"
-  local tarball="${target_dir}/${SRC_ASSET_NAME}"
+  local base="${LATEST_URL%/"${LATEST_ASSET}"}"
+  local tarball="${target_dir}/${LATEST_SRC_ASSET}"
 
-  if ! curl -fsSL -o "$tarball" "$url" 2>/dev/null; then
+  if ! curl -fsSL -o "$tarball" "${base}/${LATEST_SRC_ASSET}" 2>/dev/null; then
     rm -f "$tarball"
-    echo "monadup: note: ${LATEST_TAG} ships no ${SRC_ASSET_NAME}"
-    echo "monadup:       the binary is installed and usable inside a compiler checkout,"
-    echo "monadup:       but 'monad build'/'run'/'test' elsewhere will not find init,"
-    echo "monadup:       std, llvm or the C runtime: declare [dependencies.runtime] and run"
-    echo "monadup:       from a checkout, or install a tag that ships the sources."
-    return 0
+    # Then the platform-neutral name, which a release may carry INSTEAD of the
+    # per-platform copies: the tree is the same on every platform, so the name
+    # is the only thing that differs, and a release that has stopped publishing
+    # them is not a release without sources.
+    tarball="${target_dir}/${NEUTRAL_SRC_ASSET}"
+    if ! curl -fsSL -o "$tarball" "${base}/${NEUTRAL_SRC_ASSET}" 2>/dev/null; then
+      rm -f "$tarball"
+      echo "monadup: note: ${LATEST_TAG} ships no ${LATEST_SRC_ASSET} and no ${NEUTRAL_SRC_ASSET}"
+      echo "monadup:       the binary is installed and usable inside a compiler checkout,"
+      echo "monadup:       but 'monad build'/'run'/'test' elsewhere will not find init,"
+      echo "monadup:       std, llvm or the C runtime: declare [dependencies.runtime] and run"
+      echo "monadup:       from a checkout, or install a tag that ships the sources."
+      return 0
+    fi
   fi
 
-  tar -xzf "$tarball" -C "$target_dir" || err "failed to unpack ${SRC_ASSET_NAME}"
+  tar -xzf "$tarball" -C "$target_dir" || err "failed to unpack $(basename "$tarball")"
   rm -f "$tarball"
   echo "monadup: installed mote sources (init, std, llvm, runtime)"
 }
@@ -276,16 +383,29 @@ do_use() {
   local home_dir="$1"
   local tag="$2"
   local target_dir="${home_dir}/downloads/${tag}"
-  local binary="${target_dir}/${ASSET_NAME}"
   local bin_dir="${home_dir}/bin"
   local link="${bin_dir}/monad"
   local active_file="${home_dir}/active"
 
   [[ -d "$target_dir" ]] || err "nightly '${tag}' is not installed"
-  [[ -x "$binary" ]] || err "binary missing in '${tag}'"
+
+  # By PATTERN, not by name: the name carries the platform the binary was built
+  # for, and a version directory installed by a monadup that spelled it
+  # differently -- an earlier script, or another platform's asset under
+  # emulation -- has to stay usable. The pattern is narrow enough to keep the
+  # two apart on its own: `monad-nightly-*` never matches the sources tarball
+  # (`monad-src-*`) or `commit.txt`.
+  local binary="" candidate
+  for candidate in "${target_dir}"/monad-nightly-*; do
+    [[ -f "$candidate" ]] || continue
+    binary="$candidate"
+    break
+  done
+  [[ -n "$binary" ]] || err "binary missing in '${tag}'"
+  [[ -x "$binary" ]] || err "binary in '${tag}' is not executable"
 
   mkdir -p "$bin_dir"
-  ln -sfn "../downloads/${tag}/${ASSET_NAME}" "$link"
+  ln -sfn "../downloads/${tag}/$(basename "$binary")" "$link"
   echo "$tag" > "$active_file"
 }
 
@@ -293,7 +413,7 @@ cmd_use() {
   local home_dir
   home_dir=$(monad_home)
   local tag="${1:-}"
-  [[ -n "$tag" ]] || err "usage: monadup use <nightly-YYYY-MM-DD>"
+  [[ -n "$tag" ]] || err "usage: monadup use <nightly-YYYY-MM-DD-<rev>>"
   do_use "$home_dir" "$tag"
   echo "monadup: switched to ${tag}"
 }
@@ -311,7 +431,7 @@ cmd_uninstall() {
   local home_dir
   home_dir=$(monad_home)
   local tag="${1:-}"
-  [[ -n "$tag" ]] || err "usage: monadup uninstall <nightly-YYYY-MM-DD>"
+  [[ -n "$tag" ]] || err "usage: monadup uninstall <nightly-YYYY-MM-DD-<rev>>"
 
   local target_dir="${home_dir}/downloads/${tag}"
   [[ -d "$target_dir" ]] || err "nightly '${tag}' is not installed"
@@ -396,19 +516,21 @@ monadup — manage monad nightly builds
 Usage: monadup <command> [args]
 
 Commands:
-  install [nightly-YYYY-MM-DD]  Download and install a nightly (latest if no tag)
-  list                          List installed nightlies (* marks active)
-  use nightly-YYYY-MM-DD         Switch the active nightly
-  default                       Install latest and set it as active
-  uninstall nightly-YYYY-MM-DD   Remove a downloaded nightly
-  update                        Download latest, remove all older ones
-  self-install                  Copy this script into ~/.monad/bin/monadup
-  upgrade                       Re-download the latest monadup and replace itself
+  install [nightly-YYYY-MM-DD-<rev>]  Download and install a nightly (latest if no tag)
+  list                                List installed nightlies (* marks active)
+  use nightly-YYYY-MM-DD-<rev>        Switch the active nightly
+  default                             Install latest and set it as active
+  uninstall nightly-YYYY-MM-DD-<rev>  Remove a downloaded nightly
+  update                              Download latest, remove all older ones
+  self-install                        Copy this script into ~/.monad/bin/monadup
+  upgrade                             Re-download the latest monadup and replace itself
 
 Environment:
   MONAD_HOME       Installation root (default: \$HOME/.monad)
   MONADUP_API_URL  Releases API base URL (default: GitHub's; set it to test
                    the install path against a local fixture)
+  MONADUP_UNAME    The '<system> <machine>' pair \`uname -sm\` would print, to
+                   install another platform's artifacts (default: this one)
   MONAD_ROOT       Read by the COMPILER, not here: a directory holding
                    init/, std/ and runtime/ to resolve the stdlib and the C
                    runtime from. \$MONAD_HOME/downloads/<active tag> is one
@@ -418,7 +540,9 @@ Each installed tag lives in \$MONAD_HOME/downloads/<tag>/ as the binary, the
 commit it was built from, and the init/std/runtime mote sources. The sources
 make that directory a toolchain root, so a mote in its own repository can
 build without a compiler checkout. Nightlies published before the sources
-asset existed install the binary alone, and say so.
+asset existed install the binary alone, and say so. A machine with no nightly
+of its own -- or one installing a tag that predates its platform -- gets the
+x86_64-linux binary instead, which runs under emulation.
 EOF
 }
 

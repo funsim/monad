@@ -12,10 +12,28 @@
 # through `nix develop` -- and locally as `devenv tasks run monad:nightly`,
 # or this script directly -- is what makes every tool it uses a declared
 # dependency instead of an assumption about the host.
+#
+# Usage: scripts/nightly-release.sh [platform]
+#
+# `platform` names the artifacts (`monad-nightly-<platform>`) and, absent an
+# argument, comes from an ambient MONAD_PLATFORM and then from this machine's
+# own label; see scripts/lib/platform-label.sh. A cross leg must pass its
+# TARGET's label, since the binary it stages is named after the platform it is
+# for and not after the runner that produced it -- and the `check` below, which
+# is what makes the published artifact a verified one, is only meaningful where
+# that binary runs. A cross leg's verification is its derivation's checkPhase.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-bin="$root/dist/monad-nightly-x86_64-linux"
+# Argument, then environment, then the lib's table. `${1:-}` alone CLOBBERS an
+# ambient MONAD_PLATFORM with the empty string, which the lib reads as "unset"
+# -- so a cross leg driven from the environment silently published this
+# machine's native label instead.
+MONAD_PLATFORM="${1:-${MONAD_PLATFORM:-}}"
+# shellcheck source=scripts/lib/platform-label.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/platform-label.sh"
+bin="$root/dist/monad-nightly-${MONAD_PLATFORM}"
 
 # A self-hosted runner's workspace is dirty across runs and the release step
 # uploads whatever is in dist/ -- clear it, so a failed build can never
@@ -73,8 +91,9 @@ grep -qvE '^$|^unknown$' "$root/dist/commit.txt"
 # into the same version directory as the binary, and the compiler then finds
 # it as a toolchain root (`Mote.toolchain_root`, `lang/src/mote.mo`). Staged
 # by its own script because that script is also what the staging test drives
-# against a temp directory -- see scripts/check-monadup.sh.
-"$root/scripts/stage-mote-sources.sh" "$root/dist"
+# against a temp directory -- see scripts/check-monadup.sh. It takes the same
+# label, so the two artifacts of a leg are always for the same platform.
+"$root/scripts/stage-mote-sources.sh" "$root/dist" "$MONAD_PLATFORM"
 
 # The workflow's `tag`/`date` step outputs, for the release step. Written
 # here rather than in a second `nix develop` step of their own: they are this
@@ -93,6 +112,18 @@ grep -qvE '^$|^unknown$' "$root/dist/commit.txt"
 # Unset outside Actions, which is the only place these outputs mean anything.
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   date_utc="$(date -u +%Y-%m-%d)"
-  printf 'tag=nightly-%s\n' "$date_utc" >> "$GITHUB_OUTPUT"
-  printf 'date=%s\n' "$date_utc" >> "$GITHUB_OUTPUT"
+  # The revision is IN the tag so two pushes in one UTC day cannot share a
+  # release: `softprops/action-gh-release` overwrites same-named assets and
+  # never deletes, and the "every leg the same revision" check reads only the
+  # `commit.txt` files that ARE present, so it cannot see a stale binary left
+  # by an earlier run. `scripts/monadup` filters on the `nightly-` prefix only.
+  rev_short="${GITHUB_SHA:-}"
+  rev_short="${rev_short:0:8}"
+  tag="nightly-${date_utc}"
+  if [ -n "$rev_short" ]; then tag="${tag}-${rev_short}"; fi
+  {
+    printf 'tag=%s\n' "$tag"
+    printf 'date=%s\n' "$date_utc"
+    printf 'rev=%s\n' "$rev_short"
+  } >> "$GITHUB_OUTPUT"
 fi
