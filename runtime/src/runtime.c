@@ -560,14 +560,14 @@ void* monad_array_freeze(void* b) {
 /* MONAD_FIBER_TAG / MONAD_SCOPE_TAG are defined with the other `Header.tag`
    kind values at the head of this file; `monad_get_tag` needs them before
    the fiber code does. */
-/* A fiber's stack is sized to mirror `raise_stack_limit`'s own 128 MB: a
-   fiber body is compiled Monad code and can recurse exactly as deeply as
-   `main` can, so the plan doc's original 8 KB ucontext stack would
-   overflow on the first recursive helper. The reservation is ADDRESS
-   space, committed on demand, so a fiber that does not recurse deeply
-   never pays for it in RSS -- and an awaited fiber's stack is unmapped
-   again by the join. */
-#define MONAD_FIBER_STACK_BYTES ((size_t)128 * 1024 * 1024)
+/* The stack every thread that runs compiled Monad code is created with,
+   `main` included -- see its trampoline below. A fiber body can recurse
+   exactly as deeply as `main` can, so the plan doc's original 8 KB
+   ucontext stack would overflow on the first recursive helper. The
+   reservation is ADDRESS space, committed on demand, so a thread that
+   does not recurse deeply never pays for it in RSS -- and an awaited
+   fiber's stack is unmapped again by the join. */
+#define MONAD_DEEP_STACK_BYTES ((size_t)128 * 1024 * 1024)
 
 typedef struct {
     Header header;
@@ -665,7 +665,7 @@ void* monad_fork_io(void* closure) {
     pthread_attr_t attr;
     int rc = pthread_attr_init(&attr);
     if (rc == 0) {
-        pthread_attr_setstacksize(&attr, MONAD_FIBER_STACK_BYTES);
+        pthread_attr_setstacksize(&attr, MONAD_DEEP_STACK_BYTES);
         rc = pthread_create(&f->thread, &attr, fiber_main, f);
         if (rc != 0) {
             /* The 128 MB reservation can be refused (thread-count or
@@ -2063,8 +2063,9 @@ int64_t main_monad(void* args);
  * decision, and the program should still run for inputs that fit.
  *
  * Note this must happen before the deep recursion starts, and cannot be
- * done from Monad code -- by the time `main_monad` runs it is too late
- * to grow the stack the current thread is already using. */
+ * done from Monad code. It is also only half the answer, and the weaker
+ * half: see `main`'s trampoline below, which hands `main_monad` a stack
+ * of its own rather than relying on this having worked. */
 static void raise_stack_limit(void) {
     const rlim_t wanted = (rlim_t)128 * 1024 * 1024; /* matches devenv.nix */
     struct rlimit rl;
@@ -2079,6 +2080,33 @@ static void raise_stack_limit(void) {
     }
 }
 
+typedef struct {
+    void* args;
+    int64_t result;
+} MainThread;
+
+/* Run `main_monad` on a thread whose stack is sized explicitly, rather
+   than on the one the OS handed the process.
+
+   `raise_stack_limit` above moves only the SOFT limit, which is enough
+   on Linux: it grows the main thread's stack on demand up to that
+   limit. Darwin instead sizes the main thread's stack as a fixed
+   mapping at exec time, so a limit raised afterwards changes nothing
+   there and the binary gets ~8 MB however the shell was configured --
+   under half the ~64 MB the ladder itself states it needs, and nowhere
+   near the 128 MB a fiber gets. An explicit stack makes the depth
+   independent of the ambient rlimit on every platform, which is what
+   raising the limit was trying to buy in the first place.
+
+   Same shape and same fallback as `monad_fork_io`'s worker: if the
+   reservation is refused, retry on the default stack, because a shallow
+   stack that still runs beats a process that cannot start. */
+static void* main_thread_main(void* p) {
+    MainThread* m = (MainThread*)p;
+    m->result = main_monad(m->args);
+    return NULL;
+}
+
 int main(int argc, char** argv) {
     raise_stack_limit();
     GC_INIT();
@@ -2088,5 +2116,28 @@ int main(int argc, char** argv) {
        program's own path), and makes an empty `args` list actually
        reachable (e.g. examples/hello.mo's "no arguments" fallback). */
     void* args = monad_build_args(argc - 1, argv + 1);
-    return (int)main_monad(args);
+    MainThread m;
+    m.args = args;
+    m.result = 0;
+    pthread_t thread;
+    pthread_attr_t attr;
+    int rc = pthread_attr_init(&attr);
+    if (rc == 0) {
+        pthread_attr_setstacksize(&attr, MONAD_DEEP_STACK_BYTES);
+        rc = pthread_create(&thread, &attr, main_thread_main, &m);
+        if (rc != 0) {
+            pthread_attr_destroy(&attr);
+            pthread_attr_init(&attr);
+            rc = pthread_create(&thread, &attr, main_thread_main, &m);
+        }
+        pthread_attr_destroy(&attr);
+    }
+    if (rc != 0) {
+        /* No thread at all. `raise_stack_limit` above is then the only
+           stack this process has -- exactly the behaviour before this
+           trampoline existed, which is the right way to degrade. */
+        return (int)main_monad(args);
+    }
+    pthread_join(thread, NULL);
+    return (int)m.result;
 }
