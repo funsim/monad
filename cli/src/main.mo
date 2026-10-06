@@ -1748,6 +1748,9 @@ type Command {
     gc (files: List String) (workspace: Bool) (apply: Bool) (target_dir: String),
     /// `monad store ls|verify [--target-dir <dir>]`.
     store (sub: String) (target_dir: String),
+    /// `monad print-targets`: the triples `--target` accepts, which of them
+    /// this llc can actually build for, and what this machine's own target is.
+    print_targets,
     lsp,
     version,
     help
@@ -1975,6 +1978,8 @@ def Command.from_args (args : List String) : Command :=
                                 },
                         },
                 }
+            else if cmd == "print-targets" then
+                Command.print_targets
             else if cmd == "lsp" then
                 Command.lsp
             else if cmd == "version" then
@@ -2060,6 +2065,7 @@ def main (args : List String) : IO I64 {
         store sub target_dir => do {
             run_store sub target_dir
         },
+        print_targets => run_print_targets,
         lsp => lsp_serve,
         version => do {
             println build_commit;
@@ -2071,12 +2077,28 @@ def main (args : List String) : IO I64 {
     }
 }
 
+/// `monad print-targets`. The tabulated targets, each marked when this llc
+/// cannot build for it; then this machine's own target (what no `--target`
+/// means); then llc's whole registered architecture list, which is what
+/// `--target` is validated against.
+#[partial]
+def run_print_targets : IO I64 := do {
+    let archs <- TargetSpec.registered_archs;
+    let native <- TargetSpec.native;
+    println "Targets this compiler has a measured spelling for:";
+    println (TargetSpec.describe_all archs TargetSpec.known_targets);
+    println (String.concat "This machine: " (String.concat native.triple "  (what no --target builds for)"));
+    println "Architectures this llc registers (--target accepts any target built on one):";
+    println (TargetSpec.arch_line archs);
+    return 0
+}
+
 #[partial]
 def print_help : IO I64 {
     println "Monad is in alpha mode and under heavy development.";
     println "Expect breaking changes, bugs, and incomplete features.";
     println "";
-    println "Usage: monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]";
+    println "Usage: monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--target <triple>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]";
     println "         Compile a .mo source file, or a mote, to a native binary";
     println "         <path> may be a mote DIRECTORY, in which case its [[bin]] target is built";
     println "           (`monad build cli` builds cli/src/main.mo as `monad`)";
@@ -2086,6 +2108,8 @@ def print_help : IO I64 {
     println "         With no <path>, builds the mote containing the working directory";
     println "         --verbose/-v prints each module as it loads and one line per pipeline stage";
     println "         --debug/-g emits DWARF debug info (one source location per top-level def)";
+    println "         --target <triple> builds for another target (space-separated: --target=x does not parse)";
+    println "           `monad print-targets` lists the spellings this compiler has measured";
     println "         --no-cache (or MONAD_NO_CACHE) compiles for real, reading and writing no store entry";
     println "       monad run <path> [--verbose/-v] [--debug/-g] [--release]  Compile and execute a .mo source file";
     println "       monad eval <path> [--verbose/-v]  Evaluate a .mo source file using the built-in interpreter (pure programs only)";
@@ -2118,6 +2142,9 @@ def print_help : IO I64 {
     println "         verify is structural: an entry records neither the file nor the sources behind";
     println "           it, so it checks that an entry is complete and readable, not that its key";
     println "           is the right key. It exits non-zero on any incomplete entry";
+    println "       monad print-targets  List the triples --target accepts, and what this llc can build for";
+    println "         Each is the spelling the emitter writes; `(llc ...)` adds the argv when llc needs more";
+    println "         A --target name whose architecture this llc does not register is rejected by name";
     println "       monad lsp  Speak the Language Server Protocol on stdin and stdout, until stdin ends";
     println "         Started by an editor, which is told nothing else: no arguments, no flags";
     println "       monad version  Print the git commit this binary was built from";

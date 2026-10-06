@@ -130,6 +130,13 @@ def test_from_args_build_bin_flag : Bool :=
 // `--bin` is: left in the list, `--target` reads as the positional PATH and
 // the triple as the output name.
 #[test]
+def test_from_args_print_targets : Bool :=
+    match Command.from_args ["print-targets"] {
+        Command.print_targets => true,
+        _ => false,
+    }
+
+#[test]
 def test_from_args_build_target_flag : Bool :=
     match Command.from_args ["build", "a.mo", "--target", "aarch64-unknown-linux-gnu"] {
         Command.build path out_name _bin _verbose _debug _no_cache target =>
