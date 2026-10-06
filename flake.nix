@@ -76,7 +76,16 @@
       monadVersion = "0.1.0";
     in
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = [ "x86_64-linux" ];
+      # A system here means a machine that BUILDS, which is why `aarch64-linux`
+      # is not one: nothing evaluates on a riscv64 or an arm64 Linux box, and
+      # the nightly's binaries for those are cross outputs of x86_64-linux
+      # (`monadAarch64Linux`, `monadRiscv64Linux`). The Mac leg is native
+      # because cross-building for darwin needs an Apple SDK nixpkgs cannot
+      # redistribute, and `macos-15` is arm64.
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
 
       imports = [
         (import ./nix/host.nix { inherit monadVersion; })

@@ -2,6 +2,8 @@
 # Push to the project's Cachix cache (monad-lang.cachix.org).
 #
 # Called from CI inside `nix develop`, which is where `cachix` is (devenv.nix).
+# The darwin leg is the exception and enters it through `nix shell nixpkgs#cachix`
+# instead, because that runner cannot realise the dev shell at all.
 # Nothing else pushes: the runners' user is not a trusted Nix user, so there is
 # no post-build hook to catch paths as they are built, and cachix-action's
 # fallback in that situation scans the whole store and would upload whatever

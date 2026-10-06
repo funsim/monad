@@ -9,9 +9,9 @@ permissions:
   contents: write
 
 # One group for the whole matrix, so the legs of a night cannot race each other
-# into creating the same `nightly-<date>` tag, and so a night never cancels the
-# one before it: a release is not idempotent the way a CI run is, and the tag
-# the legs agree on is derived from the clock rather than from the commit.
+# into creating the same `nightly-<date>-<rev>` tag, and so a night never
+# cancels the one before it: a release is not idempotent the way a CI run is,
+# and the tag the legs agree on carries the commit the date alone did not.
 concurrency:
   group: nightly-${{ github.ref }}
   cancel-in-progress: false
@@ -40,12 +40,13 @@ jobs:
     outputs:
       tag: ${{ steps.nightly.outputs.tag }}
       date: ${{ steps.nightly.outputs.date }}
+      rev: ${{ steps.nightly.outputs.rev }}
     steps:
       - uses: actions/checkout@v5
 
       # The whole build -- the flake's `.#monad`, which is rung 1 plus this
       # commit's relink, the verification, the staged artifacts and the
-      # `tag`/`date` outputs the release job reads -- happens inside this one
+      # `tag`/`date`/`rev` outputs the release job reads -- happens inside this
       # dev-shell entry. Two things drive the shape of it:
       #
       #   * a bare `run:` gets the RUNNER HOST's PATH, not the devenv's,
@@ -114,7 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # No `id:`: a cross leg's `tag`/`date` are not the release's. Only the
+      # No `id:`: a cross leg's `tag`/`date`/`rev` are not the release's. Only the
       # native leg's outputs are, and they are the answer to "which night is
       # this" -- a leg that crosses midnight while a runner queues would
       # otherwise be able to name a different date than the one released.
@@ -132,17 +133,69 @@ jobs:
             dist/commit.txt
           if-no-files-found: error
 
+  # The arm64 Mac leg, and the only one that does not share the native leg's
+  # rung 1: a different platform's interpretation of the compiler is a
+  # different derivation, so `needs:` would buy no cache warmth and would put a
+  # GitHub-hosted runner behind the self-hosted queue for nothing. One leg pays
+  # a cold store -- monad-lang.cachix.org has no aarch64-darwin paths yet, which
+  # is what the push step below is for.
+  darwin-native:
+    if: github.repository == 'monad-lang/monad'
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      # A cold macOS runner has no nix, and this is the installer that also
+      # turns flakes on without further configuration. Idempotent, so it costs
+      # a few seconds on a runner that turns out to have had one.
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      # NOT `nix develop`: devenv.nix declares `util-linux` for `lscpu`, which
+      # has no darwin build, so the default shell cannot be realised here at
+      # all. The tools the script reaches for are named instead -- it is a
+      # script's worth of coreutils rather than a toolchain's, because the
+      # build itself is the flake's and happens in its own derivation.
+      - name: Build and verify the nightly binary
+        run: |
+          nix shell nixpkgs#bash nixpkgs#coreutils nixpkgs#file nixpkgs#gnugrep \
+            nixpkgs#gnused nixpkgs#gnutar -c \
+            scripts/nightly-release.sh aarch64-darwin
+
+      # So a re-run of this same commit -- which is what iterating on a leg
+      # that has never run here looks like -- substitutes instead of paying the
+      # interpretation again. `cachix` comes from its own `nix shell` because
+      # the push script documents `nix develop` as its caller and cannot be
+      # entered that way on this runner.
+      - name: Push the ladder to the binary cache
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          paths="$(nix build --no-link --print-out-paths --accept-flake-config \
+            .#monadHost .#monadRung1 .#monad)"
+          nix shell nixpkgs#cachix nixpkgs#coreutils nixpkgs#gnugrep -c \
+            scripts/push-to-cache.sh $paths
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: monad-aarch64-darwin
+          path: |
+            dist/monad-nightly-aarch64-darwin
+            dist/monad-src-aarch64-darwin.tar.gz
+            dist/commit.txt
+          if-no-files-found: error
+
   # One release, one `tag_name`, one upload. Four jobs creating the same tag
   # concurrently is a real conflict -- softprops/action-gh-release@v2 appends to
   # an existing tag, but two first-creators race -- so the legs upload artifacts
   # and this job is the only one that touches the release.
   release:
-    needs: [linux-native, linux-cross]
-    # `always()` so a failed cross leg cannot take the release down with it.
-    # `needs:` alone would: a job whose dependency failed is SKIPPED, not run,
-    # which is the opposite of what `fail-fast: false` above is for. The native
-    # leg is still required -- it is the one that proves the artifact runs, and
-    # it is where the tag comes from.
+    needs: [linux-native, linux-cross, darwin-native]
+    # `always()` so a failed cross or Mac leg cannot take the release down with
+    # it. `needs:` alone would: a job whose dependency failed is SKIPPED, not
+    # run, which is the opposite of what `fail-fast: false` above is for. The
+    # native leg is still required -- it is the one that proves the artifact
+    # runs, and it is where the tag comes from.
     if: |
       always() && !cancelled()
       && needs['linux-native'].result == 'success'
@@ -154,14 +207,15 @@ jobs:
         with:
           path: artifacts
 
-      # The legs' `commit.txt` files are not copies of one another. The native
-      # leg's is what its own binary REPORTS -- `monad version`, the revision
-      # baked in at link time -- while a cross leg's is what the tree and the
-      # flake's stamp say, because a cross binary cannot run on the runner that
-      # built it. Comparing them is what turns that difference in provenance
-      # into one claim about the release: every asset here is the same
-      # revision. It is also the only thing asserting anything at all about a
-      # cross leg's binary.
+      # The legs' `commit.txt` files are not copies of one another. The two
+      # legs whose binary RUNS on the machine that built it -- the linux one and
+      # the Mac -- record what that binary reports (`monad version`, the
+      # revision baked in at link time), while a cross leg cannot ask its binary
+      # at all and reads the stamp out of the derivation that produced it.
+      # Comparing them is what turns that difference in provenance into one
+      # claim about the release: every asset here is the same revision. It is
+      # also the only thing asserting anything at all about a cross leg's
+      # binary.
       - name: Every leg built the same revision
         run: |
           cat artifacts/*/commit.txt | sort -u > commits.txt
@@ -181,34 +235,64 @@ jobs:
           find artifacts -type f -exec cp {} release/ \;
           ls -l release
 
+      # The body is generated from what is actually in `release/`. This job runs
+      # whenever `linux-native` succeeded, so a night whose cross or Mac leg
+      # failed would otherwise publish notes claiming a platform it never
+      # uploaded -- and `monadup` would then install the x86_64 fallback
+      # silently. The notes file is written OUTSIDE `release/`, which `files:`
+      # uploads wholesale.
+      - name: Write the release notes
+        run: |
+          # shellcheck disable=SC2016  # the backticks are markdown, not substitution
+          set -eu
+          notes="$PWD/release-notes.md"
+          missing=0
+          {
+            echo 'Automated nightly build of the bootstrapped `monad` compiler from `main`.'
+            echo
+            echo "Commit: ${GITHUB_SHA}"
+            echo
+            echo 'One `monad-nightly-<platform>` binary per platform, each with a'
+            echo '`monad-src-<platform>.tar.gz` beside it holding the `init`, `std`,'
+            echo '`llvm` and `runtime` mote sources. `monadup` unpacks that beside the'
+            echo 'binary, and the compiler then resolves `use std::…` and the C runtime'
+            echo 'from that directory as a toolchain root — which is what lets a mote'
+            echo 'in its own repository build without a compiler checkout. (Older tags'
+            echo 'have no such asset: `monadup` installs the binary alone and says'
+            echo 'what is missing.)'
+            echo
+            for p in x86_64-linux aarch64-darwin aarch64-linux riscv64-linux; do
+              case "$p" in
+                x86_64-linux) how='built and verified natively.' ;;
+                aarch64-darwin) how='built and verified natively, on an arm64 macOS runner.' ;;
+                aarch64-linux) how='cross-built from x86_64-linux and verified under QEMU.' ;;
+                riscv64-linux) how='**experimental**, cross-built and verified under QEMU; nothing runs it natively, and `monadup` installs it only on a riscv64 machine.' ;;
+              esac
+              if [ -f "release/monad-nightly-$p" ]; then
+                printf '* `%s` — %s\n' "$p" "$how"
+              else
+                printf '* `%s` — **not published by this run.**\n' "$p"
+                missing=$((missing + 1))
+              fi
+            done
+            if [ "$missing" -gt 0 ]; then
+              echo
+              echo 'A platform marked **not published** above has no nightly this time.'
+              echo '`monadup` on such a machine installs the `x86_64-linux` artifacts instead,'
+              echo 'and says so, rather than failing.'
+            fi
+            echo
+            echo '`monad-src.tar.gz` is the same mote sources under a platform-neutral'
+            echo 'name, for a tool that would rather not know which platform it is on.'
+          } > "$notes"
+          cat "$notes"
+
       - name: Create nightly prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs['linux-native'].outputs.tag }}
-          name: Nightly ${{ needs['linux-native'].outputs.date }}
-          body: |
-            Automated nightly build of the bootstrapped `monad` compiler from `main`.
-
-            Commit: ${{ github.sha }}
-
-            One `monad-nightly-<platform>` binary per platform, each with a
-            `monad-src-<platform>.tar.gz` beside it holding the `init`, `std`,
-            `llvm` and `runtime` mote sources. `monadup` unpacks that beside the
-            binary, and the compiler then resolves `use std::…` and the C runtime
-            from that directory as a toolchain root — which is what lets a mote
-            in its own repository build without a compiler checkout. (Older tags
-            have no such asset: `monadup` installs the binary alone and says
-            what is missing.)
-
-            * `x86_64-linux` — built and verified natively.
-            * `aarch64-linux` — cross-built and verified under QEMU.
-            * `riscv64-linux` — **experimental**, cross-built and verified under
-              QEMU. Nothing here runs it natively, and `monadup` installs it
-              only on a riscv64 machine.
-
-            `monad-src.tar.gz` is the same mote sources under a
-            platform-neutral name, for a tool that would rather not know which
-            platform it is on.
+          name: Nightly ${{ needs['linux-native'].outputs.date }} (${{ needs['linux-native'].outputs.rev }})
+          body_path: release-notes.md
           prerelease: true
           make_latest: false
           files: release/*
