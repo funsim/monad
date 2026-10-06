@@ -9,9 +9,10 @@ Before getting started, ensure you have:
 - A `monad` binary. The compiler is written in Monad, so the first one is either
   built by the bootstrap host or installed as a nightly with `monadup` — see
   [Compiling and Running](./compiling.md#getting-a-compiler). (Nightlies are
-  Linux x86_64 and currently need Nix; building from source is the portable
-  route. A nightly also installs the `init`, `std`, `llvm` and `runtime`
-  sources, so it can compile a program that lives outside a checkout.)
+  published for `x86_64-linux`, `aarch64-darwin`, `aarch64-linux` and —
+  experimental — `riscv64-linux`, and currently need Nix; building from source
+  is the portable route. A nightly also installs the `init`, `std`, `llvm` and
+  `runtime` sources, so it can compile a program that lives outside a checkout.)
 - `llc`, `clang`, and the Boehm GC development files, which the compiler links
   against. `devenv shell` provides all three.
 - A text editor. There is no syntax-highlighting plugin yet; the bootstrap host

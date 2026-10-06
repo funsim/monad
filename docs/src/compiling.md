@@ -45,16 +45,16 @@ monad version
 `monadup list` / `use <tag>` / `update` / `uninstall <tag>` manage the installed
 set under `~/.monad`. It needs `curl`, `tar` and either `jq` or `python3`.
 
-> **The nightly is built inside the Nix devenv** and links against store paths,
-> so on a machine without those it will not run — `monadup` says so rather than
-> leaving you to discover it. Until that is fixed, building from source is the
-> portable route.
+> **The nightly is built by the Nix flake** and links against store paths, so on
+> a machine without those it will not run — `monadup` says so rather than leaving
+> you to discover it. Until that is fixed, building from source is the portable
+> route.
 
 An install directory holds more than the compiler:
 
 ```
 ~/.monad/downloads/<tag>/
-  monad-nightly-x86_64-linux   the compiler
+  monad-nightly-<platform>     the compiler
   commit.txt                   the commit it was built from
   init/  std/  llvm/  runtime/ the mote sources
   mote.toml                    those four, as a workspace
@@ -73,8 +73,14 @@ is not a monadup install (an unpacked copy, or a checkout):
 MONAD_ROOT=/path/to/tree-with-init-std-runtime monad check
 ```
 
-Two artifacts, both Linux x86_64 only: `monad-nightly-x86_64-linux` (the
-compiler) and `monad-src-x86_64-linux.tar.gz` (the sources above).
+Two artifacts, per platform: `monad-nightly-<platform>` (the compiler) and
+`monad-src-<platform>.tar.gz` (the sources above). `x86_64-linux` and
+`aarch64-darwin` are built and verified on the platform they are for;
+`aarch64-linux` and `riscv64-linux` are cross-built from `x86_64-linux` and
+verified under QEMU, and riscv64 is **experimental**. `monadup` reads the
+machine with `uname -sm` and installs that pair, falling back to `x86_64-linux`
+on a platform no release has published — which is every tag older than the
+platform.
 
 ## Your First Program
 
@@ -103,7 +109,7 @@ monad build hello.mo -o "$PWD/hello"
 ## The Commands
 
 ```text
-monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]
+monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--target <triple>] [--verbose/-v] [--debug/-g] [--release] [--no-cache]
         Parse, type-check and compile a .mo source file to a native binary.
         <path> may also be a mote DIRECTORY, in which case one of its [[bin]]
         targets is built: `monad build cli` builds cli/src/main.mo as `monad`,
@@ -117,6 +123,18 @@ monad build [<path>] [name] [--bin <name>] [--output/-o <name>] [--verbose/-v] [
         With NO <path>, builds the mote containing the working directory --
         the same default `check` and `test` have. `monad build` and
         `monad build .` are one code path.
+        `--target <triple>` builds for another target. The triple is the
+        spelling `monad print-targets` lists, which is the spelling the
+        emitter writes; a target whose ARCHITECTURE this llc does not register
+        is rejected by name rather than by a backend error further down. The
+        target is part of the build cache key, so one source built for two
+        targets keeps two entries.
+        It is not a C-compiler redirect. `runtime.c` and the link go through
+        `clang` by bare name, so building for another target needs THAT
+        target's `clang` first on PATH -- which is what the nightly's cross
+        legs install as a shim. With the host's clang the failure is at the
+        link, on the object it is handed (`file format not recognized`), and
+        says nothing about what the target itself is missing.
 
         This verb was called `monad compile` until 2026-09-29. There is no
         alias: two verbs that both produce a binary differ only in which one
@@ -150,6 +168,13 @@ monad test [<path>...] [--workspace/-w] [--verbose/-v]
         defines its own main is fine: that main is renamed out of the way
         and the generated test driver becomes the entry point.
 
+monad print-targets
+        List the triples --target accepts, and what this llc can build for.
+        Each is the spelling the emitter writes; `(llc ...)` adds the argv when
+        llc needs more than the triple to select the target, which today means
+        riscv64. Then this machine's own target, which is what no --target
+        means, and llc's whole registered architecture list.
+
 monad version
         Print the git commit this binary was built from.
 ```
@@ -157,8 +182,9 @@ monad version
 Running `monad` with no arguments prints this usage.
 
 Flags are position-independent — `monad build -v hello.mo` and
-`monad build hello.mo -v` are the same command. `--output`/`-o` takes its value
-as a **separate argument**: `--output=NAME` is not recognised.
+`monad build hello.mo -v` are the same command. `--output`/`-o` and `--target`
+take their value as a **separate argument**: `--output=NAME` and
+`--target=<triple>` are not recognised.
 
 `monad test` with no paths covers the mote containing the working directory, so
 it enumerates that mote's sources; `--workspace` covers every member. Pass
@@ -249,7 +275,10 @@ Two properties are worth knowing before you trust it. The key covers the
 compiler as well, so editing the compiler invalidates everything it built —
 and where an input cannot be determined the cache turns itself **off** rather
 than answering from a weaker key, because a stale binary is worse than a slow
-build. And the key is coarse by direction, not by accident: it covers the
+build. On Darwin that is every build: one of the key's inputs is the running
+compiler's own bytes, read from `/proc/<pid>/exe`, and a platform with no procfs
+has no such input at all. `monad store` and `monad gc` are inert there for the
+same reason. And the key is coarse by direction, not by accident: it covers the
 file's entire declared closure, so a one-line edit can re-check more files than
 it changed. Anything that needs the real work to happen — a gate that inspects
 the emitted IR, say — says so with one of two switches, which mean the same

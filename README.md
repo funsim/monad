@@ -40,8 +40,9 @@ monad version
 
 `monadup` manages nightly builds under `~/.monad`. Use `monadup list`, `monadup
 use <tag>`, `monadup update`, and `monadup uninstall <tag>` to manage installed
-versions. Nightlies are Linux x86_64 and currently need Nix store paths; building
-from source is the portable alternative.
+versions. Nightlies are published for `x86_64-linux` and `aarch64-darwin` (built
+natively), plus cross-built `aarch64-linux` and experimental `riscv64-linux`, and
+currently need Nix store paths; building from source is the portable alternative.
 
 ### Build from source
 
