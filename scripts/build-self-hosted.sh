@@ -16,10 +16,10 @@
 #
 # The stack is raised for the build below rather than left to each caller:
 # it is the ladder's deepest recursion (the host INTERPRETING
-# cli/src/main.mo), so every caller needs it, and the one that cannot have it
-# -- a nix sandbox, where soft == hard -- says which limit it got instead of
-# finding out as a crash. 131072 is what CI uses; the ladder completes at
-# 64 MB; the 8 MB default is not enough.
+# cli/src/main.mo), so every caller needs it. 131072 is what CI uses; the
+# ladder completes at 64 MB; the 8 MB default is not enough. The raise is
+# scripts/lib/raise-stack.sh's now, shared with the other two scripts that
+# need it -- including why it descends and why the value obtained is printed.
 #
 # The staleness check covers everything that ends up INSIDE the binary:
 # init and std are compiled into it just as lang/cli/llvm/runtime are, and
@@ -47,10 +47,12 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 # The ceiling the header describes, raised here so it covers the build below
-# and every child it spawns. `||` rather than a hard failure: a builder whose
-# HARD limit is already lower keeps its own ceiling, loudly.
-ulimit -s 131072 2>/dev/null ||
-  echo "NOTE: RLIMIT_STACK left at $(ulimit -s) KB -- the ceiling is the builder's own, not this script's"
+# and every child it spawns. One definition, shared with
+# scripts/self-compile-turn.sh -- see scripts/lib/raise-stack.sh for the ladder
+# and for why the value obtained is printed.
+# shellcheck source=scripts/lib/raise-stack.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/raise-stack.sh"
 
 MONAD_HOST_BIN=${MONAD_HOST_BIN:-"cargo run --release --"}
 

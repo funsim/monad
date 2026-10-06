@@ -30,10 +30,11 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 # Same raise as scripts/build-self-hosted.sh, and for its reason: a turn is a
-# compiler compiling itself, so the stack it needs is not the default. The
-# note prints only where the ceiling refuses it (a nix sandbox, soft == hard).
-ulimit -s 131072 2>/dev/null ||
-  echo "NOTE: RLIMIT_STACK left at $(ulimit -s) KB -- the ceiling is the builder's own, not this script's"
+# compiler compiling itself, so the stack it needs is not the default. One
+# definition, shared -- see scripts/lib/raise-stack.sh.
+# shellcheck source=scripts/lib/raise-stack.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/raise-stack.sh"
 
 compiler="$1"; out="$2"; name="$3"; shift 3
 

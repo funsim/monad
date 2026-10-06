@@ -16,11 +16,11 @@
 # and the one that would regress silently, but it costs another full
 # self-compile per turn. It got cheap enough (2026-09-19): the self-hosted
 # compile is ~40s interpreted against ~320s when this was written, so both
-# modes below now cmp their second turn. The `ulimit -s` is load-bearing for
+# modes below now cmp their second turn. The stack raise is load-bearing for
 # exactly the turn this adds -- the second turn is the binary interpreting
 # ITSELF, which is where the ladder's own rung-2 first hit the default 8MB
-# stack (`|| true` keeps a runner whose HARD limit is lower at its own
-# ceiling rather than failing the job).
+# stack -- and it lives in scripts/lib/raise-stack.sh now, shared with the
+# other two scripts that need it.
 #
 # This is called by .github/workflows/ci.yml and .tangled/workflows/bootstrap.yml
 # directly, inside one `nix develop -c`, rather than through
@@ -39,7 +39,11 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-ulimit -s 131072 || true
+# One definition, shared with scripts/build-self-hosted.sh and
+# scripts/self-compile-turn.sh -- see scripts/lib/raise-stack.sh.
+# shellcheck source=scripts/lib/raise-stack.sh
+# shellcheck disable=SC1091  # the hook runs bare `shellcheck`; the line above names the path for -x
+. "$root/scripts/lib/raise-stack.sh"
 
 # The scratch directory, private to this checkout. One definition, shared with
 # check-monad-tests.sh, debug-oracle.sh and tools/debug_transparency_oracle.sh
