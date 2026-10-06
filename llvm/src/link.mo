@@ -78,6 +78,13 @@ pub def map_dash_l (libs : List String) : List String := match libs {
     List.cons hd tl => List.cons (String.concat "-l" hd) (map_dash_l tl),
 }
 
+/// `-v`, or NOTHING AT ALL. An empty STRING in argv is a FILENAME, not an
+/// absent flag -- the wrapped native clang tolerates `clang -c "" x.c`, which
+/// is why this went unnoticed, while a cross gcc refuses the whole command
+/// with `error: : linker input file not found`.
+def verbose_argv (verbose : Bool) : List String :=
+    if verbose then ["-v"] else List.empty
+
 /// `MONAD_BUILD_COMMIT`, trimmed, or `""` when it is unset (or set to
 /// nothing but whitespace). A nix build's source is a store copy: no `.git`,
 /// so the compiler inside it cannot name its own revision, and the flake
@@ -234,7 +241,7 @@ pub def link_ir (runtime_c : String) (ir_text : String) (ir_path : Path) (output
         let from_env <- IO.get_env "MONAD_BUILD_COMMIT";
         let build_hash : String := build_commit_define from_env compiler_commit;
         let commit_flag := "-DMONAD_BUILD_COMMIT=\"" ++ build_hash ++ "\"";
-        let result <- compile_runtime_obj runtime_c (List.append [commit_flag] (if verbose then ["-v"] else [""])) runtime_obj_s;
+        let result <- compile_runtime_obj runtime_c (List.append [commit_flag] (verbose_argv verbose)) runtime_obj_s;
         if verbose then do {
             Bench.report_since "link_ir: clang runtime.c" t_rtc;
             return unit
@@ -249,7 +256,7 @@ pub def link_ir (runtime_c : String) (ir_text : String) (ir_path : Path) (output
             // ahead of the verbose flag. An empty `link_libs` leaves the
             // argv exactly as it was.
             let dash_l : List String := map_dash_l link_libs;
-            let link_flags : List String := List.append dash_l (if verbose then ["-v"] else [""]);
+            let link_flags : List String := List.append dash_l (verbose_argv verbose);
             let result <- link_objects [obj_path_s, runtime_obj_s] output_path_s link_flags;
             if verbose then do {
                 Bench.report_since "link_ir: clang link" t_link;
@@ -298,3 +305,17 @@ def test_build_commit_define_keeps_unknown_as_the_last_resort : Bool :=
 #[test]
 def test_build_commit_define_keeps_unknown_when_the_compiler_is_blank : Bool :=
     String.beq (build_commit_define Option.none "   ") "unknown"
+
+// An empty STRING in argv is a filename, not an absent flag -- a cross cc dies
+// on it where the wrapped native clang tolerates it -- so the non-verbose
+// answer has to be an empty LIST.
+#[test]
+def test_verbose_argv_is_empty_when_not_verbose : Bool :=
+    List.is_empty (verbose_argv false)
+
+#[test]
+def test_verbose_argv_is_the_flag_when_verbose : Bool :=
+    match verbose_argv true {
+        List.cons hd tl => String.beq hd "-v" && List.is_empty tl,
+        List.empty => false,
+    }

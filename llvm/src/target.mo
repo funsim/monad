@@ -39,13 +39,16 @@ pub struct TargetSpec {
 /// The targets this compiler has a measured spelling for. A name that is not
 /// here is still accepted -- see `TargetSpec.resolve` -- and gets the same
 /// string for both tools and no flags, which is right for everything but
-/// riscv64, which is why riscv64 is here.
+/// riscv64, which is here for three reasons: llc spells its triple differently,
+/// its ABI is not derivable from that spelling, and nixpkgs' riscv64 cc links
+/// PIE, so llc's default non-PIC object dies at the link with
+/// `relocation R_RISCV_HI20 ... recompile with -fPIC`.
 pub def TargetSpec.known_targets : List TargetSpec := [
     TargetSpec.mk "x86_64-unknown-linux-gnu" "" List.empty,
     TargetSpec.mk "aarch64-unknown-linux-gnu" "" List.empty,
     TargetSpec.mk "aarch64-apple-darwin" "" List.empty,
     TargetSpec.mk "riscv64gc-unknown-linux-gnu" "riscv64-unknown-linux-gnu" [
-        "-mattr=+m,+a,+f,+d,+c", "-target-abi=lp64d",
+        "-mattr=+m,+a,+f,+d,+c", "-target-abi=lp64d", "-relocation-model=pic",
     ],
     TargetSpec.mk "wasm32-unknown-wasip1" "" List.empty,
 ]
@@ -416,11 +419,11 @@ def test_arch_registered_rejects_an_unknown_architecture : Bool :=
 /// so the four targets that need no extra spelling stay one token long.
 #[test]
 def test_describe_names_the_llc_spelling_only_when_it_differs : Bool :=
-    let riscv := TargetSpec.mk "riscv64gc-unknown-linux-gnu" "riscv64-unknown-linux-gnu" ["-mattr=+m,+a,+f,+d,+c", "-target-abi=lp64d"] in
+    let riscv := TargetSpec.mk "riscv64gc-unknown-linux-gnu" "riscv64-unknown-linux-gnu" ["-mattr=+m,+a,+f,+d,+c", "-target-abi=lp64d", "-relocation-model=pic"] in
     let linux := TargetSpec.mk "x86_64-unknown-linux-gnu" "" List.empty in
     String.beq (TargetSpec.describe linux) "x86_64-unknown-linux-gnu"
         && String.beq (TargetSpec.describe riscv)
-            "riscv64gc-unknown-linux-gnu  (llc -mtriple=riscv64-unknown-linux-gnu -mattr=+m,+a,+f,+d,+c -target-abi=lp64d)"
+            "riscv64gc-unknown-linux-gnu  (llc -mtriple=riscv64-unknown-linux-gnu -mattr=+m,+a,+f,+d,+c -target-abi=lp64d -relocation-model=pic)"
 
 #[test]
 def test_describe_all_marks_what_this_llc_cannot_build : Bool :=
