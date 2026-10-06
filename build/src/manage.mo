@@ -202,14 +202,14 @@ def Build.refuse (m : String) : IO Reach :=
 /// keys and delete the whole store -- worst of all when the user passed
 /// `--verbose` to watch it happen.
 #[partial]
-pub def Build.reach_of (files : List String) (target_dir : String) (triple : String) : IO Reach :=
+pub def Build.reach_of (files : List String) (target_dir : String) (triples : List String) : IO Reach :=
     match files {
         List.empty => Build.refuse "no files were named, so no key could be derived",
-        List.cons _ _ => Build.reach_planned files target_dir triple
+        List.cons _ _ => Build.reach_planned files target_dir triples
     }
 
 #[partial]
-def Build.reach_planned (files : List String) (target_dir : String) (triple : String) : IO Reach := do {
+def Build.reach_planned (files : List String) (target_dir : String) (triples : List String) : IO Reach := do {
     let plan <- Build.check_plan_all files target_dir;
     if Bool.not (Build.check_plan_active plan)
     then Build.refuse (Build.inactive_reason plan)
@@ -217,22 +217,22 @@ def Build.reach_planned (files : List String) (target_dir : String) (triple : St
         let ks <- Build.collect_check_keys plan files List.empty;
         match ks {
             err f => Build.refuse ("no key could be derived for " ++ f),
-            ok checks => Build.reach_keyed files triple checks
+            ok checks => Build.reach_keyed files triples checks
         }
     }
 }
 
 #[partial]
-def Build.reach_keyed (files : List String) (triple : String) (checks : List String) : IO Reach := do {
+def Build.reach_keyed (files : List String) (triples : List String) (checks : List String) : IO Reach := do {
     let t <- Build.probe_digest_tool;
     match t {
         err m => Build.refuse m,
-        ok tool => Build.reach_digested tool files triple checks
+        ok tool => Build.reach_digested tool files triples checks
     }
 }
 
 #[partial]
-def Build.reach_digested (tool : DigestTool) (files : List String) (triple : String) (checks : List String) : IO Reach := do {
+def Build.reach_digested (tool : DigestTool) (files : List String) (triples : List String) (checks : List String) : IO Reach := do {
     let c <- Build.compiler_digest_with tool;
     match c {
         err m => Build.refuse m,
@@ -241,7 +241,8 @@ def Build.reach_digested (tool : DigestTool) (files : List String) (triple : Str
             match roots {
                 err m => Build.refuse m,
                 ok memo => do {
-                    let arts <- Build.collect_artifacts tool compiler files memo triple List.empty;
+                    let arts <- Build.collect_artifacts { tool := tool, compiler := compiler,
+                        files := files, roots := memo, triples := triples, acc := List.empty };
                     match arts {
                         err m => Build.refuse m,
                         ok artifacts => return (Reach.known artifacts checks compiler)
@@ -304,7 +305,8 @@ def Build.collect_root_digests (tool : DigestTool) (files : List String) (seen :
         }
     }
 
-/// The artifact keys for every named file, under every profile.
+/// The artifact keys for every named file, under every profile, for every
+/// triple in `triples`.
 ///
 /// One key per FILE, not per root: the key carries the file's own bytes
 /// (`Build.artifact_key`), so two manifest-less files in one directory --
@@ -314,9 +316,11 @@ def Build.collect_root_digests (tool : DigestTool) (files : List String) (seen :
 ///
 /// The closure digest is looked up in the memo rather than taken here, and
 /// the compiler digest is taken once by the caller; both are expensive (a
-/// fork per tree, and a digest of the running binary).
+/// fork per tree, and a digest of the running binary). The file digest is
+/// likewise taken once per file, so widening `triples` costs only the cheap
+/// hash per extra triple.
 #[partial]
-def Build.collect_artifacts (tool : DigestTool) (compiler : String) (files : List String) (roots : List (Pair String String)) (triple : String) (acc : List String) : IO (Result String (List String)) :=
+def Build.collect_artifacts (tool : DigestTool) (compiler : String) (files : List String) (roots : List (Pair String String)) (triples : List String) (acc : List String) : IO (Result String (List String)) :=
     match files {
         List.empty => return (ok acc),
         List.cons f rest => do {
@@ -329,26 +333,44 @@ def Build.collect_artifacts (tool : DigestTool) (compiler : String) (files : Lis
                     let fd <- Build.file_digest_with tool f;
                     match fd {
                         err m => return (err m),
-                        ok fh => Build.collect_artifacts tool compiler rest roots triple
-                            (List.append acc (Build.artifact_keys fh c compiler triple))
+                        ok fh => Build.collect_artifacts { tool := tool, compiler := compiler,
+                            files := rest, roots := roots, triples := triples,
+                            acc := List.append acc (Build.artifact_keys fh c compiler triples) }
                     }
                 }
             }
         }
     }
 
-/// One file's artifact keys, one per profile. `profile_names` is the only
-/// place that list is read.
-pub def Build.artifact_keys (file_digest : String) (closure : String) (compiler : String) (triple : String) : List String :=
-    Build.artifact_keys_for file_digest closure compiler triple Build.profile_names
+/// One file's artifact keys, one per (triple, profile). `profile_names` is the
+/// only place that list is read.
+pub def Build.artifact_keys (file_digest : String) (closure : String) (compiler : String) (triples : List String) : List String :=
+    Build.artifact_keys_for { file_digest := file_digest, closure := closure,
+        compiler := compiler, triples := triples, profiles := Build.profile_names }
 
 #[partial]
-def Build.artifact_keys_for (file_digest : String) (closure : String) (compiler : String) (triple : String) (profiles : List String) : List String :=
+def Build.artifact_keys_for (file_digest : String) (closure : String) (compiler : String) (triples : List String) (profiles : List String) : List String :=
+    match triples {
+        List.empty => List.empty,
+        List.cons t rest =>
+            List.append (Build.artifact_keys_for_one { file_digest := file_digest,
+                    closure := closure, compiler := compiler, triple := t,
+                    profiles := profiles })
+                (Build.artifact_keys_for { file_digest := file_digest, closure := closure,
+                    compiler := compiler, triples := rest, profiles := profiles })
+    }
+
+/// One file's keys for ONE triple, one per profile.
+#[partial]
+def Build.artifact_keys_for_one (file_digest : String) (closure : String) (compiler : String) (triple : String) (profiles : List String) : List String :=
     match profiles {
         List.empty => List.empty,
         List.cons p rest =>
-            List.append [Build.artifact_key file_digest closure compiler p triple]
-                (Build.artifact_keys_for file_digest closure compiler triple rest)
+            List.append [Build.artifact_key { file_digest := file_digest, closure := closure,
+                    compiler := compiler, profile := p, triple := triple }]
+                (Build.artifact_keys_for_one { file_digest := file_digest,
+                    closure := closure, compiler := compiler, triple := triple,
+                    profiles := rest })
     }
 
 // --- the file system, a little ---
@@ -867,9 +889,14 @@ pub def Build.unreachable (keep : List String) (have : List String) : List Strin
 /// dropped. That is the safe direction -- a dropped entry costs a re-check
 /// and can never serve a stale answer -- and it is why the counts are
 /// printed before anything is removed.
+///
+/// `triples` is the set of targets an artifact may have been built for, not
+/// one target: a build keys with the target it was given, so a `gc` holding
+/// only the host's own triple classifies every cross-built artifact as
+/// garbage and removes it. `TargetSpec.keep_triples` is what the CLI supplies.
 #[partial]
-pub def Build.gc_run (files : List String) (target_dir : String) (triple : String) (apply : Bool) : IO I64 := do {
-    let reach <- Build.reach_of files target_dir triple;
+pub def Build.gc_run (files : List String) (target_dir : String) (triples : List String) (apply : Bool) : IO I64 := do {
+    let reach <- Build.reach_of files target_dir triples;
     match reach {
         Reach.refused m => do {
             IO.println ("gc: refusing to remove anything -- " ++ m);

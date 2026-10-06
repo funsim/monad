@@ -52,7 +52,7 @@ use lang::types {
   show_identifier, use_bare,
 }
 use lib::codegen::emit {
-  compile_db_module, desugar_struct_lits_decls, emit_type_head_is_io
+  compile_db_module_with_debug, desugar_struct_lits_decls, emit_type_head_is_io
 }
 use lang::codegen::symbols {
   bare_npath, module_path_to_str, name_path_to_str, symbol_identifier,
@@ -563,8 +563,15 @@ pub struct TestIrResult {
 /// marker (see the synthesis header): a per-binary file under the
 /// parent's pid-unique out dir, threaded in from `cli/src/main.mo`'s
 /// `run_test_loop_codegen`.
+///
+/// `triple` is the machine the driver is being built for, and it comes in
+/// as a parameter rather than from `compile_db_module`'s own default
+/// because THIS driver is linked and run immediately: a header naming some
+/// other machine is an `llc`-built object of the wrong architecture at
+/// `clang`'s link. `run_test_loop_codegen` has already probed it for the
+/// link, so this costs nothing extra.
 #[partial]
-pub def compile_loaded_modules_to_test_ir (loaded : LoadedModules) (result_path : String) : IO (Result String TestIrResult) := do {
+pub def compile_loaded_modules_to_test_ir (loaded : LoadedModules) (result_path : String) (triple : String) : IO (Result String TestIrResult) := do {
     let target_mi : ModuleInfo := get_loaded_main loaded;
     let target_decls := target_mi.decl_list;
     let test_defs := discover_test_defs target_decls;
@@ -576,7 +583,7 @@ pub def compile_loaded_modules_to_test_ir (loaded : LoadedModules) (result_path 
         let driver_source := synthesize_test_driver_source specs target_mi.file_path result_path;
         match try_parse_decls driver_source {
             Option.some driver_decls =>
-                compile_test_driver_with loaded driver_decls (List.length specs),
+                compile_test_driver_with loaded driver_decls (List.length specs) triple,
             Option.none => do {
                 return Result.err "internal error: failed to parse synthesized test driver (this is a monad-test bug, not a problem with the target file)"
             }
@@ -597,7 +604,7 @@ pub def compile_loaded_modules_to_test_ir (loaded : LoadedModules) (result_path 
 /// `lang.codegen.emit`'s `compile_loaded_modules_to_ir` has the identical
 /// call.
 #[partial]
-def compile_test_driver_with (loaded : LoadedModules) (driver_decls : List Decl) (total_tests : I64) : IO (Result String TestIrResult) := do {
+def compile_test_driver_with (loaded : LoadedModules) (driver_decls : List Decl) (total_tests : I64) (triple : String) : IO (Result String TestIrResult) := do {
                     // Must run per-module, on each loaded module's own
                     // decl_list, BEFORE `collect_all_decls_from_modules`
                     // flattens everything -- see `lang.module`'s own
@@ -698,7 +705,7 @@ def compile_test_driver_with (loaded : LoadedModules) (driver_decls : List Decl)
                     let empty_locs : LocalScope := { vars := List.empty, parent := Option.none };
                     // Same pre-elaborate struct-literal desugaring as the
                     // compile pipeline (`compile_loaded_modules_to_ir_with_
-                    // debug`): this path calls `compile_db_module` directly
+                    // debug`): this path calls `compile_db_module_with_debug` directly
                     // with NO `validate_no_undesugared_struct_lits` gate
                     // afterwards, so an un-desugared literal here would
                     // otherwise hit `crash_struct_lit_reached_codegen` (or,
@@ -740,7 +747,7 @@ def compile_test_driver_with (loaded : LoadedModules) (driver_decls : List Decl)
                             match validate_no_unwired_natives reachable {
                                 Result.err e => return (Result.err e),
                                 Result.ok _ => do {
-                                    let result : TestIrResult := { mod_ := compile_db_module reachable, total_tests := total_tests };
+                                    let result : TestIrResult := { mod_ := compile_db_module_with_debug reachable Option.none List.empty triple, total_tests := total_tests };
                                     return (Result.ok result)
                                 },
                             },

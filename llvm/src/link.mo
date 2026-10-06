@@ -16,11 +16,30 @@ open IO {println}
 use std::process {exec_cmd}
 use std::bench {Bench.now, Bench.report_since}
 use std::log {fail_line, ok_line, stage}
+use lib::target {TargetSpec}
 
-/// `llc -filetype=obj`. Returns llc's exit code.
+/// `llc -filetype=obj`, for the machine this compiler is running on.
+///
+/// A sibling-function wrapper rather than a required argument, for the same
+/// reason `compile_db_decls_ir` gives: the codegen e2e harnesses that call
+/// this build and immediately run a binary, so a target is not a thing any
+/// of them has. A native spec is flag-free, so this buys argv stability, not
+/// portability: the module header is still `emit.mo`'s x86_64 literal.
 #[partial]
 pub def compile_ir_to_obj (ir_path : String) (obj_path : String) : IO I64 := do {
-    exec_cmd "llc" ["-filetype=obj", ir_path, "-o", obj_path]
+    let native <- TargetSpec.native;
+    compile_ir_to_obj_with native ir_path obj_path
+}
+
+/// `llc -filetype=obj` for `target`. Returns llc's exit code.
+///
+/// The target supplies `-mtriple` only when llc's spelling differs from the
+/// module header's (`llvm/src/target.mo`), so a native build's argv is
+/// byte-for-byte what it was before targets existed and only a cross build's
+/// changes.
+#[partial]
+pub def compile_ir_to_obj_with (target : TargetSpec) (ir_path : String) (obj_path : String) : IO I64 := do {
+    exec_cmd "llc" (List.append ["-filetype=obj"] (List.append (TargetSpec.llc_argv target) [ir_path, "-o", obj_path]))
 }
 
 /// `clang -c` on the runtime. `extra_flags` carries anything the caller
@@ -139,7 +158,7 @@ pub def build_commit_define (from_env : Option String) (compiler_commit : String
 /// where the "compile_file total minus compile_loaded_modules_to_ir total"
 /// remainder actually goes, before guessing at a fix.
 #[partial]
-pub def link_ir (runtime_c : String) (ir_text : String) (ir_path : Path) (output_dir : Path) (output_name : Path) (link_libs : List String) (compiler_commit : String) (verbose : Bool) : IO I64 {
+pub def link_ir (runtime_c : String) (ir_text : String) (ir_path : Path) (output_dir : Path) (output_name : Path) (link_libs : List String) (compiler_commit : String) (verbose : Bool) (spec : TargetSpec) : IO I64 {
     // `Path.join` here is THE fix for the mangled-double-slash bug this
     // whole `Path` type exists to prevent: if `output_name` is already
     // absolute, it replaces `output_dir` outright instead of naively
@@ -201,7 +220,7 @@ pub def link_ir (runtime_c : String) (ir_text : String) (ir_path : Path) (output
     // start, so a user watching a long stage sees life before it ends.
     stage verbose "link: llc";
     let t_llc : I64 <- Bench.now;
-    let result <- compile_ir_to_obj ir_path_s obj_path_s;
+    let result <- compile_ir_to_obj_with spec ir_path_s obj_path_s;
     if verbose then do {
         Bench.report_since "link_ir: llc" t_llc;
         return unit

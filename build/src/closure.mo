@@ -248,11 +248,9 @@ def Build.closure_visit (tool : DigestTool) (d : String) (rest : List String) (s
 /// shares a root AND a closure digest, and a key without the file in it
 /// serves the sibling's binary.
 ///
-/// `profile` distinguishes a debug build from a release one; `triple` is
-/// here from the start even though only one value is reachable today
-/// (phase 4 varies it), because adding it later would invalidate every
-/// entry written before it -- cheaper to include a constant now than to
-/// migrate a store.
+/// `profile` distinguishes a debug build from a release one; `triple` is the
+/// resolved target, so one source holds one artifact per target built from it
+/// and a `gc` has to spare all of them (`TargetSpec.keep_triples`).
 ///
 /// An `err` from any digest propagates, and the caller's contract is to
 /// DISABLE the cache on it rather than substitute a weaker key.

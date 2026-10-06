@@ -7,6 +7,7 @@ use lang::types {
 }
 use llvm::ir {LLVMModule, emit_module}
 use llvm::link {link_ir}
+use llvm::target {TargetSpec}
 use runtime {}
 use lang::codegen::emit {compile_db_module_with_debug, compile_loaded_modules_to_ir_with_debug}
 use lang::module {ElaboratedAndCache, collect_link_libs, get_loaded_all, ElaboratedModules, FileCheckAndCache, LoadedModules, ModuleInfo, ModuleInfoCache, bench_step, check_file_cached, check_module_with_scope, elaborate_loaded_modules, elaborate_loaded_modules_cached, elaborate_module_decls_best_effort, expand_check_paths, extract_directory, load_file_modules, load_module_with_info, module_name_from_path, module_info_cache_empty, resolve_runtime_src, try_parse_decls, try_parse_decls_strict}
@@ -69,7 +70,7 @@ def default_output_dir : Path := Path.path ("/tmp/monad_out_" ++ I64.to_string p
 /// is enough here (the `--verbose` compile pipeline prints the precise
 /// stage names too).
 #[partial]
-def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : List String) (base_dir : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) : IO I64 :=
+def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : List String) (base_dir : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) (target : TargetSpec) : IO I64 :=
     match mod_result {
         Result.err e => do {
             println ("FAILED at stage: compile_loaded_modules_to_ir (" ++ e ++ ")");
@@ -87,7 +88,11 @@ def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : Li
             let ir_text : String := emit_module mod_;
             let _t_emit : I64 <- bench_step verbose "emit_module (render .ll)" t_emit (String.length ir_text);
             let runtime_src : String <- resolve_runtime_src base_dir;
-            link_ir runtime_src ir_text (resolve_ir_path ir output_dir output_name) output_dir output_name link_libs build_commit verbose
+            link_ir { runtime_c := runtime_src, ir_text := ir_text,
+                ir_path := resolve_ir_path ir output_dir output_name,
+                output_dir := output_dir, output_name := output_name,
+                link_libs := link_libs, compiler_commit := build_commit,
+                verbose := verbose, spec := target }
         },
     }
 
@@ -101,8 +106,8 @@ def link_compiled_module (mod_result : Result String LLVMModule) (link_libs : Li
 /// extra flag required (confirmed directly -- a `-g`-style flag doesn't
 /// exist on `llc`, unlike `clang`'s own C-source `-g`).
 #[partial]
-def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose: Bool) (source_path : Option String) : IO I64 {
-    let mod_ : LLVMModule := compile_db_module_with_debug decl_list source_path List.empty;
+def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose: Bool) (source_path : Option String) (target : TargetSpec) : IO I64 {
+    let mod_ : LLVMModule := compile_db_module_with_debug decl_list source_path List.empty target.triple;
     let ir_text := emit_module mod_;
     let ir_path : Path := resolve_ir_path ir output_dir output_name;
     // This is the module-loading-FAILURE fallback: there is no
@@ -111,7 +116,10 @@ def compile_parsed_decls (decl_list : List Decl) (base_dir : String) (output_dir
     // its `use` lines are what failed to load.
     println <| "Writing LLVM IR to: " ++ Path.to_string ir_path;
     let runtime_src : String <- resolve_runtime_src base_dir;
-    link_ir runtime_src ir_text ir_path output_dir output_name List.empty build_commit verbose
+    link_ir { runtime_c := runtime_src, ir_text := ir_text, ir_path := ir_path,
+        output_dir := output_dir, output_name := output_name,
+        link_libs := List.empty, compiler_commit := build_commit,
+        verbose := verbose, spec := target }
 }
 
 // (The v1 per-def location table this section used to build --
@@ -179,12 +187,6 @@ def compile_out_name (requested : String) (target : BinTarget) : String :=
 /// no `[[bin]]` and has no `src/main.mo`, so `monad build lang` still
 /// refuses, and it refuses for the reason that is actually true.
 #[partial]
-/// The triple everything is compiled for today. One value, named rather
-/// than repeated: phase 4 of packaging/mote-build-deps-artifacts-targets.md
-/// varies it, and it is already an ingredient of the cache key so that
-/// entries written now do not have to be invalidated when it does.
-def host_triple : String := "x86_64-unknown-linux-gnu"
-
 /// `debug` or `release`, the two artifacts of one source tree that must
 /// never share a cache entry.
 def profile_name (debug : Bool) : String := if debug then "debug" else "release"
@@ -224,13 +226,16 @@ def profile_name (debug : Bool) : String := if debug then "debug" else "release"
 /// and `test` caches need the identical answers and a second copy of
 /// either rule is a second place for it to drift.
 #[partial]
-def build_cached (src : String) (dest_name : Path) (verbose : Bool) (debug : Bool) (no_cache : Bool) : IO I64 := do {
+def build_cached (src : String) (dest_name : Path) (verbose : Bool) (debug : Bool) (no_cache : Bool) (target : TargetSpec) : IO I64 := do {
     // Resolved either way: it is where the binary lands, not a cache
     // decision.
     let target_dir <- Build.target_dir_for src;
     let dest_dir : String := build_dest_dir target_dir debug;
     let root <- Build.mote_root_of src;
-    let key <- Build.input_hash src root (profile_name debug) host_triple;
+    // The target is in the key, so a native aarch64 or darwin build cannot be
+    // served an x86_64 artifact. `target.triple` is a `clang -dumpmachine`
+    // probe, not the constant it replaced, so the key moves with PATH.
+    let key <- Build.input_hash src root (profile_name debug) target.triple;
     // The key names the IR, so it is resolved from the key, and a key that
     // could not be taken leaves the IR where it always was (beside the
     // output). That is the ONLY case where a `build` puts `-o` inside the
@@ -244,14 +249,20 @@ def build_cached (src : String) (dest_name : Path) (verbose : Bool) (debug : Boo
     if Bool.not enabled
     then do {
         stage verbose "cache off: MONAD_NO_CACHE (or --no-cache) is set";
-        compile_file src (Path.path dest_dir) dest_name ir verbose debug
+        compile_file { file_path := src, output_dir := (Path.path dest_dir),
+            output_name := dest_name, ir := ir, verbose := verbose,
+            debug := debug, target := target }
     }
     else match key {
         Result.err m => do {
             stage verbose ("cache off: " ++ m);
-            compile_file src (Path.path dest_dir) dest_name ir verbose debug
+            compile_file { file_path := src, output_dir := (Path.path dest_dir),
+            output_name := dest_name, ir := ir, verbose := verbose,
+            debug := debug, target := target }
         },
-        Result.ok h => build_cached_keyed src target_dir h ir dest_name verbose debug
+        Result.ok h => build_cached_keyed { src := src, target_dir := target_dir,
+            h := h, ir := ir, dest_name := dest_name, verbose := verbose,
+            debug := debug, target := target }
     }
 }
 
@@ -340,7 +351,7 @@ def replay_ir_beside (ir : Option Path) (dest : String) : IO Unit :=
     }
 
 #[partial]
-def build_cached_keyed (src : String) (target_dir : String) (h : String) (ir : Option Path) (dest_name : Path) (verbose : Bool) (debug : Bool) : IO I64 := do {
+def build_cached_keyed (src : String) (target_dir : String) (h : String) (ir : Option Path) (dest_name : Path) (verbose : Bool) (debug : Bool) (target : TargetSpec) : IO I64 := do {
     let dest_dir : String := build_dest_dir target_dir debug;
     let dest : String := Path.to_string (Path.join (Path.path dest_dir) dest_name);
     // No slug. It used to be the output's bare name, which made the name an
@@ -368,7 +379,9 @@ def build_cached_keyed (src : String) (target_dir : String) (h : String) (ir : O
         return rc
     }
     else do {
-        let rc <- compile_file src (Path.path dest_dir) dest_name ir verbose debug;
+        let rc <- compile_file { file_path := src,
+            output_dir := (Path.path dest_dir), output_name := dest_name,
+            ir := ir, verbose := verbose, debug := debug, target := target };
         if rc == 0
         then do {
             let _d <- Build.ensure_entry_dir target_dir Entry.artifact;
@@ -503,10 +516,12 @@ def choose_bin_target (manifest : MoteManifest) (path : String) (wanted : String
     }
 }
 
-def build_target (path : String) (out_name : String) (bin : String) (verbose : Bool) (debug : Bool) (no_cache : Bool) : IO I64 := do {
+def build_target (path : String) (out_name : String) (bin : String) (verbose : Bool) (debug : Bool) (no_cache : Bool) (spec : TargetSpec) : IO I64 := do {
     let is_a_dir : Bool <- IO.is_dir (Path.path path);
     if Bool.not is_a_dir
-    then build_cached path (Path.path out_name) verbose debug no_cache
+    then build_cached { src := path, dest_name := (Path.path out_name),
+        verbose := verbose, debug := debug, no_cache := no_cache,
+        target := spec }
     else do {
         let m <- Mote.discover path;
         match m {
@@ -529,7 +544,9 @@ def build_target (path : String) (out_name : String) (bin : String) (verbose : B
                             "building mote `", manifest.name, "`'s [[bin]] target `",
                             BinTarget.target_name target, "`: ", src,
                         ]);
-                        build_cached src (Path.path name) verbose debug no_cache
+                        build_cached { src := src,
+                            dest_name := (Path.path name), verbose := verbose,
+                            debug := debug, no_cache := no_cache, target := spec }
                     }
                 }
             }
@@ -558,7 +575,7 @@ def build_target (path : String) (out_name : String) (bin : String) (verbose : B
 /// purely to improve codegen's own dictionary-dispatch resolution (see its
 /// own doc comment) -- that is NOT a second copy of this gate.
 #[partial]
-def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) (debug : Bool) : IO I64 {
+def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) (debug : Bool) (target : TargetSpec) : IO I64 {
     // Checked HERE, before anything is printed: a missing input is not a
     // load failure to be recovered from, and reporting it as one
     // ("FAILED at stage: load (could not load dependencies: ...)") buries
@@ -601,7 +618,7 @@ def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (
                         },
                         List.empty => do {
                             stage verbose "codegen + link";
-                            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, ir := ir, verbose := verbose, debug := debug, preloaded := Option.some em.loaded };
+                            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, ir := ir, verbose := verbose, debug := debug, target := target, preloaded := Option.some em.loaded };
                             if verbose then do {
                                 Bench.report_since "compile_file total" total_start;
                                 return unit
@@ -612,7 +629,7 @@ def compile_file (file_path : String) (output_dir : Path) (output_name : Path) (
             },
         Result.err e => do {
             fail_line ("FAILED at stage: load (could not load dependencies: " ++ e ++ ")");
-            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, ir := ir, verbose := verbose, debug := debug, preloaded := Option.none };
+            let link_result <- compile_file_codegen { file_path := file_path, output_dir := output_dir, output_name := output_name, ir := ir, verbose := verbose, debug := debug, target := target, preloaded := Option.none };
             if verbose then do {
                 Bench.report_since "compile_file total" total_start;
                 return unit
@@ -634,7 +651,10 @@ def run_file (file_path : String) (output_dir : Path) (verbose : Bool) (debug : 
     // `Option.none`: a `run` is not a cache entry, so there is no key to
     // name the IR by -- the output-derived `run_out.ll` is what this path
     // has always used and it stays out of anything stored.
-    let compile_result <- compile_file file_path output_dir out_name Option.none verbose debug;
+    let native <- TargetSpec.native;
+    let compile_result <- compile_file { file_path := file_path,
+        output_dir := output_dir, output_name := out_name, ir := Option.none,
+        verbose := verbose, debug := debug, target := native };
     if not (compile_result == 0) then do {
         println "run: compilation failed";
         return 1
@@ -786,7 +806,7 @@ def show_lower_error (e : LowerError) : String :=
 /// `source_path`/`debug_files` -- see `parse_all_decls`' own doc comment
 /// for the bug that divergence caused.
 #[partial]
-def compile_file_codegen (file_path : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) (debug : Bool) (preloaded : Option LoadedModules) : IO I64 {
+def compile_file_codegen (file_path : String) (output_dir : Path) (output_name : Path) (ir : Option Path) (verbose : Bool) (debug : Bool) (target : TargetSpec) (preloaded : Option LoadedModules) : IO I64 {
     // `preloaded` is the module set the typecheck gate already loaded, if
     // it got that far -- reusing it avoids reading and re-parsing the
     // target's ENTIRE transitive closure (prelude and init included) a
@@ -829,12 +849,15 @@ def compile_file_codegen (file_path : String) (output_dir : Path) (output_name :
             // the `Loaded N modules` count it prints on entry) is the one
             // place that progress is reported -- a count printed here too
             // would duplicate it two calls later.
-            let mod_result <- compile_loaded_modules_to_ir_with_debug loaded verbose source_path;
+            let mod_result <- compile_loaded_modules_to_ir_with_debug loaded verbose source_path target.triple;
             // `[link] libs` from every mote in the dependency closure --
             // a package-level build property, read from the manifests
             // rather than from any `#[extern "c"]` attribute.
             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
-            link_compiled_module mod_result link_libs (extract_directory file_path) output_dir output_name ir verbose
+            link_compiled_module { mod_result := mod_result, link_libs := link_libs,
+                base_dir := extract_directory file_path,
+                output_dir := output_dir, output_name := output_name,
+                ir := ir, verbose := verbose, target := target }
         },
         Result.err e => do {
             println ("Failed to parse dependencies: " ++ e);
@@ -846,7 +869,11 @@ def compile_file_codegen (file_path : String) (output_dir : Path) (output_name :
             match try_parse_decls source {
                 Option.some decl_list => do {
                     let source_path : Option String := if debug then Option.some file_path else Option.none;
-                    compile_parsed_decls decl_list (extract_directory file_path) output_dir output_name ir verbose source_path
+                    compile_parsed_decls { decl_list := decl_list,
+                        base_dir := extract_directory file_path,
+                        output_dir := output_dir, output_name := output_name,
+                        ir := ir, verbose := verbose, source_path := source_path,
+                        target := target }
                 },
                 Option.none => do {
                     // `try_parse_decls` (leniently truncate-and-succeed) just
@@ -1283,7 +1310,11 @@ def run_gc (files : List String) (workspace : Bool) (apply : Bool) (target_dir_f
         else do {
             let expanded : List String <- expand_check_paths ts;
             let target_dir <- target_dir_flagged target_dir_flag;
-            Build.gc_run expanded target_dir host_triple apply
+            let native <- TargetSpec.native;
+            // Every target a build can key under, not just this machine's:
+            // `native.triple` alone would make `gc` classify every cross-built
+            // artifact as unreachable and remove it.
+            Build.gc_run expanded target_dir (TargetSpec.keep_triples native.triple) apply
         },
         Option.none => no_target_diagnostic "gc"
     }
@@ -1509,6 +1540,14 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                     Option.some already => do { return (Result.ok already) },
                     Option.none => load_file_modules f verbose,
                 };
+            // Probed once here for both consumers below, and at this def's
+            // top level rather than inside the `ok loaded` arm: a `<-` bind
+            // nested in a match arm silently falls back to un-elaborated
+            // decls (see `compile_test_driver_with`'s own doc comment). It
+            // must FOLLOW the bind above, not precede it -- a dotted `<-`
+            // bind immediately before a bind whose RHS is a `match` fails to
+            // resolve `Monad.bind` (measured; either alone is fine).
+            let native <- TargetSpec.native;
             match res {
                 err e => do {
                     println ("SKIP  " ++ f ++ " (" ++ e ++ ")");
@@ -1525,7 +1564,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                     // leaves either no file or its OWN missing one --
                     // never a sibling's count.
                     let result_path : String := out_dir ++ "/monad_test_result_" ++ I64.to_string bin_idx ++ ".txt";
-                    let ir_res <- compile_loaded_modules_to_test_ir loaded result_path;
+                    let ir_res <- compile_loaded_modules_to_test_ir loaded result_path native.triple;
                     match ir_res {
                         err e => do {
                             // Three outcomes, not two. A driver that
@@ -1582,7 +1621,13 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
                             // `undefined reference` at link.
                             let link_libs : List String <- collect_link_libs (get_loaded_all loaded);
                             let runtime_src : String <- resolve_runtime_src (extract_directory f);
-                            let link_result <- link_ir runtime_src ir_text (resolve_ir_path Option.none (Path.path out_dir) (Path.path bin_name)) (Path.path out_dir) (Path.path bin_name) link_libs build_commit verbose;
+                            let link_result <- link_ir { runtime_c := runtime_src,
+                                ir_text := ir_text,
+                                ir_path := resolve_ir_path Option.none (Path.path out_dir) (Path.path bin_name),
+                                output_dir := (Path.path out_dir),
+                                output_name := (Path.path bin_name),
+                                link_libs := link_libs, compiler_commit := build_commit,
+                                verbose := verbose, spec := native };
                             if not (link_result == 0) then do {
                                 // A file-level failure, counted as such:
                                 // no test in it ever ran, so folding it
@@ -1686,7 +1731,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
 // helpers with the macro-derived demo in cli/src/tests/cli_derive_tests.mo,
 // though — same argv-munging primitives either way.
 type Command {
-    build (file: Path) (out_name: Path) (bin: String) (verbose: Bool) (debug: Bool) (no_cache: Bool),
+    build (file: Path) (out_name: Path) (bin: String) (verbose: Bool) (debug: Bool) (no_cache: Bool) (target: String),
     run (file: Path) (verbose: Bool) (debug: Bool),
     eval (file: Path) (verbose: Bool),
     pretty (file: String),
@@ -1750,7 +1795,17 @@ def Command.from_args (args : List String) : Command :=
                                         // path and its NAME as the output name.
                                         match Cli.take_opt "bin" "" "" rest1c {
                                             Cli.OptResult.opt_result bin_name rest1d =>
-                                        match Cli.take_opt "output" "o" "" rest1d {
+                                        // `--target <triple>` is what to build
+                                        // FOR, and it is peeled with the other
+                                        // flags for the same reason: left in
+                                        // the list, `--target` is read as the
+                                        // positional path and its TRIPLE as
+                                        // the output name. Space-separated
+                                        // only -- `Cli.take_opt` has no
+                                        // `--target=<triple>` form.
+                                        match Cli.take_opt "target" "" "" rest1d {
+                                            Cli.OptResult.opt_result target_name rest1e =>
+                                        match Cli.take_opt "output" "o" "" rest1e {
                                     Cli.OptResult.opt_result opt_out_name rest2 =>
                                         match Cli.take_positional rest2 {
                                             Cli.PosResult.pos_result path_opt rest3 =>
@@ -1781,11 +1836,12 @@ def Command.from_args (args : List String) : Command :=
                                                             err _ => Command.help,
                                                             ok p => match Path.of out_name {
                                                                 err _ => Command.help,
-                                                                ok o => Command.build p o bin_name verbose debug no_cache,
+                                                                ok o => Command.build p o bin_name verbose debug no_cache target_name,
                                                             },
                                                         },
                                                 },
                                         },
+                                            },
                                             },
                                 },
                                             },
@@ -1932,10 +1988,27 @@ def Command.from_args (args : List String) : Command :=
 def main (args : List String) : IO I64 {
     let cmd : Command := Command.from_args args;
     match cmd {
-        build file_path out_name bin verbose debug no_cache => do {
-            // A directory is a mote to build (`build_target`); a file goes
-            // straight to `compile_file`.
-            build_target (Path.to_string file_path) (Path.to_string out_name) bin verbose debug no_cache
+        build file_path out_name bin verbose debug no_cache target_name => do {
+            // Resolved HERE rather than in `from_args`, which is pure and
+            // has no IO to probe a toolchain with. An empty name is this
+            // machine, and a name this compiler does not know is still taken
+            // verbatim (see `TargetSpec.resolve`); `--print-targets` is what
+            // answers "can this toolchain build that?".
+            let resolved <- TargetSpec.resolve target_name;
+            match resolved {
+                Result.err m => do {
+                    println m;
+                    return 1
+                },
+                Result.ok target => do {
+                    // A directory is a mote to build (`build_target`); a file
+                    // goes straight to `compile_file`.
+                    build_target { path := Path.to_string file_path,
+                        out_name := Path.to_string out_name, bin := bin,
+                        verbose := verbose, debug := debug, no_cache := no_cache,
+                        spec := target }
+                },
+            }
         },
         run file_path verbose debug => do {
             run_file (Path.to_string file_path) default_output_dir verbose debug

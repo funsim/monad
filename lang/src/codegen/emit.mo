@@ -4694,6 +4694,18 @@ def compile_db_def_list (c : CodegenCtx) (defs : List Def) : DefResult := match 
         },
 }
 
+/// The triple a codegen entry point with no target to be told about writes
+/// into the module header.
+///
+/// It reaches no artifact a user builds: every production path is told its
+/// target by the CLI (`--target`, resolved by `llvm.target.TargetSpec`,
+/// threaded through `compile_loaded_modules_to_ir_with_debug` and
+/// `compile_db_module_with_debug`). What it does serve is the
+/// arity-preserving wrappers below and their several hundred single-purpose
+/// test call sites, none of which is about a target -- hence a constant
+/// rather than a `clang -dumpmachine` fork per module.
+def default_triple : String := "x86_64-unknown-linux-gnu"
+
 /// Compile a list of canonical Defs to a complete LLVM module.
 #[partial]
 def compile_db_decls_ir (defs : List Def) : LLVMModule :=
@@ -4718,20 +4730,25 @@ def compile_db_decls_ir_with_debug (defs : List Def) (source_path : Option Strin
             let funcs := ren_main_and_wrap compiled_funcs in
             let extra_decls := extern_declarations compiled_exts in
             let all_decls := List.append runtime_declarations extra_decls in
-            LLVMModule.mk "x86_64-unknown-linux-gnu" compiled_globals funcs all_decls source_path debug_files,
+            LLVMModule.mk default_triple compiled_globals funcs all_decls source_path debug_files,
     }
 
 /// Compile a list of Decl to a complete LLVM module.
 /// Extracts def_d and inductive_d entries, compiles constructors and defs.
 #[partial]
 def compile_db_module (decl_list : List Decl) : LLVMModule :=
-    compile_db_module_with_debug decl_list Option.none List.empty
+    compile_db_module_with_debug decl_list Option.none List.empty default_triple
 
 /// `compile_db_module`, with DWARF debug info -- see
 /// `compile_db_decls_ir_with_debug`'s own doc comment for why this is a
 /// sibling function rather than new params on `compile_db_module`.
+///
+/// `triple` is what the module header records as its target. llc reads it
+/// when no `-mtriple` is passed, so for a target whose spelling llc already
+/// accepts the header IS the target selection -- see
+/// `llvm/src/target.mo`.
 #[partial]
-pub def compile_db_module_with_debug (decl_list : List Decl) (source_path : Option String) (debug_files : List (Pair String String)) : LLVMModule :=
+pub def compile_db_module_with_debug (decl_list : List Decl) (source_path : Option String) (debug_files : List (Pair String String)) (triple : String) : LLVMModule :=
     let defs := extract_defs decl_list in
     let inds := extract_inductives decl_list in
     // Structs feed the ARITY table only -- see
@@ -4756,7 +4773,7 @@ pub def compile_db_module_with_debug (decl_list : List Decl) (source_path : Opti
             let funcs := ren_main_and_wrap all_funcs in
             let extra_decls := extern_declarations compiled_exts in
             let all_decls := List.append runtime_declarations extra_decls in
-            LLVMModule.mk "x86_64-unknown-linux-gnu" compiled_globals funcs all_decls source_path debug_files,
+            LLVMModule.mk triple compiled_globals funcs all_decls source_path debug_files,
     }
 
 /// Builds the per-extern `declare <ret> @<link>(<param types>)` entries
@@ -5118,6 +5135,17 @@ def test_empty_decls_module : Bool :=
     match (compile_db_decls_ir List.empty) {
         LLVMModule.mk triple globals funcs decl_list debug_source _files =>
             String.beq triple "x86_64-unknown-linux-gnu",
+    }
+
+/// The threading itself: the triple the caller passes is the one the header
+/// records. Compared against a value the module cannot have got anywhere
+/// else, so this fails if `triple` is dropped between here and `LLVMModule.mk`
+/// rather than passing on two copies of the same constant.
+#[test]
+def test_compile_db_module_records_the_passed_triple : Bool :=
+    match (compile_db_module_with_debug List.empty Option.none List.empty "aarch64-unknown-linux-gnu") {
+        LLVMModule.mk triple _globals _funcs _decls _debug_source _files =>
+            String.beq triple "aarch64-unknown-linux-gnu",
     }
 
 #[test]
@@ -5582,7 +5610,7 @@ def check_contains (text : String) (needle : String) : Bool :=
 /// the user's program output) in low-value noise.
 #[partial]
 pub def compile_loaded_modules_to_ir (loaded : LoadedModules) (verbose : Bool) : IO (Result String LLVMModule) :=
-    compile_loaded_modules_to_ir_with_debug loaded verbose Option.none
+    compile_loaded_modules_to_ir_with_debug loaded verbose Option.none default_triple
 
 /// One `(module path string, file path)` pair per loaded module -- the
 /// `!DIFile` attribution table (`LLVMModule.debug_files`). Keyed by the
@@ -5876,8 +5904,13 @@ def call_target_gate_probe (r : Result String LLVMModule) : I64 := match r {
 /// params on `compile_loaded_modules_to_ir` itself, so its existing
 /// callers (`main.mo`, `test_closure_capture_e2e.mo`) don't need to
 /// change for a feature they don't exercise.
+///
+/// `triple` is the build's target, passed straight to
+/// `compile_db_module_with_debug` at the end: it is what the emitted module
+/// header records and therefore what llc compiles for when the caller
+/// passes no `-mtriple`.
 #[partial]
-pub def compile_loaded_modules_to_ir_with_debug (loaded : LoadedModules) (verbose : Bool) (source_path : Option String) : IO (Result String LLVMModule) := do {
+pub def compile_loaded_modules_to_ir_with_debug (loaded : LoadedModules) (verbose : Bool) (source_path : Option String) (triple : String) : IO (Result String LLVMModule) := do {
     let total_start : I64 <- Bench.now;
 
     let all_mods := get_loaded_all loaded;
@@ -6110,7 +6143,7 @@ pub def compile_loaded_modules_to_ir_with_debug (loaded : LoadedModules) (verbos
                     // Stage 6: compile the reachable, infix-resolved declarations to LLVM IR
                     stage verbose "emit LLVM IR";
                     let t_llvm : I64 <- Bench.now;
-                    let mod_ : LLVMModule := compile_db_module_with_debug reachable_decls source_path debug_files;
+                    let mod_ : LLVMModule := compile_db_module_with_debug reachable_decls source_path debug_files triple;
                     if verbose then do {
                         Bench.report_since "compile_db_module" t_llvm;
                         return unit

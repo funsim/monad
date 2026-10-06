@@ -259,12 +259,12 @@ def test_an_empty_name_is_not_an_output_directory : Bool :=
 
 // ─── the keys gc derives ───
 
-/// One per profile: a build in either profile writes an entry, so both have
-/// to be in the reachable set or the other profile's entry looks
-/// unreachable.
+/// One per profile, per triple named: a build in either profile writes an
+/// entry, so both have to be in the reachable set or the other profile's
+/// entry looks unreachable.
 #[test]
 def test_artifact_keys_are_one_per_profile : Bool :=
-    I64.beq (List.length (Build.artifact_keys "f" "c" "k" Build.manage_triple)) 2
+    I64.beq (List.length (Build.artifact_keys "f" "c" "k" [Build.manage_triple])) 2
 
 /// Whether a key list is exactly the build side's formula, profile for
 /// profile. Hoisted out of the test because it is a match over two lists at
@@ -277,7 +277,9 @@ def Build.manage_keys_agree (ks : List String) (ps : List String) : IO Bool := d
         List.cons k rest => match ps {
             List.empty => return false,
             List.cons p prest => do {
-                let ok : Bool := String.beq k (Build.artifact_key "f" "c" "k" p Build.manage_triple);
+                let ok : Bool := String.beq k (Build.artifact_key { file_digest := "f",
+                        closure := "c", compiler := "k", profile := p,
+                        triple := Build.manage_triple });
                 if ok then Build.manage_keys_agree rest prest else return false
             }
         }
@@ -290,7 +292,7 @@ def Build.manage_keys_agree (ks : List String) (ps : List String) : IO Bool := d
 /// makes a `gc` delete live artifacts.
 #[test]
 def test_artifact_keys_match_the_build_side : IO Bool := do {
-    let ks : List String := Build.artifact_keys "f" "c" "k" Build.manage_triple;
+    let ks : List String := Build.artifact_keys "f" "c" "k" [Build.manage_triple];
     let same <- Build.manage_keys_agree ks Build.profile_names;
     return same && I64.beq (List.length ks) 2
 }
@@ -523,7 +525,7 @@ def test_gc_refuses_when_no_files_were_named : IO Bool := do {
     let d <- Build.manage_fresh_fixture "gc_none";
     let target : String := String.concat d "/target";
     let _b <- Build.manage_seed (Build.manage_bin target Build.manage_key_a) "bin";
-    let rc <- Build.gc_run List.empty target Build.manage_triple true;
+    let rc <- Build.gc_run List.empty target [Build.manage_triple] true;
     let kept <- Build.manage_present (Build.manage_bin target Build.manage_key_a);
     let _x <- Build.manage_drop_fixture d;
     return I64.beq rc 1 && kept
@@ -539,7 +541,7 @@ def test_gc_dry_run_removes_nothing : IO Bool := do {
     let files : List String := [String.concat d "/src/a.mo", String.concat d "/src/b.mo"];
     let _b <- Build.manage_seed (Build.manage_bin target Build.manage_key_a) "bin";
     let _i <- Build.manage_seed (Build.manage_ir target Build.manage_key_a) "ir";
-    let rc <- Build.gc_run files target Build.manage_triple false;
+    let rc <- Build.gc_run files target [Build.manage_triple] false;
     let bin_kept <- Build.manage_present (Build.manage_bin target Build.manage_key_a);
     let ir_kept <- Build.manage_present (Build.manage_ir target Build.manage_key_a);
     let _x <- Build.manage_drop_fixture d;
@@ -563,7 +565,7 @@ def test_gc_spares_a_reachable_check_entry : IO Bool := do {
     let dir : String := Build.manage_check_dir target live;
     let _o <- Build.manage_seed (String.concat dir "/out") "ok    a.mo";
     let _e <- Build.manage_seed (String.concat dir "/errors") "0";
-    let rc <- Build.gc_run files target Build.manage_triple true;
+    let rc <- Build.gc_run files target [Build.manage_triple] true;
     let kept <- Build.manage_is_dir dir;
     let _x <- Build.manage_drop_fixture d;
     return I64.beq rc 0 && Build.is_key live && kept
@@ -593,7 +595,7 @@ def test_gc_spares_every_artifact_of_one_mote : IO Bool := do {
     let kb : String := Build.manage_hash rb;
     let _sa <- Build.manage_seed (Build.manage_bin target ka) "a";
     let _sb <- Build.manage_seed (Build.manage_bin target kb) "b";
-    let rc <- Build.gc_run files target Build.manage_triple true;
+    let rc <- Build.gc_run files target [Build.manage_triple] true;
     let kept_a <- Build.manage_present (Build.manage_bin target ka);
     let kept_b <- Build.manage_present (Build.manage_bin target kb);
     let _x <- Build.manage_drop_fixture d;
@@ -623,7 +625,7 @@ def test_gc_plans_a_single_named_file : IO Bool := do {
     let dir : String := Build.manage_check_dir target live;
     let _o <- Build.manage_seed (String.concat dir "/out") "ok    a.mo";
     let _e <- Build.manage_seed (String.concat dir "/errors") "0";
-    let rc <- Build.gc_run files target Build.manage_triple true;
+    let rc <- Build.gc_run files target [Build.manage_triple] true;
     let kept <- Build.manage_is_dir dir;
     let _x <- Build.manage_drop_fixture d;
     return (Build.check_plan_active plan)
@@ -642,7 +644,7 @@ def test_gc_removes_an_unreachable_check_entry : IO Bool := do {
     let dir : String := Build.manage_check_dir target Build.manage_key_a;
     let _o <- Build.manage_seed (String.concat dir "/out") "ok    a.mo";
     let _e <- Build.manage_seed (String.concat dir "/errors") "0";
-    let rc <- Build.gc_run files target Build.manage_triple true;
+    let rc <- Build.gc_run files target [Build.manage_triple] true;
     let gone <- Build.manage_present (String.concat dir "/out");
     let _x <- Build.manage_drop_fixture d;
     return I64.beq rc 0 && Bool.not gone
@@ -660,7 +662,7 @@ def test_gc_removes_a_legacy_slug_entry : IO Bool := do {
     let slug : String := String.concat Build.manage_key_a "-monad";
     let _b <- Build.manage_seed (Build.manage_bin target slug) "bin";
     let _i <- Build.manage_seed (Build.manage_ir target slug) "ir";
-    let rc <- Build.gc_run files target Build.manage_triple true;
+    let rc <- Build.gc_run files target [Build.manage_triple] true;
     let bin_gone <- Build.manage_present (Build.manage_bin target slug);
     let ir_gone <- Build.manage_present (Build.manage_ir target slug);
     let _x <- Build.manage_drop_fixture d;
@@ -676,8 +678,51 @@ def test_gc_removes_an_orphaned_ir : IO Bool := do {
     let target : String := String.concat d "/target";
     let files : List String := [String.concat d "/src/a.mo", String.concat d "/src/b.mo"];
     let _i <- Build.manage_seed (Build.manage_ir target Build.manage_key_a) "ir";
-    let rc <- Build.gc_run files target Build.manage_triple true;
+    let rc <- Build.gc_run files target [Build.manage_triple] true;
     let ir_gone <- Build.manage_present (Build.manage_ir target Build.manage_key_a);
     let _x <- Build.manage_drop_fixture d;
     return I64.beq rc 0 && Bool.not ir_gone
+}
+
+/// **`gc` spares an artifact built for another target.**
+///
+/// A build keys with the target it was given, so a reachable set holding only
+/// the host's own triple reports every cross-built artifact as unreachable and
+/// removes it -- which is what one `triple` parameter could not express.
+#[test]
+def test_gc_spares_another_targets_artifact : IO Bool := do {
+    let d <- Build.manage_mote_fixture "gc_cross";
+    let target : String := String.concat d "/target";
+    let fa : String := String.concat d "/src/a.mo";
+    let fb : String := String.concat d "/src/b.mo";
+    let files : List String := [fa, fb];
+    let root <- Build.mote_root_of fa;
+    let cross : String := "aarch64-unknown-linux-gnu";
+    let rh <- Build.input_hash fa root "debug" cross;
+    let kh : String := Build.manage_hash rh;
+    let _sh <- Build.manage_seed (Build.manage_bin target kh) "arm";
+    let rc <- Build.gc_run files target [cross] true;
+    let kept <- Build.manage_present (Build.manage_bin target kh);
+    let _x <- Build.manage_drop_fixture d;
+    return Build.is_key kh && I64.beq rc 0 && kept
+}
+
+/// The other half, and the one that proves the set is READ rather than
+/// ignored: the same artifact goes when its triple is not in it.
+#[test]
+def test_gc_collects_a_triple_absent_from_the_set : IO Bool := do {
+    let d <- Build.manage_mote_fixture "gc_crossgone";
+    let target : String := String.concat d "/target";
+    let fa : String := String.concat d "/src/a.mo";
+    let fb : String := String.concat d "/src/b.mo";
+    let files : List String := [fa, fb];
+    let root <- Build.mote_root_of fa;
+    let cross : String := "aarch64-unknown-linux-gnu";
+    let rh <- Build.input_hash fa root "debug" cross;
+    let kh : String := Build.manage_hash rh;
+    let _sh <- Build.manage_seed (Build.manage_bin target kh) "arm";
+    let rc <- Build.gc_run files target ["x86_64-unknown-linux-gnu"] true;
+    let gone <- Build.manage_present (Build.manage_bin target kh);
+    let _x <- Build.manage_drop_fixture d;
+    return Build.is_key kh && I64.beq rc 0 && Bool.not gone
 }
