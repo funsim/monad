@@ -490,6 +490,26 @@
         llcFlags = " -mtriple=aarch64-unknown-linux-gnu";
       };
 
+      # The riscv64-linux output, published as experimental: it is the one
+      # target whose toolchain needs more than a triple told to llc, and these
+      # are exactly `llvm/src/target.mo`'s riscv64 entry. The duplication is not
+      # avoidable -- this relink drives llc directly and cannot read the
+      # compiler's table -- and it is silent when it drifts, so the entry there
+      # records when each part was measured.
+      #
+      #   * llc spells the triple differently from clang and from the sysroot,
+      #     and REJECTS their `riscv64gc-...` with "unable to get target for".
+      #   * no spelling selects the hard-float ABI, and llc's default is
+      #     soft-float, so lp64d has to be asked for.
+      #   * nixpkgs' riscv64 cc links PIE where llc's default is non-PIC, and
+      #     the object then dies at the link with `relocation R_RISCV_HI20 ...
+      #     recompile with -fPIC`.
+      monadRiscv64Linux = crossMonadFor {
+        crossPkgs = pkgs.pkgsCross.riscv64;
+        triple = "riscv64gc-unknown-linux-gnu";
+        llcFlags = " -mtriple=riscv64-unknown-linux-gnu -mattr=+m,+a,+f,+d,+c -target-abi=lp64d -relocation-model=pic";
+      };
+
       # `nix run .#monad`; the same program under two names, because
       # `apps.default` is what a bare `nix run` resolves and the named one is
       # what the flake's own documentation and CI use.
@@ -508,10 +528,11 @@
         # against now comes from.
         monadRung1 = rung1;
       } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
-        # Named for the platform it is FOR, which is not one this flake
-        # declares: it is cross-built, so it belongs to the system that builds
-        # it, and to that system alone.
+        # Named for the platform they are FOR, which is not one this flake
+        # declares: they are cross-built, so they belong to the system that
+        # builds them, and to that system alone.
         monad-aarch64-linux = monadAarch64Linux;
+        monad-riscv64-linux = monadRiscv64Linux;
       };
 
       apps.monad = app;
