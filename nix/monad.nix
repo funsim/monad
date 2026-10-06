@@ -117,7 +117,7 @@
       # input list and is the guide here: the trees the compiler is built from,
       # their `.mo`/`.c`/`.h` sources and each one's `mote.toml`. That is the
       # complete set for those trees -- enumerated rather than assumed: they
-      # hold 179 `.mo`, 9 `mote.toml` and exactly one `.c`
+      # hold 188 `.mo`, 13 `mote.toml` and exactly one `.c`
       # (runtime/src/runtime.c), and no file of any other name. `.h` is in the
       # filter and matches nothing today; it is there because the script scans
       # for it, and a header added later must not silently fall outside the
@@ -146,26 +146,32 @@
       #     exactly this filter with those trees absent. The file stays because
       #     it is the workspace-root marker `resolve_runtime_src` walks up to
       #     find, and losing that is a different failure from losing a member.
-      #   * `scripts/build-self-hosted.sh`, the one script buildPhase enters.
-      #     The whole directory would work, but it would also mean a change to
-      #     any CI script invalidates a 20-minute build.
+      #   * `scripts/build-self-hosted.sh`, the one script buildPhase enters,
+      #     and `scripts/lib` beside it, which is where that script's helpers
+      #     live (`lib/raise-stack.sh`, sourced at its line 55). A `source`d
+      #     file is invisible to the extension filter above, and omitting it is
+      #     how commit 22b4e287 came to break this derivation: rung 1 died at
+      #     that line with `No such file or directory`. The rest of `scripts/`
+      #     stays out, so a CI script's edit still does not invalidate a
+      #     20-minute build.
       #   * `nix/` is NOT kept, and neither are the flake files: nothing in the
       #     build reads them. The revision and the version reach this
       #     derivation as `commit` and `monadVersion` arguments, and the
       #     toolchain reaches it through `pkgs`.
       #
-      # 191 files and 4.6 MiB, against the whole tracked tree's 452 files and
-      # 7.9 MiB (both measured -- re-measure rather than adjust these, they
-      # have gone stale twice). What that buys is not a smaller build -- it is
-      # a SHAREABLE one: `rung1` below carries no commit, so this hash is the
-      # same across two commits that differ only outside these paths, and that
-      # is the prerequisite for two CI runs ever sharing the result.
+      # 205 files and 4.7 MiB, against the whole tracked tree's 476 files and
+      # 8.1 MiB (both measured -- re-measure rather than adjust these, they
+      # have gone stale three times). What that buys is not a smaller build --
+      # it is a SHAREABLE one: `rung1` below carries no commit, so this hash is
+      # the same across two commits that differ only outside these paths, and
+      # that is the prerequisite for two CI runs ever sharing the result.
       compilerSrc = lib.fileset.toSource {
         root = ../.;
         fileset = lib.fileset.unions (
           [
             ../mote.toml
             ../scripts/build-self-hosted.sh
+            (lib.fileset.fileFilter (f: f.hasExt "sh") ../scripts/lib)
           ]
           ++ map (
             tree:
