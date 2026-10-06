@@ -199,11 +199,19 @@ echo "check-docs: FAILED -- the block(s) above came from:" >&2
 # Only the blocks the diagnostics actually named. Listing all of them buries
 # the failure under every origin in the book, and the diagnostic does name the
 # block's file, so a substring test on the basename finds the right ones.
+#
+# Match against the ERRORS only, not all of `$out`. The corpus emits ~120
+# warnings, each carrying its own `--> <tmpfile>` line, so testing against the
+# whole output named 71 of 126 blocks and left the real one LAST -- the burial
+# this list exists to prevent. Each `error:` keeps its indented continuation
+# lines, because a file can be named there rather than on a `-->` line:
+# "`use io` in <file> is a module path relative to the importing file".
 # If nothing matches -- a `check` that failed without naming a file, say -- fall
 # back to the full list rather than printing nothing.
+err_only=$(awk '/^error:/ { e = 1 } /^warning:/ { e = 0 } e' <<<"$out")
 found_all=0
 for i in "${!blocks[@]}"; do
-  if grep -qF "$(basename "${blocks[$i]}")" <<<"$out"; then
+  if grep -qF "$(basename "${blocks[$i]}")" <<<"${err_only:-$out}"; then
     echo "  $(basename "${blocks[$i]}")  <-  ${origins[$i]}" >&2
     found_all=1
   fi
