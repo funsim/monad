@@ -204,16 +204,15 @@ pub struct DbgLoc {
     column : I64,
 }
 
-/// `ghc_cc` selects LLVM's `cc 9` (GHC calling convention) -- true for
-/// every compiled Monad def, false for the `runtime/src/natives.mo`
-/// generated natives, which are ordinary ccc functions called from
-/// cc-9 wrapper bodies.
+/// Every `define` is emitted with LLVM's default `ccc`. A per-function
+/// `cc 9` field used to live here; it was `coldcc`, not the `ghccc` its
+/// name claimed, no call site ever carried the matching annotation, and
+/// the aarch64, darwin and riscv64 backends reject it outright.
 pub struct LLVMFunction {
     name : String,
     params : List ParamPair,
     ret_ty : LLVMType,
     blocks : List LLVMBasicBlock,
-    ghc_cc : Bool,
     dbg_loc : Option DbgLoc,
 }
 
@@ -772,12 +771,11 @@ def empty_dbg_func_refs : DbgFuncRefs :=
 /// function renders exactly as it did before this field existed.
 #[partial]
 def emit_function (func : LLVMFunction) (dbg_refs : List (Pair String DbgFuncRefs)) : String := match func {
-    LLVMFunction.mk name params ret_ty blocks ghc_cc dbg_loc =>
-        let cc := if ghc_cc then " cc 9" else "" in
+    { name := name, params := params, ret_ty := ret_ty, blocks := blocks, dbg_loc := _ } =>
         let prefix := String.concat "\n; Function: " (String.concat name "\n") in
-        let sig := String.concat "define" (String.concat cc
-            (String.concat " " (String.concat (show_llvm_type ret_ty)
-            (String.concat " " (String.concat (llvm_symbol_ref name) "("))))) in
+        let sig := String.concat "define "
+            (String.concat (show_llvm_type ret_ty)
+            (String.concat " " (String.concat (llvm_symbol_ref name) "("))) in
         let refs := find_dbg_refs name dbg_refs in
         let sig2 := String.concat sig (String.concat (join_params params) (String.concat ")" (String.concat refs.define_suffix " {"))) in
         let body := emit_blocks blocks refs in

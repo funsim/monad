@@ -57,8 +57,13 @@ def test_e2e_runtime_decls_present : Bool :=
     let text := emit_module mod_ in
     check_contains text "monad_alloc"
 
+/// Every `define` carries LLVM's default `ccc`. Asserted as an absence
+/// because the regression this guards is an annotation creeping BACK:
+/// aarch64, darwin and riscv64 all reject the `cc 9` that used to be
+/// here. The positive conjunct is load-bearing -- a bare negation would
+/// pass on empty output.
 #[test]
-def test_e2e_calling_convention : Bool :=
+def test_e2e_no_calling_convention : Bool :=
     let id := Identifier.id "f" in
     let def_ := Def.mk
         (NamePath.npath (List.cons id empty_ids))
@@ -69,7 +74,7 @@ def test_e2e_calling_convention : Bool :=
         Visibility.package_private List.empty in
     let mod_ := compile_db_decls_ir (List.cons def_ empty_defs) in
     let text := emit_module mod_ in
-    check_contains text "cc 9"
+    Bool.not (check_contains text " cc ") && check_contains text "define i64 @"
 
 /// Regression test for the `IO`-typed `main` garbage-exit-code fix
 /// (`lang/codegen/emit.mo`'s `unwrap_io_return_blocks`/
@@ -78,7 +83,7 @@ def test_e2e_calling_convention : Bool :=
 /// the boxed `IO.io` payload before returning — confirmed by checking
 /// the emitted IR text directly (same `check_contains`-on-IR-text
 /// technique this whole file already uses, e.g.
-/// `test_e2e_calling_convention`'s `"cc 9"` check).
+/// `test_e2e_no_calling_convention`'s `define` check).
 #[test]
 def test_e2e_io_main_unwraps_before_return : Bool :=
     let main_id := Identifier.id "main" in

@@ -13,9 +13,7 @@
 /// runtime.c or one of THESE generated functions makes no difference
 /// to the wrapper. Generated functions must NOT also appear in
 /// `runtime_declarations` (a `declare` + `define` of the same name is
-/// an invalid redefinition), and they must not be `ghc_cc` -- they are
-/// ordinary ccc functions called from cc-9 wrapper bodies with plain
-/// `call` instructions.
+/// an invalid redefinition).
 ///
 /// Representation facts (audit, confirmed against runtime.c):
 /// - String values are raw `char*` held in an i64 (literals are plain
@@ -167,7 +165,6 @@ def emit_string_starts_with : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry, loop, body, next, done, fail],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 /// `monad_string_to_list(s) -> List U8` (wired `passthrough`): walk the
@@ -205,7 +202,6 @@ def emit_string_to_list : LLVMFunction :=
     params := (i64_params 1),
     ret_ty := i64_,
     blocks := [entry, loop, body, done],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 /// `monad_string_get(s, i) -> Option U8` (wired `passthrough`):
@@ -258,7 +254,6 @@ def emit_string_get : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry, zero_check, null_check, first_byte_check, len_check, none_block, some_block],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 // ─── U8/U64 arithmetic + comparison natives ─────────────────────────
@@ -310,7 +305,6 @@ def emit_u64_add : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u64_sub : LLVMFunction :=
@@ -321,7 +315,6 @@ def emit_u64_sub : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u64_mul : LLVMFunction :=
@@ -332,7 +325,6 @@ def emit_u64_mul : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 /// `monad_u64_xor` (wired `passthrough`): `int_binop(|a, b| a ^ b)`
@@ -348,7 +340,6 @@ def emit_u64_xor : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 #[partial]
@@ -362,7 +353,6 @@ def emit_icmp_native (name : String) (cmp : LLVMValue) : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 /// `monad_u8_sub(a, b)` (wired `passthrough`): plain wrapping i64 sub
@@ -375,7 +365,6 @@ def emit_u8_sub : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u8_mul : LLVMFunction :=
@@ -386,7 +375,6 @@ def emit_u8_mul : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 /// `monad_u8_div(a, b)`: 0 when `b == 0`, else `a / b` -- matching the
@@ -439,7 +427,6 @@ def emit_guarded_native (name : String) (op : LLVMValue) : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry, zero, calc],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 // ─── Fixed-width unsigned integer natives (u8 / u32) ────────────────
@@ -480,7 +467,6 @@ def emit_masked_binop (name : String) (mask : LLVMValue) (op : LLVMValue) : LLVM
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 /// A one-argument width conversion: mask the operand and return it.
@@ -494,7 +480,6 @@ def emit_mask_convert (name : String) (mask : LLVMValue) : LLVMFunction :=
     params := (i64_params 1),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u8_add : LLVMFunction :=
@@ -558,7 +543,6 @@ def emit_masked_icmp_native (name : String) (cmp : LLVMValue) : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u32_eq : LLVMFunction :=
@@ -643,7 +627,6 @@ def emit_string_get_char : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry, null_check, loop_, read, classify, at_char_start, advance, none_block, some_block],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u8_to_u32 : LLVMFunction := emit_mask_convert "monad_u8_to_u32" u8_mask
@@ -665,7 +648,6 @@ def emit_identity_native (name : String) : LLVMFunction :=
     params := (i64_params 1),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_i64_to_u64 : LLVMFunction := emit_identity_native "monad_i64_to_u64"
@@ -709,7 +691,6 @@ def emit_i64_add : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_i64_sub : LLVMFunction :=
@@ -720,7 +701,6 @@ def emit_i64_sub : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_i64_mul : LLVMFunction :=
@@ -731,7 +711,6 @@ def emit_i64_mul : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_i64_div : LLVMFunction := emit_guarded_native "monad_i64_div" (sdiv (parm_ 0) (parm_ 1))
@@ -779,7 +758,6 @@ def emit_u16_add : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u16_sub : LLVMFunction :=
@@ -790,7 +768,6 @@ def emit_u16_sub : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 def emit_u16_mul : LLVMFunction :=
@@ -801,7 +778,6 @@ def emit_u16_mul : LLVMFunction :=
     params := (i64_params 2),
     ret_ty := i64_,
     blocks := [entry],
-    ghc_cc := false,
     dbg_loc := Option.none }
 
 /// `monad_u16_div(a, b)`: 0 when `b == 0`, else `a / b`, matching the

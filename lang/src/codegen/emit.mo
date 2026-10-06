@@ -154,7 +154,7 @@ def build_closure_shim_func (shim_name : String) (real_name : String) (arity : I
     let call_instr := LLVMInstruction.assign "r" call_val in
     let ret_instr := LLVMInstruction.ret (LLVMValue.var_ "r") in
     let entry_block := LLVMBasicBlock.mk "entry" (List.cons call_instr (List.cons ret_instr List.empty)) in
-    LLVMFunction.mk shim_name params LLVMType.i64_ (List.cons entry_block List.empty) false Option.none
+    LLVMFunction.mk shim_name params LLVMType.i64_ (List.cons entry_block List.empty) Option.none
 
 #[partial]
 def build_llvm_params_from_db_shifted (n : I64) (start_idx : I64) : List ParamPair :=
@@ -187,7 +187,7 @@ def build_constructor_closure_shim_func (shim_name : String) (tag : I64) (arity 
     let ret_instr := LLVMInstruction.ret (LLVMValue.var_ "obj") in
     let entry_instrs := List.cons alloc_instr (List.append set_instrs (List.cons ret_instr List.empty)) in
     let entry_block := LLVMBasicBlock.mk "entry" entry_instrs in
-    LLVMFunction.mk shim_name params LLVMType.i64_ (List.cons entry_block List.empty) false Option.none
+    LLVMFunction.mk shim_name params LLVMType.i64_ (List.cons entry_block List.empty) Option.none
 
 /// `monad_set_field(obj, i-1, p_i)` for i in [1, n] -- fixed temp names
 /// ("s1", "s2", ...) are safe here without `CodegenCtx`/`fresh_temp`
@@ -252,7 +252,7 @@ def build_partial_apply_shim_func (shim_name : String) (real_name : String) (cap
     let ret_instr := LLVMInstruction.ret (LLVMValue.var_ "r") in
     let entry_instrs := List.append env_gets.instrs (List.cons call_instr (List.cons ret_instr List.empty)) in
     let entry_block := LLVMBasicBlock.mk "entry" entry_instrs in
-    LLVMFunction.mk shim_name params LLVMType.i64_ (List.cons entry_block List.empty) false Option.none
+    LLVMFunction.mk shim_name params LLVMType.i64_ (List.cons entry_block List.empty) Option.none
 
 pub struct ShimEnvGets {
     instrs : List LLVMInstruction,
@@ -1778,7 +1778,7 @@ def compile_db_lam_ir (c : CodegenCtx) (dbg : DebugName) (typ : Term) (body : Te
                             let self_pair := ParamPair.mk "p0" LLVMType.i64_ in
                             let lam_pair := ParamPair.mk "p1" LLVMType.i64_ in
                             let lam_params := List.cons self_pair (List.cons lam_pair List.empty) in
-                            let lam_func := LLVMFunction.mk lam_name lam_params LLVMType.i64_ (append_blocks (List.cons entry_block List.empty) tb.blocks) false Option.none in
+                            let lam_func := LLVMFunction.mk lam_name lam_params LLVMType.i64_ (append_blocks (List.cons entry_block List.empty) tb.blocks) Option.none in
                             match fresh_temp tb.ctx {
                                 CtxStrPair.mk ctx_box temp =>
                                     // `2` here is `lam_func`'s own real
@@ -4044,7 +4044,7 @@ def compile_native_def_wrapper_ir (c : CodegenCtx) (fn_name : String) (llvm_para
                     let assign_instr := LLVMInstruction.assign temp call_val in
                     let entry_instrs := List.cons assign_instr (List.cons (LLVMInstruction.ret (LLVMValue.var_ temp)) List.empty) in
                     let entry_block := LLVMBasicBlock.mk "entry" entry_instrs in
-                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) true Option.none in
+                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) Option.none in
                     { ctx := ctx_t, funcs := (List.cons native_func List.empty), globals := List.empty, externs := List.empty }
             },
         NativeWrapKind.bool_result rt_fn_name =>
@@ -4067,7 +4067,7 @@ def compile_native_def_wrapper_ir (c : CodegenCtx) (fn_name : String) (llvm_para
                                     let con_instr := LLVMInstruction.assign con_temp con_val in
                                     let entry_instrs := List.cons raw_instr (List.cons tag_instr (List.cons con_instr (List.cons (LLVMInstruction.ret (LLVMValue.var_ con_temp)) List.empty))) in
                                     let entry_block := LLVMBasicBlock.mk "entry" entry_instrs in
-                                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) true Option.none in
+                                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) Option.none in
                                     { ctx := ctx3, funcs := (List.cons native_func List.empty), globals := List.empty, externs := List.empty }
                             },
                     },
@@ -4085,7 +4085,7 @@ def compile_native_def_wrapper_ir (c : CodegenCtx) (fn_name : String) (llvm_para
                                 { ctx := ctx_set, instrs := set_instrs } =>
                                     let entry_instrs := List.cons raw_instr (List.cons alloc_instr (List.append set_instrs (List.cons (LLVMInstruction.ret (LLVMValue.var_ io_temp)) List.empty))) in
                                     let entry_block := LLVMBasicBlock.mk "entry" entry_instrs in
-                                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) true Option.none in
+                                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) Option.none in
                                     { ctx := ctx_set, funcs := (List.cons native_func List.empty), globals := List.empty, externs := List.empty }
                             },
                     },
@@ -4105,7 +4105,7 @@ def compile_native_def_wrapper_ir (c : CodegenCtx) (fn_name : String) (llvm_para
                                         { ctx := ctx_set, instrs := set_instrs } =>
                                             let entry_instrs := List.cons raw_instr (List.append bool_instrs (List.cons alloc_instr (List.append set_instrs (List.cons (LLVMInstruction.ret (LLVMValue.var_ io_temp)) List.empty)))) in
                                             let entry_block := LLVMBasicBlock.mk "entry" entry_instrs in
-                                            let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) true Option.none in
+                                            let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) Option.none in
                                             { ctx := ctx_set, funcs := (List.cons native_func List.empty), globals := List.empty, externs := List.empty }
                                     },
                             },
@@ -4132,7 +4132,7 @@ def compile_native_def_wrapper_ir (c : CodegenCtx) (fn_name : String) (llvm_para
                                                 { ctx := ctx_set, instrs := set_instrs } =>
                                                     let entry_instrs := List.cons len_instr (List.cons write_instr (List.cons unit_instr (List.cons alloc_instr (List.append set_instrs (List.cons (LLVMInstruction.ret (LLVMValue.var_ io_temp)) List.empty))))) in
                                                     let entry_block := LLVMBasicBlock.mk "entry" entry_instrs in
-                                                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) true Option.none in
+                                                    let native_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) Option.none in
                                                     { ctx := ctx_set, funcs := (List.cons native_func List.empty), globals := List.empty, externs := List.empty }
                                             },
                                     },
@@ -4151,9 +4151,8 @@ def compile_native_def_wrapper_ir (c : CodegenCtx) (fn_name : String) (llvm_para
 ///    (`inttoptr` for pointers, `trunc` for narrower ints, `bitcast`
 ///    for same-width floats), and the call's result is cast back to
 ///    `i64` for the wrapper's `ret` (`sext` for C's signed `i32`/`i8`,
-///    `bitcast` for doubles, `ptrtoint` for pointers). `ghc_cc = false`
-///    so the call uses LLVM's platform-default C ABI (the cc 9 GHC
-///    convention `compile_native_def_wrapper_ir` uses is wrong for C).
+///    `bitcast` for doubles, `ptrtoint` for pointers). The call uses
+///    LLVM's platform-default C ABI, as every `define` now does.
 ///
 /// 2. An `ExternInfo` (returned via `DefResult.externs`) so
 ///    `compile_db_decls_ir`/`compile_db_module`
@@ -4192,7 +4191,7 @@ def compile_extern_def_wrapper_ir (c : CodegenCtx) (fn_name : String) (llvm_para
                                     // Monad call site reaches it via
                                     // `resolve_call_name`/`CodegenCtx.extern_wrappers`.
                                     let wrapper_name := String.concat "monad_extern_" fn_name in
-                                    let wrapper := LLVMFunction.mk wrapper_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) false Option.none in
+                                    let wrapper := LLVMFunction.mk wrapper_name llvm_params LLVMType.i64_ (List.cons entry_block List.empty) Option.none in
                                     { ctx := ctx3, funcs := (List.cons wrapper List.empty), globals := List.empty, externs := (List.cons ext List.empty) }
                             },
                     },
@@ -4625,7 +4624,7 @@ def compile_db_def_ir_body (c : CodegenCtx) (fn_name : String) (typ : Term) (ter
                                 let tco_ctx := tco.ctx in
                                 let tco_blocks := tco.blocks in
                                 let all_blocks := if main_io_unit then zero_return_blocks tco_blocks else if needs_io_unwrap then unwrap_io_return_blocks tco_blocks 0 else tco_blocks in
-                                let main_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ all_blocks true (dbg_loc_of_body body) in
+                                let main_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ all_blocks (dbg_loc_of_body body) in
                                 { ctx := tco_ctx, funcs := (List.cons main_func funcs_r), globals := globals_r, externs := List.empty }
                         },
                     _ =>
@@ -4674,7 +4673,7 @@ def compile_db_def_ir_body (c : CodegenCtx) (fn_name : String) (typ : Term) (ter
                         let tco_ctx := tco.ctx in
                         let tco_blocks := tco.blocks in
                         let all_blocks := if main_io_unit then zero_return_blocks tco_blocks else if needs_io_unwrap then unwrap_io_return_blocks tco_blocks 0 else tco_blocks in
-                        let main_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ all_blocks true (dbg_loc_of_body body) in
+                        let main_func := LLVMFunction.mk fn_name llvm_params LLVMType.i64_ all_blocks (dbg_loc_of_body body) in
                         { ctx := tco_ctx, funcs := (List.cons main_func funcs_r), globals := globals_r, externs := List.empty }
                 },
         }
@@ -4852,7 +4851,7 @@ def compile_db_inductive_decls (ind_decls : List Inductive) (ctor_tags : HashMap
 }
 
 /// Compile an inductive type constructor to an LLVM wrapper function.
-/// Generates: define cc 9 i64 @monad_ctor_<name>(i64 %p0, i64 %p1, ...) {
+/// Generates: define i64 @monad_ctor_<name>(i64 %p0, i64 %p1, ...) {
 ///   entry:
 ///     %ctemp = alloc_constructor(%p0, %p1, ...)
 ///     ret i64 %ctemp
@@ -4867,7 +4866,7 @@ def compile_constructor_decl (con_name : String) (field_count : I64) (tag : I64)
     let ret_instr := LLVMInstruction.ret (LLVMValue.var_ "ctemp") in
     let entry_block := LLVMBasicBlock.mk "entry" (List.cons assign_instr (List.cons ret_instr List.empty)) in
     let func_name := String.concat "monad_ctor_" con_name in
-    LLVMFunction.mk func_name params LLVMType.i64_ (List.cons entry_block List.empty) true Option.none
+    LLVMFunction.mk func_name params LLVMType.i64_ (List.cons entry_block List.empty) Option.none
 
 #[partial]
 def build_constructor_params (count : I64) : List ParamPair :=
@@ -4967,7 +4966,7 @@ def dedup_funcs_by_name_go (funcs : List LLVMFunction) (seen : HashMap String Bo
     List.empty => List.empty,
     List.cons f rest =>
         match f {
-            LLVMFunction.mk name params ret_ty blocks ghc_cc dbg_loc =>
+            LLVMFunction.mk name params ret_ty blocks dbg_loc =>
                 match str_map_lookup name seen {
                     Option.some _ => dedup_funcs_by_name_go rest seen,
                     Option.none =>
@@ -5015,7 +5014,7 @@ def has_main (funcs : List LLVMFunction) : Bool := match funcs {
     List.empty => false,
     List.cons f rest =>
         match f {
-            LLVMFunction.mk name params ret_ty blocks ghc_cc dbg_loc =>
+            LLVMFunction.mk name params ret_ty blocks dbg_loc =>
                 if String.beq name "main" then true
                 else has_main rest,
         },
@@ -5032,16 +5031,16 @@ def rename_main (funcs : List LLVMFunction) : List LLVMFunction := match funcs {
     List.empty => List.empty,
     List.cons f rest =>
         match f {
-            LLVMFunction.mk name params ret_ty blocks ghc_cc dbg_loc =>
+            LLVMFunction.mk name params ret_ty blocks dbg_loc =>
                 if String.beq name "main"
                 then
                     let main_params := ensure_main_params params in
-                    List.cons (LLVMFunction.mk "main_monad" main_params ret_ty blocks ghc_cc dbg_loc) (rename_main rest)
+                    List.cons (LLVMFunction.mk "main_monad" main_params ret_ty blocks dbg_loc) (rename_main rest)
                 else if ends_with_main name then
                     // For module-qualified main functions, always rename to just "main_monad"
                     // The runtime expects this exact name
                     let main_params := ensure_main_params params in
-                    List.cons (LLVMFunction.mk "main_monad" main_params ret_ty blocks ghc_cc dbg_loc) (rename_main rest)
+                    List.cons (LLVMFunction.mk "main_monad" main_params ret_ty blocks dbg_loc) (rename_main rest)
                 else
                     List.cons f (rename_main rest),
         },

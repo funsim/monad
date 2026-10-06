@@ -314,7 +314,7 @@ def collect_call_targets (funcs : List LLVMFunction) : List String := match func
     List.empty => List.empty,
     List.cons f rest =>
         match f {
-            LLVMFunction.mk _name _params _ret _blocks _cc _dbg =>
+            LLVMFunction.mk _name _params _ret _blocks _dbg =>
                 List.append (call_targets_in_blocks (f.blocks)) (collect_call_targets rest),
         },
 }
