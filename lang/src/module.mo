@@ -2227,6 +2227,22 @@ def scope_for_def_body (attrs : List Attribute) (scope : Scope) : Scope :=
     then { scope with incomplete_match_ok := true }
     else scope
 
+/// `scope` for an ELABORATION body, where coverage is never checked.
+///
+/// Coverage belongs to `check`, which turns a rejection into a diagnostic a
+/// reader sees. Elaboration's caller is best-effort by design
+/// (`elaborate_module_decls_reporting` below keeps a failed decl UNCHANGED and
+/// prints only under `--verbose`), so a coverage rejection here is silently
+/// swallowed and codegen then compiles the un-elaborated body with its
+/// syntactic fallbacks -- `void_val` struct literals and index-0 field reads.
+/// That is a SIGSEGV in the self-compiled binary with no diagnostic anywhere,
+/// the exact shape `lang/codegen/validate.mo` documents; it cost a ladder
+/// rung on 2026-10-06. Checking the same rule twice buys nothing: every def
+/// elaboration sees has already been through `check_def_with_scope`.
+def scope_for_elab_body (attrs : List Attribute) (scope : Scope) : Scope :=
+    let body_scope : Scope := scope_for_def_body attrs scope in
+    { body_scope with incomplete_match_ok := true }
+
 #[partial]
 def check_def_with_scope (df : Def) (scope : Scope) (locals : LocalScope) (path : Option String) (verbose : Bool) : IO (List String) :=
     match df {
@@ -2301,7 +2317,7 @@ def elaborate_def_with_scope ({ name, typ, term := body, constraints, attrs, vis
         Result.ok (Def.mk name typ body constraints attrs vis params)
     else
         let locals_ : LocalScope := locals_with_def_typevars typ body scope locals in
-        let body_scope : Scope := scope_for_def_body attrs scope in
+        let body_scope : Scope := scope_for_elab_body attrs scope in
         match type_check body typ body_scope empty_local_types locals_ {
             Result.ok tt => Result.ok (Def.mk name typ (tt.term) constraints attrs vis params),
             Result.err e => Result.err (render_type_error (show_name_path name) Option.none e),
