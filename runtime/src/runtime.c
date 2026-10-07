@@ -735,6 +735,22 @@ void* monad_await_fiber(void* handle) {
     return monad_get_field((void*)(intptr_t)box, 0);
 }
 
+/* monad_io_pure: RawIO.pure (a : A) : RawIO A -- wraps a value in the
+   RawIO.io constructor (tag 7, one field). */
+void* monad_io_pure(int64_t a) {
+    void* c = alloc_constructor(7, 1);
+    monad_set_field(c, 0, (void*)(intptr_t)a);
+    return c;
+}
+
+/* monad_io_bind: RawIO.bind (a : RawIO A) (f : A -> RawIO B) : RawIO B --
+   unwraps the RawIO.io constructor (field 0) and calls f on the inner
+   value via apply_closure1. */
+int64_t monad_io_bind(int64_t io_val, int64_t f) {
+    void* inner = monad_get_field((void*)(intptr_t)io_val, 0);
+    return apply_closure1((void*)(intptr_t)f, (int64_t)(intptr_t)inner);
+}
+
 void* monad_cancel_fiber(void* handle) {
     Fiber* f = (Fiber*)handle;
     if (f) {

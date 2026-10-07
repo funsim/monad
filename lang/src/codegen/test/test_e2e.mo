@@ -81,7 +81,7 @@ def test_e2e_no_calling_convention : Bool :=
 /// (`lang/codegen/emit.mo`'s `unwrap_io_return_blocks`/
 /// `emit_type_head_is_io`): a `main` declared `IO I64` must have its
 /// generated LLVM body call the runtime's `monad_get_field` to unwrap
-/// the boxed `IO.io` payload before returning — confirmed by checking
+/// the boxed `IO.mk (RawIO.io _)` payload before returning — confirmed by checking
 /// the emitted IR text directly (same `check_contains`-on-IR-text
 /// technique this whole file already uses, e.g.
 /// `test_e2e_no_calling_convention`'s `define` check).

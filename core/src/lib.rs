@@ -475,10 +475,27 @@ pub fn eval_core_program(path: &ModulePath, source: &str) -> Result<core_value::
 fn exit_code_of(v: &core_value::Value, well_known: &lower_core_ir::WellKnownCtors) -> i64 {
   match v {
     core_value::Value::Lit(crate::core_ir::IrLit::Num(n, _)) => *n,
+    // Unwrap IO.mk (outer wrapper) -> RawIO.io (inner) -> payload
     core_value::Value::Con { tag, args }
-      if args.len() == 1 && well_known.io_io.is_some_and(|io| io.tag == *tag) =>
+      if args.len() == 1 && well_known.io_mk.is_some_and(|io| io.tag == *tag) =>
     {
-      exit_code_of(&args[0], well_known)
+      match args.first() {
+        Some(inner) => match inner {
+          core_value::Value::Con {
+            tag: inner_tag,
+            args: inner_args,
+          } if inner_args.len() == 1
+            && well_known.raw_io_io.is_some_and(|r| r.tag == *inner_tag) =>
+          {
+            match inner_args.first() {
+              Some(payload) => exit_code_of(payload, well_known),
+              None => 0,
+            }
+          }
+          _ => 0,
+        },
+        None => 0,
+      }
     }
     _ => 0,
   }
@@ -678,11 +695,11 @@ fn detect_test_result_value(
       // constructor, 1 for its second, ...), not a globally unique
       // discriminator — so comparing a bare `tag` alone across
       // DIFFERENT well-known types is genuinely ambiguous: `IO A`'s
-      // sole constructor (`io_io`) and `Bool`'s `true` (`bool_true`)
+      // sole constructor (`io_mk`) and `Bool`'s `true` (`bool_true`)
       // are BOTH each their own type's first constructor, so both have
       // `tag == 0`. This function used to check `bool_true`/
-      // `bool_false` BEFORE `io_io`, so an `IO Bool` test's own OUTER
-      // `IO.io` wrapper (tag 0) matched `bool_true` immediately and was
+      // `bool_false` BEFORE `io_mk`, so an `IO Bool` test's own OUTER
+      // `IO.mk` wrapper (tag 0) matched `bool_true` immediately and was
       // reported Pass unconditionally — CONFIRMED via a direct repro:
       // `#[test] def t : IO Bool := IO.io false` (no exec_cmd/native
       // calls involved at all) reported PASS. This silently made every
@@ -693,29 +710,54 @@ fn detect_test_result_value(
       // dictionary-passing plan's own e2e tests
       // (lang/codegen/test/compile_tests.mo).
       //
-      // Fixed by checking `io_io` FIRST (an `IO`-wrapped value must
+      // Fixed by checking `io_mk` FIRST (an `IO`-wrapped value must
       // always be unwrapped before its own payload's pass/fail meaning
       // can be judged, regardless of what tag its wrapper happens to
       // share with some other type's own leaf constructor) and by
       // comparing `arity` alongside `tag` everywhere (`args.len()` vs
       // `t.arity`) as a second discriminator — cheaply rules out most
       // OTHER same-tag cross-type pairs (e.g. `bool_true`'s arity 0
-      // vs `io_io`'s arity 1) without needing `Value::Con` to carry its
+      // vs `io_mk`'s arity 1) without needing `Value::Con` to carry its
       // own owning-type identity, a larger change out of scope here.
       // Does NOT fully resolve every possible collision on its own
-      // (`io_io` and `result_ok` are both their type's first
+      // (`io_mk` and `result_ok` are both their type's first
       // constructor AND both carry exactly one payload arg — tag 0,
       // arity 1, identical on both axes — only the ordering below saves
-      // that specific pair, by construction: `io_io` is checked, and
+      // that specific pair, by construction: `io_mk` is checked, and
       // therefore unwrapped, before `result_ok` is ever considered) —
       // a fully robust fix needs `Value::Con` to carry real type
       // identity, a separate, larger change.
       if well_known
-        .io_io
+        .io_mk
         .is_some_and(|t| t.tag == *tag && t.arity == args.len() as u32)
       {
+        // Unwrap `IO.mk` to get the `RawIO` value, then unwrap
+        // `RawIO.io` to get the inner payload.
         match args.first() {
-          Some(inner) => detect_test_result_value(inner, well_known),
+          Some(inner) => {
+            // `inner` is `RawIO.io payload` — unwrap one more layer.
+            match inner {
+              core_value::Value::Con {
+                tag: inner_tag,
+                args: inner_args,
+              } => {
+                if well_known
+                  .raw_io_io
+                  .is_some_and(|t| t.tag == *inner_tag && t.arity == inner_args.len() as u32)
+                {
+                  match inner_args.first() {
+                    Some(payload) => detect_test_result_value(payload, well_known),
+                    None => TestResult::FailWithMessage(format!("unexpected result: {value:?}")),
+                  }
+                } else {
+                  // The IO.mk payload isn't a RawIO.io — recurse
+                  // on the inner value directly.
+                  detect_test_result_value(inner, well_known)
+                }
+              }
+              other => detect_test_result_value(other, well_known),
+            }
+          }
           None => TestResult::FailWithMessage(format!("unexpected result: {value:?}")),
         }
       } else if well_known
@@ -2176,7 +2218,7 @@ def test_direct_generic_call : Bool :=
   /// own type's first constructor, so both have the same PER-TYPE-
   /// LOCAL `CtorTag.tag` (0) — before this test was added,
   /// `detect_test_result_value` checked `bool_true` before ever
-  /// unwrapping `io_io`, so ANY `IO`-wrapped test result (regardless of
+  /// unwrapping `io_mk`, so ANY `IO`-wrapped test result (regardless of
   /// its actual payload) matched `bool_true` immediately and reported
   /// Pass unconditionally. Found while validating the dictionary-
   /// passing plan's own end-to-end compile-and-run tests
@@ -2188,7 +2230,7 @@ def test_direct_generic_call : Bool :=
     let file = dir.join("t.mo");
     fs::write(
       &file,
-      "#[test]\ndef test_io_true : IO Bool := IO.io true\n\n#[test]\ndef test_io_false : IO Bool := IO.io false\n",
+      "#[test]\ndef test_io_true : IO Bool := IO.pure true\n\n#[test]\ndef test_io_false : IO Bool := IO.pure false\n",
     )
     .unwrap();
 

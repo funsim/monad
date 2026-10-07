@@ -858,20 +858,16 @@ pub struct WellKnownCtors {
   pub option_none: Option<CtorTag>,
   pub list_cons: Option<CtorTag>,
   pub list_empty: Option<CtorTag>,
-  /// `IO A`'s sole constructor (`init/io.mo`'s `type IO A { io A }`) —
-  /// required by every native whose declared type is `IO _` (they wrap
-  /// their result through `io_wrap`, since `Monad.bind`'s `IO` instance
-  /// matches `match a { io a => f a }`), and needed to interpret a
-  /// forced test def's result `Value` the same way the tree-walker's own
-  /// `detect_test_result` (`lib.rs`) unwraps an `IO`-wrapped `Bool`/
-  /// `Result` before judging pass/fail — see `core_parity.rs`.
-  ///
-  /// TODO: `IO` is slated to be replaced with an opaque indexed monad
-  /// whose internal value is NOT accessible via an ordinary constructor
-  /// match — `io_io` (and any code unwrapping it, e.g. `core_parity.rs`)
-  /// will need to change to whatever that type's own (non-structural)
-  /// unwrap mechanism ends up being once that lands.
-  pub io_io: Option<CtorTag>,
+  /// `RawIO A`'s sole constructor (`init/io.mo`'s `type RawIO A { io A }`) —
+  /// the opaque inner type. Required by `io_wrap` (which builds
+  /// `IO.mk (RawIO.io inner)`) and by `io_bind` (which unwraps the
+  /// `RawIO.io` layer to apply the continuation).
+  pub raw_io_io: Option<CtorTag>,
+  /// `IO A`'s sole constructor (`init/io.mo`'s `type IO A { mk (RawIO A) }`) —
+  /// the user-facing wrapper. `io_wrap` builds `IO.mk (RawIO.io inner)`,
+  /// and `detect_test_result_value` unwraps `IO.mk` first, then
+  /// `RawIO.io`, to reach the inner payload.
+  pub io_mk: Option<CtorTag>,
   /// `Result E A`'s two constructors (`init/prelude.mo`) — same reason.
   pub result_ok: Option<CtorTag>,
   pub result_err: Option<CtorTag>,
@@ -891,6 +887,7 @@ impl WellKnownCtors {
     let bool_path = NamePath::top("Bool");
     let option_path = NamePath::top("Option");
     let list_path = NamePath::top("List");
+    let raw_io_path = NamePath::top("RawIO");
     let io_path = NamePath::top("IO");
     let result_path = NamePath::top("Result");
     let array_path = NamePath::top("Array");
@@ -901,7 +898,8 @@ impl WellKnownCtors {
       option_none: find_ctor(program, &option_path, "none"),
       list_cons: find_ctor(program, &list_path, "cons"),
       list_empty: find_ctor(program, &list_path, "empty"),
-      io_io: find_ctor(program, &io_path, "io"),
+      raw_io_io: find_ctor(program, &raw_io_path, "io"),
+      io_mk: find_ctor(program, &io_path, "mk"),
       result_ok: find_ctor(program, &result_path, "ok"),
       result_err: find_ctor(program, &result_path, "err"),
       array_mk: find_ctor(program, &array_path, "mk"),

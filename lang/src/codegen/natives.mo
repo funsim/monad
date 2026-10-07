@@ -152,7 +152,7 @@ type NativeWrapKind {
     passthrough (rt_fn_name : String),
     bool_result (rt_fn_name : String),
     // `IO String`-returning natives (`monad_read_file`): call, then wrap
-    // the raw result directly as `IO.io raw` -- mirrors
+    // the raw result directly as `IO.mk (RawIO.io raw)` -- mirrors
     // `wrap_io_value_native_result_go`'s own treatment of read_file at
     // its (other, term-level fast-path) call site: this backend already
     // treats a native-sourced C string as a valid `String` value with no
@@ -222,7 +222,7 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             else if String.beq target "array_get" then Option.some (NativeWrapKind.passthrough "monad_array_get")
             else if String.beq target "array_with" then Option.some (NativeWrapKind.passthrough "monad_array_with")
             // The two `IO`-typed ones: `io_passthrough` wraps the raw
-            // result as `IO.io raw`, which is what `Monad.bind`'s `IO`
+            // result as `IO.mk (RawIO.io raw)`, which is what `Monad.bind`'s `IO`
             // instance destructures.
             else if String.beq target "array_set_in_place" then Option.some (NativeWrapKind.io_passthrough "monad_array_set_in_place")
             else if String.beq target "array_freeze" then Option.some (NativeWrapKind.io_passthrough "monad_array_freeze")
@@ -278,6 +278,12 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             // the exact (Rust-host-matching) clamping semantics.
             else if String.beq target "string_slice" then Option.some (NativeWrapKind.passthrough "monad_string_slice")
             else if String.beq target "string_drop" then Option.some (NativeWrapKind.passthrough "monad_string_drop")
+            // RawIO.pure / RawIO.bind -- the opaque IO layer's native
+            // constructors. `io_pure` wraps in `RawIO.io` (tag 7);
+            // `io_bind` unwraps and calls the continuation. Both return
+            // `RawIO` values (not `IO`), so `passthrough` is correct.
+            else if String.beq target "io_pure" then Option.some (NativeWrapKind.passthrough "monad_io_pure")
+            else if String.beq target "io_bind" then Option.some (NativeWrapKind.passthrough "monad_io_bind")
             else if String.beq target "read_file" then Option.some (NativeWrapKind.io_passthrough "monad_read_file")
             else if String.beq target "file_exists" then Option.some (NativeWrapKind.io_truthy_ptr_bool_result "monad_file_exists")
             else if String.beq target "is_dir" then Option.some (NativeWrapKind.io_truthy_ptr_bool_result "monad_is_dir")
@@ -287,7 +293,7 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             // `write_stderr`) -- the byte-level half of stdio, added for
             // the language server. All five are `IO`-returning C
             // functions in `runtime.c`, so all five are `io_passthrough`:
-            // call the runtime, then wrap the raw result in `IO.io`.
+            // call the runtime, then wrap the raw result in `IO.mk (RawIO.io _)`.
             // That works for the three `IO Unit` ones because their C
             // functions return a Unit-ctor pointer rather than `void`
             // (`monad_tcp_close`'s own shape) -- and `io_passthrough`
@@ -506,7 +512,7 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             // result is a real `Option` Constructor built in runtime.c
             // (some=4/none=3, the same fixed tags `monad_array_get` and
             // runtime.mo's `rt_tag_some`/`rt_tag_none` use), so plain
-            // `io_passthrough` (IO.io-wrap only) like `list_dir`. Wired
+            // `io_passthrough` (IO.mk/RawIO.io-wrap only) like `list_dir`. Wired
             // because `std/ansi.mo`'s `colors_enabled` reads
             // NO_COLOR/FORCE_COLOR/TERM through it, and the compiler's
             // own `--verbose` stage trace (std/src/log.mo) colorizes through
@@ -515,8 +521,8 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             // The async runtime (`std/concurrent/{fiber,combine}.mo`).
             // Every one of the seven is `IO`-returning, so all are the
             // same shape: call the runtime, wrap the raw result in
-            // `IO.io`. That wrapping is exactly why `monad_await_fiber`
-            // has to UNWRAP the field 0 of the `IO.io` its action
+            // `IO.mk (RawIO.io _)`. That wrapping is exactly why `monad_await_fiber`
+            // has to UNWRAP the field 0 of the `IO.mk (RawIO.io _)` its action
             // produced -- see that function's own comment.
             //
             // The handles themselves are opaque: `Fiber`/`Scope` values
@@ -535,7 +541,7 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             // defs, reached by `motes/moon`'s server and `motes/moose`'s
             // client). All eight are `IO`-returning C functions in
             // `runtime.c`, so all eight are `io_passthrough`: call the
-            // runtime, then wrap the raw i64 result in `IO.io`.
+            // runtime, then wrap the raw i64 result in `IO.mk (RawIO.io _)`.
             //
             // `Socket`/`Listener` are opaque here in the same sense
             // `Fiber`/`Scope` are just above -- their type's single
@@ -803,13 +809,21 @@ def runtime_declarations : List LLVMDeclaration :=
     let d75 := mk_decl "monad_write_stdout" (List.cons "i64" List.empty) "i64" in
     let d76 := mk_decl "monad_flush_stdout" List.empty "i64" in
     let d77 := mk_decl "monad_write_stderr" (List.cons "i64" List.empty) "i64" in
+    // `monad_io_pure`/`monad_io_bind` (runtime.c) -- the opaque IO layer's
+    // native constructors. `io_pure` takes one i64 (the value) and returns
+    // `RawIO.io` wrapping it; `io_bind` takes two i64s (the `RawIO` value and
+    // the continuation closure) and returns the result of applying the
+    // continuation. Same "no implicit declare" requirement as every native
+    // above.
+    let d78 := mk_decl "monad_io_pure" (List.cons "i64" List.empty) "i64" in
+    let d79 := mk_decl "monad_io_bind" (List.cons "i64" (List.cons "i64" List.empty)) "i64" in
     [d1, d2, d3, d4, d5, d6, d7, d7b, d7c, d7d, d7e, d8, d9, d10, d11, d12, d13,
      d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d23a, d23b, d24, d24b, d25, d26, d27, d28, d29, d30, d31,
      d32, d33, d34, d35, d36, d37, d38, d39, d40, d41, d42, d43, d44, d45, d46, d47,
      d48, d49, d50, d51, d52, d53, d54, d55, d56,
      d57, d58, d59, d60, d61, d62, d63, d64,
      d65, d66, d67, d68, d69, d70, d71, d72,
-     d73, d74, d75, d76, d77]
+     d73, d74, d75, d76, d77, d78, d79]
 
 /// `apply_closureN`'s own declared param list: the closure value itself
 /// plus `n` ordinary args, all i64 (matches every def's own uniform

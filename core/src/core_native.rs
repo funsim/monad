@@ -295,6 +295,7 @@ pub fn exec_native(
     "string_get_char" => string_get_char(args, natives),
     "string_to_list" => string_to_list(args, natives),
     "string_from_list" => string_from_list(args, natives),
+    "io_pure" => io_pure(args, natives),
     "current_time" => current_time(natives),
     "current_time_nano" => current_time_nano(natives),
     "bench_report" => bench_report(args, natives),
@@ -834,15 +835,74 @@ fn string_drop(args: &[Value]) -> Result<Value, CoreEvalError> {
 
 // TODO: `IO` is slated to be replaced with an opaque indexed monad whose
 // internal value isn't reachable via an ordinary constructor match --
-// this `io_io`-wrapping helper will need to change to whatever that
+// this `io_mk`/`raw_io_io`-wrapping helper will need to change to whatever that
 // type's own (non-structural) construction mechanism ends up being once
 // that lands.
+/// Wrap a raw value into an `IO` value: `IO.mk (RawIO.io inner)`.
+/// The outer `IO.mk` is the user-facing wrapper; the inner `RawIO.io`
+/// is the opaque native constructor. Both tags are resolved from
+/// `NativeTable::well_known`.
 fn io_wrap(natives: &NativeTable, inner: Value) -> Result<Value, CoreEvalError> {
-  let io = require_ctor(natives.well_known.io_io, "IO.io")?;
+  let raw_io = require_ctor(natives.well_known.raw_io_io, "RawIO.io")?;
+  let io_mk = require_ctor(natives.well_known.io_mk, "IO.mk")?;
+  let raw_val = Value::Con {
+    tag: raw_io.tag,
+    args: std::sync::Arc::new(vec![inner].into()),
+  };
   Ok(Value::Con {
-    tag: io.tag,
+    tag: io_mk.tag,
+    args: std::sync::Arc::new(vec![raw_val].into()),
+  })
+}
+
+/// `io_pure (a : A) : RawIO A` — the native constructor for `RawIO`
+/// values. Creates a single `RawIO.io` wrapper (ONE layer), NOT the
+/// two-layer `IO.mk (RawIO.io ...)` that `io_wrap` produces — the
+/// `IO.mk` wrapping is done by `IO.pure` in the `.mo` source
+/// (`IO.pure a := IO.mk (RawIO.pure a)`).
+fn io_pure(args: &[Value], natives: &NativeTable) -> Result<Value, CoreEvalError> {
+  let inner = args
+    .first()
+    .cloned()
+    .ok_or_else(|| CoreEvalError::NativeArgError("io_pure needs 1 arg".into()))?;
+  let raw_io = require_ctor(natives.well_known.raw_io_io, "RawIO.io")?;
+  Ok(Value::Con {
+    tag: raw_io.tag,
     args: std::sync::Arc::new(vec![inner].into()),
   })
+}
+
+/// `io_bind (a : RawIO A) (f : A -> RawIO B) : RawIO B` — unwraps a
+/// `RawIO A` value and applies `f` to the inner value. Needs the full
+/// evaluator (like `await_fiber`) because applying `f` means calling
+/// `core_eval::apply`. Dispatched from `fire_or_accumulate`, not
+/// `exec_native`.
+pub fn io_bind(
+  args: &[Value],
+  globals: &crate::core_value::GlobalTable,
+  natives: &NativeTable,
+  cache: &mut crate::core_value::GlobalCache,
+) -> Result<Value, CoreEvalError> {
+  let io_val = args
+    .first()
+    .ok_or_else(|| CoreEvalError::NativeArgError("io_bind needs 2 args".into()))?;
+  let f = args
+    .get(1)
+    .ok_or_else(|| CoreEvalError::NativeArgError("io_bind needs 2 args".into()))?
+    .clone();
+  let raw_io = require_ctor(natives.well_known.raw_io_io, "RawIO.io")?;
+  let inner = match io_val {
+    Value::Con { tag, args } if *tag == raw_io.tag => args
+      .first()
+      .cloned()
+      .ok_or_else(|| CoreEvalError::NativeArgError("RawIO.io constructor has no fields".into()))?,
+    _ => {
+      return Err(CoreEvalError::NativeArgError(format!(
+        "io_bind expected a RawIO value, got {io_val:?}"
+      )));
+    }
+  };
+  crate::core_eval::apply(f, inner, globals, natives, cache)
 }
 
 fn print_str(args: &[Value], natives: &NativeTable) -> Result<Value, CoreEvalError> {
@@ -1819,7 +1879,8 @@ mod tests {
         // above -- a native that hardcoded a literal instead of reading
         // `well_known` would still pass with the real numbering.
         array_mk: Some(CtorTag { tag: 9, arity: 0 }),
-        io_io: Some(CtorTag { tag: 11, arity: 1 }),
+        raw_io_io: Some(CtorTag { tag: 11, arity: 1 }),
+        io_mk: Some(CtorTag { tag: 12, arity: 1 }),
         result_ok: Some(CtorTag { tag: 9, arity: 1 }),
         result_err: Some(CtorTag { tag: 10, arity: 1 }),
       },

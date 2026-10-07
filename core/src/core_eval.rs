@@ -352,6 +352,8 @@ fn fire_or_accumulate(
     }
     if name.as_str() == "await_fiber" {
       crate::core_native::await_fiber(&args, globals, natives, cache)
+    } else if name.as_str() == "io_bind" {
+      crate::core_native::io_bind(&args, globals, natives, cache)
     } else {
       exec_native(name.as_str(), &args, natives)
     }
@@ -771,7 +773,8 @@ mod tests {
       vec![crate::term::id("current_time")],
       vec![0],
       crate::lower_core_ir::WellKnownCtors {
-        io_io: Some(crate::lower_core_ir::CtorTag { tag: 0, arity: 1 }),
+        raw_io_io: Some(crate::lower_core_ir::CtorTag { tag: 0, arity: 1 }),
+        io_mk: Some(crate::lower_core_ir::CtorTag { tag: 1, arity: 1 }),
         ..Default::default()
       },
     );
@@ -813,7 +816,8 @@ mod tests {
       vec![crate::term::id("current_time")],
       vec![0],
       crate::lower_core_ir::WellKnownCtors {
-        io_io: Some(crate::lower_core_ir::CtorTag { tag: 0, arity: 1 }),
+        raw_io_io: Some(crate::lower_core_ir::CtorTag { tag: 0, arity: 1 }),
+        io_mk: Some(crate::lower_core_ir::CtorTag { tag: 1, arity: 1 }),
         ..Default::default()
       },
     );

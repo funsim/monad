@@ -21,7 +21,7 @@ use lib::codegen::util {}
 use std::map {HashMap}
 
 /// The ~16 builtin constructors' tags (0-15), keyed by BOTH their
-/// qualified ("IO.io") and base ("io") name forms -- built once, looked
+/// qualified ("RawIO.io", "IO.mk") and base ("io") name forms -- built once, looked
 /// up via `str_map_lookup` instead of a hand-rolled `if/else-if` chain.
 /// Tags match the runtime's own assignment; left completely unchanged
 /// from the original hardcoded chain this replaces -- zero risk to
@@ -29,7 +29,8 @@ use std::map {HashMap}
 #[partial]
 def builtin_ctor_tags : HashMap String I64 :=
     let m := str_map_empty in
-    let m := str_map_insert "IO.io" 7 m in
+    let m := str_map_insert "RawIO.io" 7 m in
+    let m := str_map_insert "IO.mk" 17 m in
     let m := str_map_insert "Unit.unit" 0 m in
     let m := str_map_insert "Bool.true" 1 m in
     let m := str_map_insert "Bool.false" 2 m in
@@ -78,7 +79,8 @@ def builtin_ctor_tags : HashMap String I64 :=
 #[partial]
 def builtin_ctor_arities : HashMap String I64 :=
     let m := str_map_empty in
-    let m := str_map_insert "IO.io" 1 m in
+    let m := str_map_insert "RawIO.io" 1 m in
+    let m := str_map_insert "IO.mk" 1 m in
     let m := str_map_insert "Unit.unit" 0 m in
     let m := str_map_insert "Bool.true" 0 m in
     let m := str_map_insert "Bool.false" 0 m in
@@ -220,7 +222,7 @@ def collect_struct_ctor_claims (structs : List Struct) (acc : List CtorClaim) : 
 }
 
 /// Check if a variable name is a known constructor.
-/// Handles both simple names ("unit", "true") and qualified names ("Unit.unit", "IO.io"),
+/// Handles both simple names ("unit", "true") and qualified names ("Unit.unit", "RawIO.io", "IO.mk"),
 /// falling back to `c`'s own dynamically-built `ctor_tags` table
 /// (`build_constructor_tag_map`) for anything not in `builtin_ctor_tags`
 /// -- see `constructor_tag`'s own doc comment. A bare name claimed at

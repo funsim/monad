@@ -26,7 +26,7 @@ use std::map {}
 /// the LEN argument, silently reading past the intended suffix's real
 /// length. Latent/unnoticed for a long time because `constructor_tag`'s
 /// own "check qualified names first" tier (whole-string comparisons
-/// against `"IO.io"`/`"Unit.unit"`/... ) never needed this "base name"
+/// against `"RawIO.io"`/`"IO.mk"`/`"Unit.unit"`/... ) never needed this "base name"
 /// fallback tier to work correctly for any of the ~16 hardcoded
 /// builtins; only surfaced once the new dynamic `ctor_tags` fallback
 /// (`build_constructor_tag_map`) started relying on `extract_base_name`
