@@ -4782,6 +4782,16 @@ def carrier_bindings (wildcards : List Identifier) (ins_args : List Term) (carri
 /// `(List A)` against `List I64` binds `A := I64`), and anything else
 /// records nothing -- a non-wildcard leaf (`List` in `instance
 /// FromListLiteral List`) constrains no variable of its own.
+///
+/// An applied shape pairs with the applied `actual` through
+/// `head_carrier`/`shape_arg_carriers`. Pairing from the OUTSIDE instead
+/// (what this arm used to do, one `Term.app` level per recursion) bound
+/// `M := I64` for `StateT S M` against `StateT I64 Id I64`: `[Monad M]`
+/// then resolved its dictionary at `I64`, where only prelude's
+/// wildcard-headed bridge (`instance {I : Type} [IndexedMonad M] Monad
+/// (M I I)`) matches, so the promoted method got the bridge's dictionary
+/// and the closure died on entry (`transformers_tests.mo`, driver exited
+/// -1).
 #[partial]
 def bind_term_vars (wildcards : List Identifier) (shape : Term) (actual : Term) (bindings : List (Pair Identifier Term)) : List (Pair Identifier Term) :=
     match term_peel shape {
@@ -4793,12 +4803,77 @@ def bind_term_vars (wildcards : List Identifier) (shape : Term) (actual : Term) 
                     else bindings,
                 DebugName.unnamed => bindings,
             },
-        Term.app sf sa =>
+        Term.app _ _ =>
             match term_peel actual {
-                Term.app af aa => bind_term_vars wildcards sf af (bind_term_vars wildcards sa aa bindings),
+                Term.app _ _ =>
+                    match flatten_call_spine (term_peel shape) {
+                        CallSpine.mk shead sargs =>
+                            match flatten_call_spine (term_peel actual) {
+                                CallSpine.mk ahead aargs =>
+                                    let via_head := bind_term_vars wildcards shead (head_carrier wildcards shead ahead sargs aargs) bindings in
+                                    bind_spine_args wildcards sargs (shape_arg_carriers wildcards shead sargs aargs) via_head,
+                            },
+                    },
                 _ => bindings,
             },
         _ => bindings,
+    }
+
+/// The subterm a shape's spine HEAD stands for. A hole head names a type
+/// CONSTRUCTOR -- `M A` against `StateT I64 Id I64` means `M` is a unary
+/// constructor, i.e. the carrier's head already applied to the params the
+/// shape's own arg doesn't name (`M := StateT I64 Id`) -- so a hole head
+/// takes the carrier's LEADING args and its args pair with the TRAILING
+/// ones (`shape_arg_carriers`). A head naming the carrier outright
+/// (`StateT S M`) denotes no parameters of its own and takes none: its
+/// args pair with the carrier's LEADING ones, `args_prefix_match`'s walk.
+/// Equal arities coincide, so only a partial application can tell them
+/// apart. A hole head with MORE args than the carrier binds the whole
+/// carrier and no arg -- a case the corpus's one hole-headed instance
+/// (`prelude`'s `M I I` bridge) cannot reach.
+#[partial]
+def head_carrier (wildcards : List Identifier) (shead : Term) (ahead : Term) (sargs : List Term) (aargs : List Term) : Term :=
+    if term_is_wildcard wildcards shead
+    then rebuild_call ahead (args_first (I64.sub (List.length aargs) (List.length sargs)) aargs)
+    else ahead
+
+/// Which of the carrier's args the shape's own args pair with -- see
+/// `head_carrier`.
+#[partial]
+def shape_arg_carriers (wildcards : List Identifier) (shead : Term) (sargs : List Term) (aargs : List Term) : List Term :=
+    if term_is_wildcard wildcards shead
+    then args_beyond (I64.sub (List.length aargs) (List.length sargs)) aargs
+    else aargs
+
+/// `args` from the left, keeping the leading `n`.
+#[partial]
+def args_first (n : I64) (args : List Term) : List Term :=
+    match args {
+        List.empty => List.empty,
+        List.cons a rest => if I64.beq n 0 then List.empty else List.cons a (args_first (n - 1) rest),
+    }
+
+/// `bind_term_vars`' own argument pairing: the shape's args against the
+/// actual's, first to first (`args_prefix_match`'s walk, binding what it
+/// tests), stopping at whichever list ends first.
+#[partial]
+def bind_spine_args (wildcards : List Identifier) (sargs : List Term) (aargs : List Term) (bindings : List (Pair Identifier Term)) : List (Pair Identifier Term) :=
+    match sargs {
+        List.empty => bindings,
+        List.cons s srest =>
+            match aargs {
+                List.empty => bindings,
+                List.cons a arest => bind_spine_args wildcards srest arest (bind_term_vars wildcards s a bindings),
+            },
+    }
+
+/// `args` without its leading `n` -- the carrier's args a hole-headed
+/// shape's own args pair with.
+#[partial]
+def args_beyond (n : I64) (args : List Term) : List Term :=
+    match args {
+        List.empty => List.empty,
+        List.cons _ rest => if I64.beq n 0 then args else args_beyond (n - 1) rest,
     }
 
 /// What `id` was bound to by `carrier_bindings`, if anything.

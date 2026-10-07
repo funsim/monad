@@ -6,9 +6,9 @@ use lang::types {
   package_private, param_many, priv_, pub_, sort_n, unnamed,
 }
 use lang::scope {
-  LocalTypeBinding, add_constraint_dict_params, build_scope_from_decls,
+  LocalTypeBinding, add_constraint_dict_params, bind_term_vars, build_scope_from_decls,
   build_scope_from_modules, find_constraint_bound_carrier_any, infer_carrier_type,
-  list_append, mk, npath_eq, placeholder_carrier, resolve_def_in_scope_by_name,
+  list_append, lookup_binding, mk, npath_eq, placeholder_carrier, resolve_def_in_scope_by_name,
   scope_data_add_def, scope_data_add_inductive, scope_data_add_instance,
   scope_data_empty, scope_find_inductive, scope_find_inductive_by_constructor,
   scope_find_local, scope_globals, scope_push_local, scope_resolve_instance,
@@ -1024,3 +1024,66 @@ def test_def_ref_carrier_reads_through_a_quantified_type : Bool :=
 #[test]
 def test_def_ref_carrier_reads_a_bare_type_too : Bool :=
     String.beq (def_ref_carrier_slug (list_of (var_named "A"))) "List"
+
+// --- bind_term_vars: an applied shape pairs with the applied carrier ---
+
+/// `StateT I64 Id I64` fully applied -- the carrier the `instance [Monad
+/// M] Monad (StateT S M)` call site in `init/src/transformers_tests.mo`
+/// dispatches at.
+def statet_applied : Term :=
+    Term.app (Term.app (Term.app (var_named "StateT") (var_named "I64")) (var_named "Id")) (var_named "I64")
+
+/// The same, asymmetric, so a pin can tell LEADING from TRAILING pairing:
+/// the element type differs from the parameters'.
+def statet_asym : Term :=
+    Term.app (Term.app (Term.app (var_named "StateT") (var_named "I64")) (var_named "Id")) (var_named "U8")
+
+/// The binding `bind_term_vars` records for `nm`, as a slug.
+def bound_slug (wildcards : List Identifier) (shape : Term) (actual : Term) (nm : String) : String :=
+    match lookup_binding (bind_term_vars wildcards shape actual List.empty) (Identifier.id nm) {
+        Option.some t => term_to_slug t,
+        Option.none => "<none>",
+    }
+
+/// MEASURED (`transformers_tests.mo`, driver exited -1): the instance's own
+/// arg is a PARTIAL application of the carrier's head, so its variables
+/// align with the carrier's FIRST args. Pairing the spines from the
+/// outside bound `M := I64` (the ELEMENT type), which sent `[Monad M]`'s
+/// dictionary lookup to `I64` -- where only prelude's wildcard-headed
+/// bridge matches, so the promoted `StateT` method got the bridge's
+/// dictionary and died on entry. `spine_matches` (the match side) was
+/// already left-aligned; this is the binding side.
+#[test]
+def test_bind_term_vars_left_aligns_a_partial_application : Bool :=
+    let shape := Term.app (Term.app (var_named "StateT") (var_named "S")) (var_named "M") in
+    let wildcards : List Identifier := [Identifier.id "S", Identifier.id "M"] in
+    String.beq (bound_slug wildcards shape statet_applied "S") "I64"
+        && String.beq (bound_slug wildcards shape statet_applied "M") "Id"
+
+/// A hole HEAD names a type constructor -- the carrier's head applied to
+/// the params the shape's own arg does not name -- so its arg pairs with
+/// the carrier's LAST. Both halves are pinned (the head loses `U8`, the
+/// arg gains it), which is what a leading/trailing mix-up breaks.
+#[test]
+def test_bind_term_vars_binds_a_hole_head_to_the_carrier_prefix_and_its_arg_to_the_tail : Bool :=
+    let shape := Term.app (var_named "M") (var_named "A") in
+    let wildcards : List Identifier := [Identifier.id "M", Identifier.id "A"] in
+    String.beq (bound_slug wildcards shape statet_asym "M") "StateT_I64_Id"
+        && String.beq (bound_slug wildcards shape statet_asym "A") "U8"
+
+/// The bridge's own shape: two hole args, one carrier param between them
+/// and the head (`M I I` against `StateT I64 Id U8`). `I` is recorded
+/// twice; the later record wins (`lookup_binding` scans the prepended
+/// list front-first), so the pin's `U8` also says the pair ran to the end.
+#[test]
+def test_bind_term_vars_walks_a_hole_heads_args_along_the_carrier_tail : Bool :=
+    let shape := Term.app (Term.app (var_named "M") (var_named "I")) (var_named "I") in
+    let wildcards : List Identifier := [Identifier.id "M", Identifier.id "I"] in
+    String.beq (bound_slug wildcards shape statet_asym "M") "StateT_I64"
+        && String.beq (bound_slug wildcards shape statet_asym "I") "U8"
+
+/// The equal-arity case is unchanged either way -- `instance [BEq A] BEq
+/// (List A)` against `List I64`.
+#[test]
+def test_bind_term_vars_aligns_equal_arity_spines : Bool :=
+    String.beq (bound_slug [Identifier.id "A"] (list_of (var_named "A")) (list_of (var_named "I64")) "A") "I64"
