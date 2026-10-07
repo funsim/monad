@@ -485,7 +485,7 @@ pub def field_access_chain (scrutinee : Term) (fields : List Identifier) : Term 
 /// bind `x`/`y` from the fixed-name `Param` this variant also carries.
 /// Mirrors the Rust reference's own `ParsedParam` (`core/src/parser.rs`)
 /// exactly, adapted to a fixed binder name (`__struct_param`) instead of
-/// a gensym -- `lang/` has no gensym facility (see `cli/src/args.mo`'s own
+/// a gensym -- `lang/` has no gensym facility (see `motes/clap/src/args.mo`'s own
 /// header comment for the established precedent of a fixed, prefixed
 /// name standing in for one here). Kept as a thin wrapper (rather than
 /// adding a pattern slot to `Param` itself) so every OTHER `Param`

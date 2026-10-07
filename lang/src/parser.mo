@@ -1702,7 +1702,7 @@ def type_cons_try_bare (r : ParseResult ParseTerm) (orig : String) (name : Ident
 #[partial]
 def type_cons_one_group_content (input : String) (name : Identifier) (params : List ParseParam) : ParseResult ParseInductConstructor :=
 	// Capture zero-or-more `#[attr]`s before the field itself (e.g.
-	// `cli/src/tests/cli_derive_tests.mo`'s `compile (path : String)
+	// `motes/clap/src/tests/cli_derive_tests.mo`'s `compile (path : String)
 	// (#[arg] verbose : Bool)` -- a per-FIELD attribute, distinct from
 	// `def_try_attrs`'s own per-DEF attribute list this constructor-field
 	// grammar never shared code with) and thread them down to the built
@@ -2272,7 +2272,7 @@ def def_params_try_explicit (r : ParseResult String) (orig : String) (params : L
 		// one real per-param attribute shape (`#[arg]`, e.g.
 		// `(#[arg] verbose : Bool)` in a #[derive_cli]-annotated type's
 		// constructor) is on a CONSTRUCTOR field, not a `def` param
-		// (see cli/src/tests/cli_derive_tests.mo, deliberately Rust-host-
+		// (see motes/clap/src/tests/cli_derive_tests.mo, deliberately Rust-host-
 		// only per its own doc comment) -- so this specific path has no
 		// in-scope real corpus target, unlike every other piece of this
 		// plan. Lower-confidence, hand-repro-only per
@@ -2431,7 +2431,7 @@ def params_for_names_attrs (names : List Identifier) (typ : ParseTerm) (attrs : 
 /// `type_cons_one_group_content` used to parse a field's leading
 /// `#[arg]` and DISCARD it ("accept the syntax, discard the content",
 /// its own doc comment), on the grounds that "nothing downstream reads a
-/// field's own attributes". `#[derive_cli]` does: `cli/src/args.mo`'s
+/// field's own attributes". `#[derive_cli]` does: `motes/clap/src/args.mo`'s
 /// `derive_cli_meta` classifies each `FieldInfo` into a `--flag` or a
 /// positional purely by `cli_has_arg_attr`, and `FieldInfo.attrs` is fed
 /// from exactly this `Param.attrs` slot through
@@ -9338,7 +9338,7 @@ def test_macro_call_decl_two_consecutive_not_swallowed : Bool :=
 // --- Tests for per-def-param #[arg] attribute capture ---
 //
 // Lower-confidence/lower-priority per the plan -- the real corpus
-// #[arg] usage (cli/src/tests/cli_derive_tests.mo) is on a constructor
+// #[arg] usage (motes/clap/src/tests/cli_derive_tests.mo) is on a constructor
 // field, not a `def` param, and is deliberately Rust-host-only. These
 // are hand-written repros only.
 
@@ -9370,9 +9370,9 @@ def test_def_param_no_attribute_present : Bool :=
     }
 
 /// The CONSTRUCTOR-field half of the `#[arg]` capture -- the real corpus
-/// shape (`cli/src/tests/cli_derive_tests.mo`'s `compile (path : String)
+/// shape (`motes/clap/src/tests/cli_derive_tests.mo`'s `compile (path : String)
 /// (#[arg] verbose : Bool)`, whose field attribute is what
-/// `cli/src/args.mo`'s `derive_cli_meta` classifies a `--flag` by). Used
+/// `motes/clap/src/args.mo`'s `derive_cli_meta` classifies a `--flag` by). Used
 /// to be parsed and DISCARDED here; see `ctor_params_for_names_attrs`'s
 /// doc comment for the silent wrong-code consequence.
 #[test]

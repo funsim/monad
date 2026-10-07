@@ -300,7 +300,7 @@ cd "$root"
 # no longer. The `#[derive]` family went the same way in P10: an attribute
 # on a `struct` decl, the attribute-to-macro bridge, and the struct-ctor
 # arity entry together take `std/src/derive_tests.mo` (22/22),
-# `cli/src/tests/cli_derive_tests.mo` (7/7) and `examples/derive.mo`
+# `motes/clap/src/tests/cli_derive_tests.mo` (7/7) and `examples/derive.mo`
 # (7/7) off it. `init/src/tests.mo` is the third to go: the last entry
 # this list had for a DEAD DRIVER, and it was the only one ever listed
 # for that wording. Its `some 1 == (List.get 0 [1, 2, 3])` shape sent the

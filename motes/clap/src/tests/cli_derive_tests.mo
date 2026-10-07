@@ -12,7 +12,7 @@
 /// `scope_all_tests.mo`, `typecheck_lang_tests.mo`) — the self-hosted
 /// compiler (`lang/parser.mo`) has no concept of `#[derive_cli]` or
 /// per-param `#[...]` attributes yet, so this file is only ever run through
-/// the Rust host (`cargo run -- test cli/src/tests/cli_derive_tests.mo`),
+/// the Rust host (`cargo run -- test motes/clap/src/tests/cli_derive_tests.mo`),
 /// which does.
 use lib::args {*}
 

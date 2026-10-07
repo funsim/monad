@@ -1,4 +1,4 @@
-/// Self-hosted counterpart to `cli/src/tests/cli_derive_tests.mo` --
+/// Self-hosted counterpart to `motes/clap/src/tests/cli_derive_tests.mo` --
 /// proves `derive_cli!` (the bare decl-macro form, not `#[derive_cli]`
 /// attribute sugar) type-checks correctly through the SELF-HOSTED
 /// checker (`lang/typecheck/macro_queue.mo`'s `expand_decls_graph` +

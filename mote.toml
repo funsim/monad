@@ -34,6 +34,7 @@ members = [
   "slow_tests",
   "bench",
   "proofs",
+  "motes/clap",
   "motes/demo",
   "motes/example",
   "motes/ffi_example",

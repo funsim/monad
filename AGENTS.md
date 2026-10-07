@@ -1394,7 +1394,7 @@ this closes `std/src/sha256.mo` at both `check` and `monad test` level;
 the full self-hosted sweep is 969/969 tests with 0 FAIL.
 
 **The `ce_cycle 3` that arm used to trip was never dict recursion.** It
-showed up on `cli/src/tests/cli_derive_self_hosted_tests.mo` (minimal
+showed up on `motes/clap/src/tests/cli_derive_self_hosted_tests.mo` (minimal
 repro: `use lib::args {*}` plus a `derive_cli! DemoCommand` decl over a
 two-field `type DemoCommand`, which stays `ok` without the arm) as
 `meta_eval_invoke: applying the meta-def to its TypeInfo argument
@@ -1408,7 +1408,7 @@ as `ce_cycle`. `ref_names_class_method` now requires the qualifier to
 name a CLASS before that fallback runs, so an inductive-qualified
 reference (`List.empty`, `Option.some`, `Bool.true`) falls through to
 the constructor path it means. Measured with both arms in place:
-`cargo run --release -- test cli/src/tests/cli_derive_self_hosted_tests.mo`
+`cargo run --release -- test motes/clap/src/tests/cli_derive_self_hosted_tests.mo`
 is 5/5 PASS.
 
 **What the match still does NOT close** (measured 2026-09-19, same day).

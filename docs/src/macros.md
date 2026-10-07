@@ -202,7 +202,7 @@ makes `#[derive BEq]` fail with "macro `derive_beq` not found".
 ## Writing Your Own Derive
 
 Because a derive is just a `TypeInfo -> List Decl` function plus a two-line
-`defmacro`, adding one is ordinary programming. `lang/cli.mo` does exactly this
+`defmacro`, adding one is ordinary programming. `motes/clap/src/args.mo` does exactly this
 for `#[derive_cli]`, generating an argv parser from a struct's fields and their
 `#[arg]` annotations — the field attributes come through in `FieldInfo.attrs`.
 
@@ -219,7 +219,7 @@ for `#[derive_cli]`, generating an argv parser from a struct's fields and their
 `#[derive_cli]`, and stays free of macro syntax on purpose: the self-hosted
 parse/scope/typecheck suite re-parses that file through the self-hosted
 pipeline, and it is the one file where an attribute would be load-bearing for
-the bootstrap itself. `cli/src/tests/cli_derive_tests.mo` is the derived
+the bootstrap itself. `motes/clap/src/tests/cli_derive_tests.mo` is the derived
 equivalent.
 
 ## Summary

@@ -194,14 +194,16 @@
             "llvm"
             "runtime"
             "build"
-            # Compiler inputs -- see THE RULE above. `lsp`/`toolkit` arrive
-            # through `cli` (its `lsp` subcommand), and `json` through `lsp`,
-            # which speaks JSON-RPC; `parsec` and `toml` arrive through `lang`
-            # itself, which parses with one and reads every manifest with the
-            # other. Not the rest of `motes/`: those are consumers of the
-            # compiler, not part of it, and keeping them out is what stops an
-            # unrelated mote's edit from invalidating a 20-minute
-            # interpretation.
+            # Compiler inputs -- see THE RULE above. `clap` arrives through
+            # `cli`, whose `main.mo` parses its own argv with it;
+            # `lsp`/`toolkit` arrive through `cli` too (its `lsp` subcommand),
+            # and `json` through `lsp`, which speaks JSON-RPC; `parsec` and
+            # `toml` arrive through `lang` itself, which parses with one and
+            # reads every manifest with the other. Not the rest of `motes/`:
+            # those are consumers of the compiler, not part of it, and keeping
+            # them out is what stops an unrelated mote's edit from
+            # invalidating a 20-minute interpretation.
+            "motes/clap"
             "motes/json"
             "motes/lsp"
             "motes/parsec"

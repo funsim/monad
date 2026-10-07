@@ -8,7 +8,7 @@
 ///   `lang/tests/`);
 /// - by generated code, from `#[derive_cli]`-annotated types — see
 ///   `derive_cli_meta`/`derive_cli` below, and the demo in
-///   `cli/src/tests/cli_derive_tests.mo`.
+///   `lib/tests/cli_derive_tests.mo`.
 ///
 /// Each operation returns a dedicated, non-generic result type
 /// (`Cli.FlagResult`/`Cli.PosResult`/`Cli.OptResult`) rather than a generic
@@ -26,7 +26,7 @@ use std::list {List.any, List.filter, List.length}
 // meta-evaluated during `#[derive_cli]` expansion, and that closure is
 // scoped to the module's own declared dependencies -- without this the
 // expansion fails with `unbound variable String.concat_all`, taking
-// `cli/src/main.mo` and four test files down with it. `lang/json.mo`
+// `cli/src/main.mo` and four test files down with it. `motes/json`
 // imports from `init.string` the same way.
 use init::string {}
 use init::meta {TypeInfo, CtorInfo, FieldInfo, Expr, Decl}
@@ -39,15 +39,15 @@ open MatchArm {match_arm}
 open Param {meta_param}
 open Decl {d_def, d_error}
 
-type Cli.FlagResult {
+pub type Cli.FlagResult {
     flag_result (found : Bool) (rest : List String),
 }
 
-type Cli.PosResult {
+pub type Cli.PosResult {
     pos_result (value : Option String) (rest : List String),
 }
 
-type Cli.OptResult {
+pub type Cli.OptResult {
     opt_result (value : String) (rest : List String),
 }
 
@@ -55,7 +55,7 @@ type Cli.OptResult {
 /// if present. Pass `""` for `short` to only recognize the long form. Flags
 /// are position-independent — this finds the flag wherever it is and
 /// returns the remaining args with it stripped out, order preserved.
-def Cli.take_flag (long : String) (short : String) (args : List String) : Cli.FlagResult :=
+pub def Cli.take_flag (long : String) (short : String) (args : List String) : Cli.FlagResult :=
     match args {
         List.empty => Cli.FlagResult.flag_result false List.empty,
         List.cons hd tl =>
@@ -72,7 +72,7 @@ def Cli.take_flag (long : String) (short : String) (args : List String) : Cli.Fl
     }
 
 /// Take the first token off `args` as a positional value, if any.
-def Cli.take_positional (args : List String) : Cli.PosResult :=
+pub def Cli.take_positional (args : List String) : Cli.PosResult :=
     match args {
         List.empty => Cli.PosResult.pos_result Option.none List.empty,
         List.cons hd tl => Cli.PosResult.pos_result (Option.some hd) tl,
@@ -82,9 +82,9 @@ def Cli.take_positional (args : List String) : Cli.PosResult :=
 /// tokens if present and returning `value`; falls back to `default` if
 /// absent. Pass `""` for `short` to only recognize the long form.
 /// (v1 scope: space-separated `<flag> <value>` only — no `--<long>=<value>`
-/// combined form, see `cli/src/args.mo`'s plan note on `String.split` not
+/// combined form, see this module's plan note on `String.split` not
 /// existing yet.)
-def Cli.take_opt (long : String) (short : String) (default : String) (args : List String) : Cli.OptResult :=
+pub def Cli.take_opt (long : String) (short : String) (default : String) (args : List String) : Cli.OptResult :=
     match args {
         List.empty => Cli.OptResult.opt_result default List.empty,
         List.cons hd tl =>
@@ -279,6 +279,9 @@ pub def derive_cli_meta (info : TypeInfo) : List Decl :=
             }
     }
 
+// No `pub`: `vis_parser` (lang/src/parser.mo) takes a visibility prefix on
+// `def`/`type`/`class`/`struct`/`instance`/`infix` and not on `defmacro`, so
+// this name crosses a mote boundary as package-private.
 defmacro derive_cli T := decls {
     reflect_type_info! T derive_cli_meta
 }

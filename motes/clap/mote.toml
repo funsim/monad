@@ -1,0 +1,26 @@
+# Command-line argument parsing: the `Cli.take_*` helpers over a
+# `List String`, and the `#[derive_cli]` code generator that builds a
+# subcommand parser from a type's own constructors.
+#
+# Extracted from `cli/src/args.mo`. It lives here rather than beside `cli`
+# because it is a library anyone can use and `cli` is one of its consumers,
+# not its owner -- but that makes it a compiler input, so it is also named in
+# `nix/monad.nix`'s `compilerSrc` and in `scripts/build-self-hosted.sh`.
+
+[mote]
+name = "clap"
+version = "0.1.0"
+edition = "2026"
+
+# `init` and `std` are ambient and need no entry; declared anyway because
+# every other manifest here declares them. See motes/parsec/mote.toml.
+#
+# Sub-table, not an inline table: the self-hosted TOML reader supports
+# headers and not inline tables, and a manifest it cannot parse makes
+# `Mote.discover` return none -- silently turning this mote's declared-deps
+# check off rather than failing.
+[dependencies.init]
+path = "../../init"
+
+[dependencies.std]
+path = "../../std"

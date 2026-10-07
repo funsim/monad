@@ -243,7 +243,7 @@ def scope_data_add_inductive (sd : ScopeData) (ind : Inductive) : ScopeData :=
 // open_all`/`UseFilter.use_items` containing `UseItem.use_glob`) is not
 // expanded -- doing so needs enumerating every entry under a path prefix
 // (a `HashMap.to_list`-shaped walk), which no confirmed real corpus case
-// currently needs (the one real glob, `cli/src/main.mo`'s `use cli.args
+// currently needs (the one real glob, `cli/src/main.mo`'s `use clap.args
 // {*}`, is only ever referenced through its own already-qualified
 // `Command.*` names, not bare) -- left for future work if that changes.
 // `scoped_open_d` (`open X in <decl>`, meant to scope its alias to just

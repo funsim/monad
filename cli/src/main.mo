@@ -33,7 +33,7 @@ use build::manage {
 use std::map {}
 use lang::pretty {show_decls}
 use lang::codegen::test_driver {compile_loaded_modules_to_test_ir, is_no_tests_error, parse_driver_result}
-use lib::args {*}
+use clap::args {*}
 // `--verbose` stage/module trace and the colored finish/failure lines
 // (`std/src/log.mo` -- its own header documents the gating rules).
 use std::log {fail_line, ok_line, stage}
@@ -1728,7 +1728,7 @@ def run_test_loop_codegen (f : String) (rest : List String) (out_dir : String) (
 // load-bearing for the compiler building itself. `#[derive_cli]` was NOT the
 // reason: it has worked self-hosted since `ae3a457`, and this comment claimed
 // otherwise long after that. It does share `cli/src/args.mo`'s small runtime
-// helpers with the macro-derived demo in cli/src/tests/cli_derive_tests.mo,
+// helpers with the macro-derived demo in motes/clap/src/tests/cli_derive_tests.mo,
 // though — same argv-munging primitives either way.
 type Command {
     build (file: Path) (out_name: Path) (bin: String) (verbose: Bool) (debug: Bool) (no_cache: Bool) (target: String),
