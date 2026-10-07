@@ -2690,7 +2690,27 @@ def try_compile_constructor_app_db (c : CodegenCtx) (fun : Term) (arg : Term) : 
                                 Option.some _ => true,
                                 Option.none => false,
                             } in
-                            if looks_like_ctor && Bool.not also_a_real_fn
+                            // A LOCAL of the same bare name shadows the
+                            // constructor, and `compile_call_head` -- the
+                            // fallback this bails out to -- already checks
+                            // locals first. Without the same check here the
+                            // earlier try wins and steals the call: an
+                            // arity-1 constructor named `f` anywhere in the
+                            // whole-program namespace turned
+                            // `init/src/io.mo`'s `Monad IO`.bind
+                            // (`match a { io a => f a }`) into
+                            // `alloc_constructor`, so bind returned a
+                            // wrapped payload and never invoked its
+                            // continuation -- every `do` block in any
+                            // program loading that module silently did
+                            // nothing. Found via `motes/tui`'s `Key.f
+                            // (n : I64)`; pinned by
+                            // `slow_tests/src/codegen_ctor_shadows_param_tests.mo`.
+                            let also_a_local := match ctx_lookup_local c id {
+                                Option.some _ => true,
+                                Option.none => false,
+                            } in
+                            if looks_like_ctor && Bool.not also_a_real_fn && Bool.not also_a_local
                             then
                                 let base_name := extract_base_name name in
                                 let con := Con.mk (Identifier.id base_name) (NamePath.npath List.empty) (List.length args) (wrap_some_list args) in
