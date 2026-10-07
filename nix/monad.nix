@@ -328,13 +328,17 @@
       #     space included.
       #   * `ccPath`: a directory to put first on PATH, reaching the phase's
       #     `clang` and the installed compiler's.
-      #   * `gc`: the target's collector, which the phase links `-lgc` against
-      #     and the wrapper points `clang` at.
+      #   * `gc`: the target's collector, which the phase links against and the
+      #     wrapper points `clang` at.
+      #   * `gcLink`: how the link names that collector -- `-lgc` (dynamic)
+      #     unless a target says otherwise; see `monad` below for the one that
+      #     does.
       #   * `checkPhase`: how to prove the result RUNS, for a target this
       #     machine cannot execute directly. Null for the native target, which
       #     runs in front of whoever built it.
       monadFor = {
         gc ? pkgs.boehmgc,
+        gcLink ? "-lgc",
         llcFlags ? "",
         ccPath ? null,
         checkPhase ? null,
@@ -378,7 +382,7 @@
           clang -pthread -c runtime/src/runtime.c \
             "-DMONAD_BUILD_COMMIT=\"${commit}\"" \
             -o "$PWD/monad_runtime.o"
-          clang -pthread "$PWD/monad.o" "$PWD/monad_runtime.o" -lgc -o "$PWD/monad"
+          clang -pthread "$PWD/monad.o" "$PWD/monad_runtime.o" ${gcLink} -o "$PWD/monad"
 
           runHook postBuild
         '';
@@ -403,7 +407,28 @@
 
       # The native target, spelled as the empty spec: every default is the
       # answer that leaves the native phase and the wrapper byte-identical.
-      monad = monadFor { };
+      #
+      # Except on darwin, where the collector is linked STATICALLY. A dynamic
+      # `-lgc` there records libgc's absolute install name -- a `/nix/store`
+      # path -- in the binary, and `scripts/nightly-release.sh` publishes the
+      # bare binary out of the store, so the nightly died in dyld before
+      # `main` on every Mac without that exact store path ("Library not
+      # loaded: /nix/store/...-boehm-gc-8.2.12/lib/libgc.1.dylib", exit 134).
+      # Linux has the same store-path problem in its ELF interpreter, which
+      # static libgc alone would not fix, so its argv is left as it was.
+      #
+      # The archive is passed BY PATH rather than as `-lgc`: ld64 prefers a
+      # `.dylib` over a `.a` in the same directory, and `enableStatic` builds
+      # both. `gc` is the same override so the header the runtime is compiled
+      # against comes from the build that produced the archive. Measured on an
+      # arm64 Mac with Homebrew's identical bdw-gc 8.2.12: `otool -L` names
+      # only libSystem, and `monad check cli/src/main.mo` passes.
+      monad = monadFor (lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin (
+        let gcStatic = pkgs.boehmgc.override { enableStatic = true; }; in {
+          gc = gcStatic;
+          gcLink = "${lib.getLib gcStatic}/lib/libgc.a";
+        }
+      ));
 
       # A cross target: the same three commands, with llc told the triple the
       # IR is FOR -- rung 1's header says this machine's, because that is where
