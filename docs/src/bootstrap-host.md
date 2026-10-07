@@ -216,7 +216,8 @@ checker rebuilds it there (`try_global_field_access`), so this works and
 compiles. The host's checker never rewrites terms, so it rejects the read with
 *"unbound variable `vzero.x`"* — meaning **a read whose subject is a top-level
 `def` cannot appear in a file the host checks**, which includes this book's
-`monad` blocks and the corpus the pre-commit hook sweeps. Read through a
+`monad` blocks and, in CI, the `init std examples lang cli llvm runtime build
+motes` corpus the host checker sweeps. Read through a
 parameter or a `let` when you want both compilers to accept it. See
 [Structs and Enums](./structs-enums.md).
 

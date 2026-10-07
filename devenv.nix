@@ -233,22 +233,13 @@
     };
     rustfmt.enable = true;
     clippy.enable = true;
-    rust-tests = {
-      enable = true;
-      entry = ''
-        cargo test --release
-      '';
-      pass_filenames = false;
-      files = "\\.(rs|mo)$";
-    };
-    monad-check = {
-      enable = true;
-      entry = ''
-        cargo run --release -- check init std examples lang cli llvm runtime build motes
-      '';
-      pass_filenames = false;
-      files = "\\.(rs|mo)$";
-    };
+    # `cargo test --release` and the whole-corpus `cargo run --release -- check
+    # init std examples lang cli llvm runtime build motes` are deliberately NOT
+    # hooks. Both are whole-corpus and take minutes, and this config is
+    # generated per checkout but SHARED by every worktree on the machine, so
+    # every commit in every worktree paid them. They run in CI instead
+    # (ci.yml's `pre-commit-checks`: the Rust suite, and the same `check` one
+    # severity stricter under MONAD_USE_COMPLETENESS=error).
     shellcheck = {
       enable = true;
       entry = "shellcheck";

@@ -82,8 +82,9 @@
         CARGO_TARGET_DIR = "target";
 
         # The workspace's own `cargo test` pulls in the wasm member, which
-        # needs a target this derivation does not provide; CI runs the Rust
-        # suite from the dev shell, which does.
+        # needs a target this derivation does not provide; CI runs the suite
+        # from the dev shell, which does -- the "Rust test suite" step of
+        # ci.yml's `pre-commit-checks`, guarded on the compiler classifier.
         doCheck = false;
 
         # Deliberately no `git`. No input in Cargo.lock is a git dependency, so

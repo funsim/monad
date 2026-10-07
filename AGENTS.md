@@ -74,13 +74,14 @@ a different branch and cause confusion.
 ├── examples/         # Example programs
 ├── bench/            # Standalone .mo micro-benchmarks (Bench.now/Bench.report,
 │                     # #[test]-driven) -- deliberately NOT swept by the
-│                     # pre-commit hook (which type-CHECKS `init std examples
-│                     # lang cli llvm runtime build motes`, devenv.nix), since
-│                     # benchmarks are for occasional manual measurement, not
-│                     # every-commit correctness checking
-├── slow_tests/       # Real #[test]s, deliberately NOT swept by the pre-commit
-│                     # hook (same exclusion mechanism as bench/ -- outside its
-│                     # fixed directory list, devenv.nix's monad-check). Five
+│                     # whole-corpus check (which type-CHECKS `init std examples
+│                     # lang cli llvm runtime build motes`, ci.yml's
+│                     # `pre-commit-checks`), since benchmarks are for
+│                     # occasional manual measurement, not every-commit
+│                     # correctness checking
+├── slow_tests/       # Real #[test]s, deliberately NOT swept by the whole-corpus
+│                     # check (same exclusion mechanism as bench/ -- outside its
+│                     # fixed directory list, ci.yml's `pre-commit-checks`). Five
 │                     # files, moved here purely for cost (measured directly,
 │                     # `cargo run --release -- test init std lang examples
 │                     # slow_tests --json`, to be 684s of the corpus's 747.5s
@@ -891,9 +892,12 @@ cargo test core_eval::
 ### Memory: whole-corpus checks and the test suite
 
 A whole-corpus `monad-rs check` and `cargo test --release` are the two
-heaviest things in this repo, and both run from the pre-commit hooks. A
-bug that makes name resolution miss can turn either into unbounded
-allocation that exhausts system memory and hard-restarts the machine —
+heaviest things in this repo. Neither runs from a pre-commit hook any more
+-- both would fire on every commit in every worktree, since
+`.pre-commit-config.yaml` is shared across worktrees -- so they run in CI
+instead (ci.yml's `pre-commit-checks`, the latter guarded on the compiler
+classifier). A bug that makes name resolution miss can turn either into
+unbounded allocation that exhausts system memory and hard-restarts the machine —
 this happened repeatedly on 2026-09-20, taking the desktop down with it
 rather than just failing the run.
 
@@ -3411,7 +3415,7 @@ for this repo.
 
 ### Pre-commit Hooks
 
-Always commit with pre-commit hooks enabled. **Never** use `git commit --no-verify` — the pre-commit hooks ensure clippy, rustfmt, `cargo test --release`, the docs-check, and `cargo run --release -- check init std examples lang cli llvm runtime build motes` all pass before each commit. (`devenv.nix`'s `git-hooks.hooks` is the source of truth for that list; this prose has been wrong before, so check there rather than here if they disagree.) If a hook fails:
+Always commit with pre-commit hooks enabled. **Never** use `git commit --no-verify` — the pre-commit hooks ensure clippy, rustfmt, shellcheck, the docs-check and the commit-message format all pass before each commit. The two whole-corpus checks — `cargo test --release` and `cargo run --release -- check init std examples lang cli llvm runtime build motes` — are deliberately NOT hooks (they are minutes each, and the config is shared across worktrees); they run in CI instead, in `.github/workflows/ci.yml`'s `pre-commit-checks`. (`devenv.nix`'s `git-hooks.hooks` is the source of truth for the hook list; this prose has been wrong before, so check there rather than here if they disagree.) If a hook fails:
 1. Read the error message to identify the issue
 2. Fix the underlying problem (code warnings, test failures, formatting)
 3. Stage the fix and retry the commit

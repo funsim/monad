@@ -32,9 +32,14 @@ env:
   # `devenv-tasks run devenv:enterShell --mode all`. `--mode all` walks the
   # whole task graph in both directions, so entry reaches
   # `devenv:git-hooks:run` -- the full `prek run -a` (clippy, rustfmt,
-  # shellcheck, docs-check, monad-check, `cargo test --release`): 521-559s cold
-  # and 76-77s warm in this repo's job logs, seven times per pipeline, and only
-  # one of those runs is any job's verdict. DEVENV_SKIP_TASKS is the shellHook's
+  # shellcheck, docs-check, commit-msg-format): 521-559s cold and 76-77s warm
+  # in this repo's job logs, seven times per pipeline, and only one of those
+  # runs is any job's verdict. That range was measured with seven hooks; two of
+  # them (`cargo test --release`, and the whole-corpus `check` at one severity
+  # stricter) are now steps of their own below, so the sweep is narrower now
+  # than what the range measured.
+  #
+  # DEVENV_SKIP_TASKS is the shellHook's
   # own off switch -- devenv's tasks.nix guards the invocation with
   # `if [ -z "${DEVENV_SKIP_TASKS:-}" ]` and does nothing else with it -- so
   # setting it here suppresses every entry-time sweep, including the nested
@@ -101,9 +106,11 @@ env:
 # for why one must never miss and the other must never buy a cold build for
 # nothing.
 #
-# `pre-commit-checks` deliberately has NO `needs:`, so every run still
-# reports a verdict -- a docs-only change is still linted, rustfmt'd,
-# clippy'd and doc-checked, and no required check is left pending.
+# `pre-commit-checks` needs only `changes`, and no ANSWER gates the job: every
+# run is still linted, rustfmt'd, clippy'd and doc-checked, so no required check
+# is left pending. Only the Rust suite at the end of it reads the classifier --
+# a change that touches no compiler input skips that STEP, and a skipped step
+# reports success, unlike a skipped job.
 jobs:
   # Decides whether the jobs below have anything to do. Answers over outputs
   # because the gates below read them. `fetch-depth: 0` because the classifiers
@@ -145,6 +152,7 @@ jobs:
           echo "flake-relevant: $flake"
 
   pre-commit-checks:
+    needs: changes
     runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@v5
@@ -166,23 +174,36 @@ jobs:
 
       # The `use`-completeness rule, ENFORCED. Every name a module reaches
       # from another module has to be named in its own `use` line (unless
-      # ambient), and the same `check` invocation in the hook above reports
-      # a violation as a warning and carries on -- a migration can proceed
-      # file by file, which is how commit 9e948de3's corpus was fixed. This
-      # step is the flip to a hard failure, and it is a step of its own
-      # rather than an edit to devenv.nix's `monad-check` hook because the
-      # pre-commit config is generated per checkout but SHARED by every
-      # worktree on the machine: a hook that fails on an unimported name
-      # would break commits in a sibling worktree still on a branch whose
-      # corpus predates the migration.
-      #
-      # Same directory list as the hook, so the two can only disagree about
-      # severity.
+      # ambient). This began as the flip of a warning the `monad-check`
+      # pre-commit hook emitted, and was a step of its own rather than an edit
+      # to that hook because .pre-commit-config.yaml is generated per checkout
+      # but SHARED by every worktree on the machine: a hook that failed on an
+      # unimported name would break commits in a sibling worktree still on a
+      # branch whose corpus predates the migration. The hook itself is gone now
+      # -- it ran this same whole-corpus `check` on every commit in every
+      # worktree -- so this is the pipeline's ONLY whole-corpus check, and it
+      # is the strictest form of it.
       - name: "`use` completeness (enforced)"
         run: |
           nix develop --no-pure-eval --accept-flake-config -c \
             env MONAD_USE_COMPLETENESS=error cargo run --release -- \
               check init std examples lang cli llvm runtime build motes
+
+      # This step is why `nix/host.nix` may set `doCheck = false`: the flake's
+      # host derivation skips the workspace's own `cargo test`, on the premise
+      # that CI runs it from the dev shell. That premise used to be a
+      # `rust-tests` pre-commit hook, which ran the suite on every commit in
+      # every worktree; it is here instead (see devenv.nix).
+      #
+      # A step rather than a job, because a skipped STEP reports success while
+      # a skipped JOB is a name branch protection would have to be told about:
+      # a docs-only change costs nothing and a compiler change still gates the
+      # job that already gates.
+      - name: Rust test suite
+        if: needs.changes.outputs.compiler == 'true'
+        run: |
+          nix develop --no-pure-eval --accept-flake-config -c \
+            cargo test --release
 
   compiler-checks:
     runs-on: [self-hosted, linux]
