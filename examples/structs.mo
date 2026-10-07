@@ -12,8 +12,12 @@ struct Point {
     y: I64,
 }
 
-// Struct with default field value
-struct Rect {
+// Struct with default field value. Named for its role rather than `Rect`,
+// and distinctly from `init/src/tests.mo`'s identical `DefaultedBox`: the
+// corpus links into one whole-program namespace, where two structs sharing a
+// name are a layout hazard and `tui`'s public four-field `Rect` claims that
+// one.
+struct Defaulted {
     w: I64,
     h: I64 := 100,
 }
@@ -33,7 +37,7 @@ def test_struct_construct_and_match : Bool :=
 
 #[test]
 def test_struct_default_value : Bool :=
-    let r : Rect := { w := 50 } in
+    let r : Defaulted := { w := 50 } in
     match r {
         mk w h => h == 100
     }

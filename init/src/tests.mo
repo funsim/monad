@@ -306,14 +306,14 @@ def test_struct_wildcard : Bool :=
         mk x _ => x == 10
     }
 
-struct Rect {
+struct DefaultedBox {
     w: I64,
     h: I64 := 100,
 }
 
 #[test]
 def test_struct_default_value : Bool :=
-    let r : Rect := { w := 50 } in
+    let r : DefaultedBox := { w := 50 } in
     match r {
         mk w h => h == 100
     }

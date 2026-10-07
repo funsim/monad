@@ -46,4 +46,5 @@ members = [
   "motes/parsec",
   "motes/toml",
   "motes/toolkit",
+  "motes/tui",
 ]

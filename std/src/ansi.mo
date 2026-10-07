@@ -8,12 +8,43 @@
 use lib::io {}
 open IO {get_env}
 
-type Color {
+pub type Color {
     black, red, green, yellow, blue, magenta, cyan, white,
     bright_black, bright_red, bright_green, bright_yellow,
     bright_blue, bright_magenta, bright_cyan, bright_white,
     color256 (code : U8),
     true_color (r : U8) (g : U8) (b : U8)
+}
+
+/// Structural equality on `Color`, variant by variant; `color256` compares
+/// its code and `true_color` all three channels.
+pub def Color.beq (a b : Color) : Bool :=
+    match a {
+        black => match b { black => true, _ => false },
+        red => match b { red => true, _ => false },
+        green => match b { green => true, _ => false },
+        yellow => match b { yellow => true, _ => false },
+        blue => match b { blue => true, _ => false },
+        magenta => match b { magenta => true, _ => false },
+        cyan => match b { cyan => true, _ => false },
+        white => match b { white => true, _ => false },
+        bright_black => match b { bright_black => true, _ => false },
+        bright_red => match b { bright_red => true, _ => false },
+        bright_green => match b { bright_green => true, _ => false },
+        bright_yellow => match b { bright_yellow => true, _ => false },
+        bright_blue => match b { bright_blue => true, _ => false },
+        bright_magenta => match b { bright_magenta => true, _ => false },
+        bright_cyan => match b { bright_cyan => true, _ => false },
+        bright_white => match b { bright_white => true, _ => false },
+        color256 ca => match b { color256 cb => ca == cb, _ => false },
+        true_color ra ga ba => match b {
+            true_color rb gb bb => ra == rb && ga == gb && ba == bb,
+            _ => false
+        }
+    }
+
+instance BEq Color {
+    def beq (a b : Color) : Bool := Color.beq a b
 }
 
 type Style {
@@ -27,7 +58,7 @@ type Modifier {
     reset
 }
 
-def color_fg_code (c : Color) : String :=
+pub def color_fg_code (c : Color) : String :=
     match c {
         black => "30", red => "31", green => "32", yellow => "33",
         blue => "34", magenta => "35", cyan => "36", white => "37",
@@ -37,7 +68,7 @@ def color_fg_code (c : Color) : String :=
         true_color r g b => "38;2;" ++ U8.to_string r ++ ";" ++ U8.to_string g ++ ";" ++ U8.to_string b
     }
 
-def color_bg_code (c : Color) : String :=
+pub def color_bg_code (c : Color) : String :=
     match c {
         black => "40", red => "41", green => "42", yellow => "43",
         blue => "44", magenta => "45", cyan => "46", white => "47",
@@ -138,6 +169,23 @@ pub def colored (s : String) (color : Color) : IO String := do {
 }
 
 // ---------- Tests ----------
+
+#[test]
+def test_color_beq_same_variant : Bool :=
+    Color.red == Color.red
+
+#[test]
+def test_color_beq_different_variant : Bool :=
+    Bool.not (Color.red == Color.green)
+
+#[test]
+def test_color_beq_color256_compares_code : Bool :=
+    Color.color256 42u8 == Color.color256 42u8 && Bool.not (Color.color256 1u8 == Color.color256 2u8)
+
+#[test]
+def test_color_beq_true_color_compares_all_fields : Bool :=
+    Color.true_color 1u8 2u8 3u8 == Color.true_color 1u8 2u8 3u8
+    && Bool.not (Color.true_color 1u8 2u8 3u8 == Color.true_color 1u8 2u8 9u8)
 
 #[test]
 def test_escape_reset : Bool :=
