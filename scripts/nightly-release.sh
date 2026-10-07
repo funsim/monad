@@ -89,6 +89,26 @@ install -m755 "$out/share/monad/monad" "$bin"
 test -x "$bin"
 file "$bin"
 
+# A published Mac binary must load no library out of the store it was copied
+# from: the one that did died in dyld before `main` on every machine without
+# that exact path, while every check below passed -- they run HERE, where the
+# store is. `nix/monad.nix` links libgc statically on darwin for this reason.
+# Only darwin, because a Linux binary from the store names a store path as its
+# ELF interpreter, which is a separate fix this guard would fail on.
+case "$MONAD_PLATFORM" in
+  *-darwin)
+    # Captured, not piped into `grep -q`: under pipefail an early-exiting grep
+    # can SIGPIPE the producer and turn a match into a failed condition.
+    linked="$(otool -L "$bin")"
+    printf '%s\n' "$linked"
+    if printf '%s\n' "$linked" | tail -n +2 | grep '/nix/store/' >/dev/null; then
+      echo "nightly-release: $bin links a library from /nix/store, so it cannot run" >&2
+      echo "  on a machine without that store path" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 if [ "$runs_here" = yes ]; then
   # What the binary says it was built from. An unidentifiable published
   # artifact is a real defect, not a cosmetic one -- so an empty or "unknown"
