@@ -16,16 +16,21 @@ def test_statet_pure_run : Bool :=
     }
 
 // NOTE: `test_statet_bind` (using `Monad.bind` on `StateT`) triggers a
-// pre-existing `MatchTraversalMismatch` in the lowering pass — the type
-// checker and `lower_core_ir.rs` disagree on match traversal order when
-// `Monad.bind` instance resolution for `StateT S Id` is followed by a
-// `Pair.pair` pattern match in the same file. This is the same class of
-// bug documented in AGENTS.md's style rule 1 pitfall. The `Monad
-// (StateT S M)` instance itself compiles and type-checks correctly; the
-// bug is in the lowering of call sites that combine `Monad.bind` on
-// `StateT` with `Pair.pair` matching.
+// pre-existing `MatchTraversalMismatch` in the lowering pass, re-reproduced
+// on this branch's head:
 //
-// When the lowering bug is fixed, restore this test:
+//   lower init/src/transformers_tests.mo: MatchTraversalMismatch {
+//     expected: [Identifier("pair")], found: [Identifier("Monad")] }
+//
+// The type checker and `lower_core_ir.rs` disagree on match traversal order
+// once `Monad.bind`'s instance resolution for `StateT S Id` is followed by a
+// `Pair.pair` pattern match in the same file. It is `StateT`-specific rather
+// than the `Monad.bind` + `Pair.pair` combination as such: a probe doing
+// `Monad.bind` on `Id` followed by the identical `Pair.pair` match compiles
+// and passes. Until that lowering bug is fixed, the `bind` half of the
+// `Monad (StateT S M)` instance has NO executing test -- and by this
+// module's own header rule, `check` alone cannot see a missing instance, so
+// the gap is real. Restore this test then:
 //
 // #[test]
 // def test_statet_bind : Bool :=

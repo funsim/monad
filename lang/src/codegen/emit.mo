@@ -2963,8 +2963,10 @@ def wrap_io_value_native_result (ctx : CodegenCtx) (prior_val : LLVMValue) (extr
 /// Shared tail for both wrap helpers above: `pre_instrs` computes
 /// `inner_val` (empty when it's already computed), then allocates the
 /// two-layer IO wrapper: `IO.mk (RawIO.io inner)`. The inner `RawIO.io`
-/// gets tag 7 / one field; the outer `IO.mk` gets tag 17 / one field
-/// holding the `RawIO.io` value. All spliced via `compose_seq`.
+/// gets tag 7 / one field; the outer `IO.mk` gets tag 19 / one field
+/// holding the `RawIO.io` value. Both tags come from `builtin_ctor_tags`,
+/// looked up by qualified name, so they cannot drift from the C runtime's
+/// own copies. All spliced via `compose_seq`.
 #[partial]
 def wrap_io_value_native_result_go (ctx : CodegenCtx) (inner_val : LLVMValue) (pre_instrs : List LLVMInstruction) (prior_val : LLVMValue) (prior_instrs : List LLVMInstruction) (prior_blocks : List LLVMBasicBlock) (funcs : List LLVMFunction) (globals : List LLVMGlobal) : CompileResult :=
     match fresh_temp ctx {
@@ -3985,8 +3987,8 @@ def zero_return_instrs (instrs : List LLVMInstruction) : List LLVMInstruction :=
 
 /// Fixes a genuine, previously-undiagnosed native-codegen bug: a `main`
 /// declared `IO _` (e.g. `def main : IO I64 := IO.pure 5`) used to have
-/// its RAW returned pointer (a boxed `IO.mk (RawIO.io)` constructor VALUE, from
-/// `init/io.mo`'s `type IO A { io A }`) returned straight to the C
+/// its RAW returned pointer (a boxed `IO.mk (RawIO.io _)` constructor VALUE
+/// from `init/io.mo`) returned straight to the C
 /// runtime's `int main() { return (int)main_monad(args); }`, which
 /// casts it directly to `int` with no unwrapping at all — the process's
 /// actual exit code ends up being whatever the low byte of a heap

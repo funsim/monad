@@ -20,17 +20,19 @@ use lib::codegen::symbols {extract_base_name, name_path_to_str, symbol_identifie
 use lib::codegen::util {}
 use std::map {HashMap}
 
-/// The ~16 builtin constructors' tags (0-15), keyed by BOTH their
-/// qualified ("RawIO.io", "IO.mk") and base ("io") name forms -- built once, looked
+/// The builtin constructors' tags, keyed by BOTH their qualified
+/// ("RawIO.io", "IO.mk") and base ("io") name forms -- built once, looked
 /// up via `str_map_lookup` instead of a hand-rolled `if/else-if` chain.
-/// Tags match the runtime's own assignment; left completely unchanged
-/// from the original hardcoded chain this replaces -- zero risk to
-/// already-working code, purely a readability/dispatch-mechanism change.
+/// The values are FIXED rather than per-program, because `runtime.c`
+/// allocates some of them directly and a C function cannot consult the
+/// per-program numbering. 17/18 are that file's `MONAD_FIBER_TAG` /
+/// `MONAD_SCOPE_TAG` handle kinds, so no constructor may be minted onto
+/// them; 16 is `Array.mk` and 19 is `IO.mk`.
 #[partial]
 def builtin_ctor_tags : HashMap String I64 :=
     let m := str_map_empty in
     let m := str_map_insert "RawIO.io" 7 m in
-    let m := str_map_insert "IO.mk" 17 m in
+    let m := str_map_insert "IO.mk" 19 m in
     let m := str_map_insert "Unit.unit" 0 m in
     let m := str_map_insert "Bool.true" 1 m in
     let m := str_map_insert "Bool.false" 2 m in
@@ -411,10 +413,12 @@ def add_ctor_alias_tags (claims : List CtorClaim) (scan : BareArityScan) (tags :
 ///   - the bare name alone (last-resort tier): real tag when claimed
 ///     at one arity, -1 sentinel when ambiguous.
 ///
-/// Starts at 16 -- past `constructor_tag`'s existing hardcoded 0-15
-/// builtin range (`unit, true, false, none, some, empty, cons, io,
-/// trivial, refl, ok, err, zero, succ, nil, pair`), which is left
-/// completely untouched -- those tiers are consulted BEFORE this map.
+/// Starts at 16 -- the number this has always started at. The fixed
+/// builtin range it was chosen to clear (`constructor_tag`'s 0-15) has
+/// since grown to reach 16 (`Array.mk`) and 19 (`IO.mk`), so a dynamic
+/// tag can now coincide with a builtin's; those tiers are consulted
+/// BEFORE this map, so a coincidence is reachable only through a
+/// composite-key miss.
 /// Matching a bare name with its arity at every alloc/dispatch site is
 /// what makes the composite key sufficient without threading the
 /// scrutinee's static type into match compilation (`MatchCase` carries

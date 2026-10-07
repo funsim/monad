@@ -519,11 +519,13 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             // that.
             else if String.beq target "get_env" then Option.some (NativeWrapKind.io_passthrough "monad_get_env")
             // The async runtime (`std/concurrent/{fiber,combine}.mo`).
-            // Every one of the seven is `IO`-returning, so all are the
-            // same shape: call the runtime, wrap the raw result in
-            // `IO.mk (RawIO.io _)`. That wrapping is exactly why `monad_await_fiber`
-            // has to UNWRAP the field 0 of the `IO.mk (RawIO.io _)` its action
-            // produced -- see that function's own comment.
+            // Six of the seven are `IO`-returning the same way: call the
+            // runtime, wrap the raw result in `IO.mk (RawIO.io _)`.
+            // `await_fiber` is the exception -- what it hands back IS the
+            // action's own result, already a complete `IO A`, so it is a
+            // plain `passthrough` (the kind `io_pure`/`io_bind` use) and
+            // the backend adds no second layer. See `monad_await_fiber`'s
+            // own comment in runtime.c.
             //
             // The handles themselves are opaque: `Fiber`/`Scope` values
             // are raw runtime pointers, never constructors, which is why
@@ -531,7 +533,7 @@ def native_runtime_fn_name (attrs : List Attribute) : Option NativeWrapKind :=
             // `Fiber`'s own module says so ("Fiber handles are opaque
             // runtime objects; do not pattern match on them").
             else if String.beq target "fork_io" then Option.some (NativeWrapKind.io_passthrough "monad_fork_io")
-            else if String.beq target "await_fiber" then Option.some (NativeWrapKind.io_passthrough "monad_await_fiber")
+            else if String.beq target "await_fiber" then Option.some (NativeWrapKind.passthrough "monad_await_fiber")
             else if String.beq target "cancel_fiber" then Option.some (NativeWrapKind.io_passthrough "monad_cancel_fiber")
             else if String.beq target "sleep_io" then Option.some (NativeWrapKind.io_passthrough "monad_sleep_io")
             else if String.beq target "scope_new" then Option.some (NativeWrapKind.io_passthrough "monad_scope_new")

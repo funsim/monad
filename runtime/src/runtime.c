@@ -49,6 +49,11 @@ typedef struct {
    are described. */
 #define MONAD_FIBER_TAG 17
 #define MONAD_SCOPE_TAG 18
+/* The tag `lang/src/codegen/ctors.mo`'s `builtin_ctor_tags` assigns to
+   `IO.mk`, so a box built here and one built by emitted code are the same
+   value. 16 is `Array.mk` and 17/18 are the handle kinds above, so 19 is
+   the next free slot -- the two tables have to be changed together. */
+#define MONAD_IO_MK_TAG 19
 
 typedef struct {
     Header header;
@@ -575,7 +580,8 @@ typedef struct {
     int64_t state;     /* 0 while the thread runs, 1 once it has stopped */
     int64_t cancelled; /* set by monad_cancel_fiber; see this section's own
                           doc comment for why it cannot preempt */
-    int64_t io_box;    /* the `IO.io` value the action produced */
+    int64_t io_box;    /* the action's own result: an `IO A`, i.e. a complete
+                          `IO.mk (RawIO.io _)` box */
     int64_t reaped;    /* 1 once the thread has been joined */
     int64_t started;   /* 1 once a thread exists TO join: a refused
                           pthread_create leaves `thread` unwritten, and
@@ -719,20 +725,31 @@ void* monad_await_fiber(void* handle) {
     if (cancelled) {
         /* The host's `await_fiber` is an eval ERROR here ("fiber {id} was
            cancelled"). This backend has no error channel out of a native,
-           so the closest honest thing is a diagnostic plus a NULL
-           payload: the value is wrong, and it is wrong out loud. Nothing
-           in the corpus can reach it -- `race` cancels every fiber it
-           does NOT then await. */
+           so the closest honest thing is a diagnostic plus a well-formed
+           box around a NULL payload: the value is wrong, and it is wrong
+           out loud. Nothing in the corpus can reach it -- `race` cancels
+           every fiber it does NOT then await. The box is built out in full
+           here rather than left to the codegen, because this native is
+           `passthrough` now (see below) and the backend adds no layer. */
         fprintf(stderr, "monad: await_fiber on a cancelled fiber\n");
-        return NULL;
+        void* raw_io = alloc_constructor(7, 1);
+        monad_set_field(raw_io, 0, NULL);
+        void* io_mk = alloc_constructor(MONAD_IO_MK_TAG, 1);
+        monad_set_field(io_mk, 0, raw_io);
+        return io_mk;
     }
-    /* The action's own result is an `IO.io` box, because it is typed
-       `Unit -> IO A`; the backend wraps what this returns in a FRESH
-       `IO.io` (NativeWrapKind.io_passthrough), so unwrapping field 0 here
-       is what keeps the count at exactly one -- `IO.io`'s tag is assigned
-       per program, so the tag cannot be consulted, but `type IO A { io A }`
-       is single-constructor and arity 1 by construction (init/io.mo). */
-    return monad_get_field((void*)(intptr_t)box, 0);
+    /* `f->io_box` holds the ACTION's own result, which is typed `IO A`
+       (`std/src/concurrent/fiber.mo`) and is therefore already a complete
+       `IO.mk (RawIO.io _)` box -- see that field's own comment. Return it
+       unchanged: this native is `NativeWrapKind.passthrough` in
+       `lang/src/codegen/natives.mo`, so the backend wraps nothing, exactly
+       like the Rust host's `await_fiber` (`core/src/core_native.rs`).
+       Peeling field 0 here was right for the single-layer
+       `type IO A { io A }` and became wrong the moment `IO` gained its
+       `RawIO` wrapper: one peel of a two-layer box left the inner
+       `RawIO.io A` and, once the wrapper re-wrapped it, made this return
+       `IO (RawIO A)`. */
+    return (void*)(intptr_t)box;
 }
 
 /* monad_io_pure: RawIO.pure (a : A) : RawIO A -- wraps a value in the

@@ -1,17 +1,19 @@
-// Monad transformers -- the common stack-building layer over any `Monad`.
+// Monad transformers -- the stack-building layer over any `Monad`.
 //
-// Opt-in like `init.foldable` (not re-exported from `lib.mo`): the six
-// common transformers `IdentityT`, `OptionT`, `ResultT`, `ReaderT`,
-// `WriterT`, and `StateT`, each with `Functor`/`Applicative`/`Monad`
-// instances over any underlying monad, plus `run`/`lift` and the effect
-// operations.
+// Opt-in like `init.foldable` (not re-exported from `lib.mo`). `StateT` is
+// the first and so far only one; `IdentityT`, `OptionT`, `ResultT`,
+// `ReaderT`, and `WriterT` are the intended rest, each to follow the same
+// shape: a `Functor`/`Applicative`/`Monad` instance over any underlying
+// monad, plus `run`/`lift` and the effect operations.
 //
 // Every instance here is `[Monad M]`-constrained: resolving e.g.
 // `Monad (StateT S M)` at a concrete call site recursively resolves
 // `Monad M` underneath it, so stacks resolve one level at a time down
 // to a base monad (`Id`, `IO`, ...). Because instance resolution is a
-// run-time step in Monad, `transformers_tests.mo` executes every
-// instance -- `check` alone cannot see a missing one.
+// run-time step in Monad, `transformers_tests.mo` has to EXECUTE every
+// instance -- `check` alone cannot see a missing one. (The `bind` half of
+// the `StateT` instance is currently unexercised: the lowering bug its own
+// note describes.)
 
 // Future transformers (WriterT) will need Monoid/Semigroup from foldable.
 // use lib::foldable {Monoid, Semigroup}
@@ -39,7 +41,7 @@ pub def StateT.run (m : StateT S M A) (s : S) : M (Pair S A) :=
     }
 
 /// Evaluate the stateful computation, returning only the result.
-pub def StateT.eval (m : StateT S M A) (s : S) : M A :=
+pub def StateT.eval [Monad M] {S : Type} {A : Type} (m : StateT S M A) (s : S) : M A :=
     match m {
         StateT.mk r => Monad.bind (r s) (fn p =>
             match p {
@@ -48,7 +50,7 @@ pub def StateT.eval (m : StateT S M A) (s : S) : M A :=
     }
 
 /// Execute the stateful computation, returning only the final state.
-pub def StateT.exec (m : StateT S M A) (s : S) : M S :=
+pub def StateT.exec [Monad M] {S : Type} {A : Type} (m : StateT S M A) (s : S) : M S :=
     match m {
         StateT.mk r => Monad.bind (r s) (fn p =>
             match p {
