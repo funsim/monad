@@ -616,3 +616,35 @@ def test_let_match_no_annotation : Bool :=
         Option.some _ => true,
         Option.none => false
     }
+
+// -- Comonad tests --
+
+#[test]
+def test_comonad_id_extract : Bool :=
+    Comonad.extract (Id.id 42) == 42
+
+#[test]
+def test_comonad_id_duplicate_is_the_same_context_twice : Bool :=
+    Id.run (Id.run (Comonad.duplicate (Id.id 42))) == 42
+
+#[test]
+def test_comonad_id_extend_maps_over_the_context : Bool :=
+    Id.run (Comonad.extend (fn a => Id.run a + 1) (Id.id 41)) == 42
+
+#[test]
+def test_comonad_pair_extract_is_the_second_component : Bool :=
+    Comonad.extract (Pair.pair 10 3) == 3
+
+#[test]
+def test_comonad_pair_duplicate_carries_the_environment_into_both : Bool :=
+    match Comonad.duplicate (Pair.pair 10 3) {
+        Pair.pair e inner => match inner {
+            Pair.pair e2 a => e == 10 && e2 == 10 && a == 3
+        }
+    }
+
+#[test]
+def test_comonad_pair_extend_applies_with_the_environment_in_scope : Bool :=
+    match Comonad.extend (fn w => Comonad.extract w + 1) (Pair.pair 10 3) {
+        Pair.pair e b => e == 10 && b == 4
+    }

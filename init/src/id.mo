@@ -23,6 +23,18 @@ instance Monad Id {
         match a { id a => f a }
 }
 
+/// The identity comonad: there is no context to push inwards.
+instance Comonad Id {
+    def extract (a : Id A) : A :=
+        match a { id a => a }
+
+    def duplicate (a : Id A) : Id (Id A) :=
+        match a { id a => id (id a) }
+
+    def extend (f : Id A -> B) (a : Id A) : Id B :=
+        match a { id a => id (f (id a)) }
+}
+
 /// Unwrap an Id monad value, extracting the underlying pure value.
 def Id.run (a : Id A) : A :=
     match a { id a => a }

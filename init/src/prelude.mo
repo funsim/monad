@@ -64,6 +64,16 @@ class [Applicative M] Monad (M: Type -> Type) {
 
 infix (>>=) := Monad.bind
 
+/// Dual of `Monad`: `extract` pulls the value out of a context; `duplicate`
+/// and `extend` push the context inwards. All three are required -- the usual
+/// `extend f = map f . duplicate` default would need a `Functor` superclass
+/// constraint, and a superclass constraint gets no slot in the dictionary.
+class Comonad (W : Type -> Type) {
+    def extract (W A) : A
+    def duplicate (W A) : W (W A)
+    def extend (f : W A -> B) (W A) : W B
+}
+
 /// State monad: thread state S through a monad M.
 /// Single-param class (M only) — S is an implicit forall variable,
 /// like Map's K/V, so `KnownInstances` can key on the monad's concrete
@@ -238,6 +248,19 @@ type Result E A {
 
 type Pair A B {
 	pair (first : A) (second : B)
+}
+
+/// The product comonad: `E` is a read-only environment, so `extract` is the
+/// second component and `duplicate` copies it into both halves.
+instance {E : Type} Comonad (Pair E) {
+    def extract (p : Pair E A) : A :=
+        match p { Pair.pair _ a => a }
+
+    def duplicate (p : Pair E A) : Pair E (Pair E A) :=
+        match p { Pair.pair e a => Pair.pair e (Pair.pair e a) }
+
+    def extend (f : Pair E A -> B) (p : Pair E A) : Pair E B :=
+        match p { Pair.pair e a => Pair.pair e (f (Pair.pair e a)) }
 }
 
 /// Dependent pair: the second component's TYPE may depend on the first

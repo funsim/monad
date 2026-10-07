@@ -117,6 +117,7 @@ prelude ones are available without an import.
 | `Functor (F : Type -> Type)` | `map` | |
 | `Applicative (F)` | `pure`, `apply` | requires `Functor` |
 | `Monad (M)` | `bind`, `pure` | requires `Applicative` |
+| `Comonad (W)` | `extract`, `duplicate`, `extend` | dual of `Monad`; no `Functor` superclass |
 | `IndexedMonad (M)` | `pure`, `bind`, `map`, `and_then`, `lift` | indexed by two phantom parameters |
 | `MonadState (M)` | `get`, `set`, `modify_get`, `modify`*, `get_map`* | * has a default body. The state type is an implicit forall, not a class parameter |
 | `MonadLift m n` | `monad_lift` | lift a computation from `m` into `n` |
