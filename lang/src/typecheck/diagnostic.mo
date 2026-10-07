@@ -75,8 +75,20 @@ pub def type_error_message (e : TypeError) : String :=
 /// file's header comment).
 #[partial]
 pub def render_type_error (context_name : String) (path : Option String) (e : TypeError) : String :=
+	render_type_diagnostic "error: " context_name path e
+
+/// The shared body. `severity` is the whole prefix, trailing space included.
+///
+/// Split out, with the severity word coming from the CALLER, for the warning
+/// renderer the self-hosted checker does not have yet: `type_error_message` is
+/// prefix-free, so a demoted diagnostic can never read `warning: error: ...`.
+/// Adding that sibling is part of the severity-aware `check` loop
+/// `lang/module.mo`'s `Diagnostic` note describes -- not something to land
+/// alone, because nothing can route a warning to a printer today.
+#[partial]
+def render_type_diagnostic (severity : String) (context_name : String) (path : Option String) (e : TypeError) : String :=
 	let msg : String := type_error_message e in
-	let header : String := String.concat "error: " (String.concat msg (String.concat " in " (String.concat context_name "\n"))) in
+	let header : String := String.concat severity (String.concat msg (String.concat " in " (String.concat context_name "\n"))) in
 	let path_str : String := match path {
 		Option.some p => p,
 		Option.none => "",

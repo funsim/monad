@@ -1253,16 +1253,57 @@ def uncovered_constructors (cases : List MatchCase) (ind : Inductive) : List Nam
 /// A def marked `#[allow_incomplete_match "<reason>"]` opts out via
 /// `Scope.incomplete_match_ok` (set in lang/module.mo; see
 /// `has_incomplete_match_exemption`).
+///
+/// THIS IS A WARNING, NOT AN ERROR, AND THE `ok` BELOW IS DELIBERATE.
+/// Returning `err` here was measured to be unshippable twice over. It
+/// reaches codegen through `elaborate_def_with_scope`, whose caller
+/// (`elaborate_module_decls_reporting`, lang/module.mo) is best-effort and
+/// SWALLOWS the error, leaving the def un-elaborated for codegen's syntactic
+/// fallbacks to miscompile into a SIGSEGV with no diagnostic
+/// (`lang/codegen/validate.mo` documents that exact shape; it cost a ladder
+/// rung on 2026-10-06). And it rejects ~22+ existing corpus defs that are
+/// total by invariant rather than by syntax, which fails their whole file
+/// under `monad test`. `plans/implementations/strict-exhaustiveness.md`
+/// prescribes the sequencing: warn, sweep the corpus (its Phase 4), then
+/// flip. `match_coverage_warning` below is the reporting half; flipping it
+/// back means making THIS return `err` again and is one edit.
 def validate_match_coverage (cases : List MatchCase) (maybe_ind : Option Inductive) (scope : Scope) : Result TypeError Bool :=
-    if scope.incomplete_match_ok then ok true
-    else match maybe_ind {
+    match match_coverage_gap cases maybe_ind scope {
+        // The gap is REAL and deliberately not fatal. Phase 4 flips this arm
+        // to `err (TypeError.custom (non_exhaustive_match_message ind missing))`
+        // -- `match_coverage_warning` already renders exactly that text -- once
+        // the corpus is clean.
+        Option.some _ => ok true,
         Option.none => ok true,
+    }
+
+/// The rule as a pure QUERY: the uncovered constructors of this match, or
+/// `Option.none` when it is covered, unresolved, or exempted. One place, so
+/// the check that warns and a future check that errors cannot disagree about
+/// what "uncovered" means -- the same single-source-of-truth reason the host
+/// keeps `use_completeness_is_strict` in one function
+/// (`core/src/term/module.rs`).
+pub def match_coverage_gap (cases : List MatchCase) (maybe_ind : Option Inductive) (scope : Scope) : Option (Pair Inductive (List NamePath)) :=
+    if scope.incomplete_match_ok then Option.none
+    else match maybe_ind {
+        Option.none => Option.none,
         Option.some ind =>
             let missing : List NamePath := uncovered_constructors cases ind in
             match missing {
-                List.empty => ok true,
-                List.cons _ _ => err (TypeError.custom (non_exhaustive_match_message ind missing)),
+                List.empty => Option.none,
+                List.cons _ _ => Option.some (Pair.pair ind missing),
             },
+    }
+
+/// The warning text for a coverage gap, or `Option.none` when there is none.
+/// The message is prefix-free; the severity word comes from the renderer
+/// (`render_type_warning`, lang/typecheck/diagnostic.mo).
+pub def match_coverage_warning (cases : List MatchCase) (maybe_ind : Option Inductive) (scope : Scope) : Option String :=
+    match match_coverage_gap cases maybe_ind scope {
+        Option.none => Option.none,
+        Option.some p => match p {
+            Pair.pair ind missing => Option.some (non_exhaustive_match_message ind missing),
+        },
     }
 
 /// Type check match cases — process all cases and unify their body types.

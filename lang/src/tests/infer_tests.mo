@@ -11,8 +11,8 @@ use lang::types {
 use lib::scope {build_scope_from_decls, scope_find_inductive}
 use lib::typecheck::infer {
   CalleeDomain, TypedTerm, empty_local_types, empty_locals,
-  is_uninformative_carrier, lam_binder_hint, type_check, type_check_match_case,
-  validate_match_coverage
+  is_uninformative_carrier, lam_binder_hint, match_coverage_warning, type_check,
+  type_check_match_case
 }
 
 open Term {app, hole, lam, lit, pi, var}
@@ -598,11 +598,13 @@ def test_match_branch_type_conflict : Bool :=
 
 // --- Match exhaustiveness (strict-exhaustiveness.md, Phase 1) ---
 //
-// These pins call `validate_match_coverage` DIRECTLY. The rule is a pure
-// function of (cases, maybe_ind, scope), and `maybe_ind` is the whole of the
-// type information it consumes, so testing it needs no scope plumbing at all.
-// The two end-to-end pins at the end go through `type_check` instead, to
-// prove the call in `type_check_cases_accum`'s tail is live.
+// These pins call `match_coverage_warning` DIRECTLY -- the rule's pure query,
+// and the same one the reporting side consumes. The rule is a pure function of
+// (cases, maybe_ind, scope), and `maybe_ind` is the whole of the type
+// information it consumes, so testing it needs no scope plumbing at all. The
+// end-to-end pins at the end go through `type_check`, to prove the call in
+// `type_check_cases_accum`'s tail is live AND that it no longer fails the
+// check -- the rule is a warning (see `validate_match_coverage`'s own note).
 
 /// A closed three-constructor inductive, declared in the order `c`, `d`, `e`
 /// -- which is the order the diagnostic must list them in.
@@ -624,16 +626,23 @@ def cov_ind : Inductive :=
 def cov_case (n : String) : MatchCase :=
     MatchCase.mc (Identifier.id n) List.empty (sort_n 1) Option.none
 
+// These drive `match_coverage_warning`, the rule's pure QUERY, and not
+// `validate_match_coverage`: the rule is a WARNING now, so the latter
+// answers `ok` for a covered and an uncovered match alike and a test
+// reading it would pass vacuously -- the one kind of gate worth less than
+// no gate at all. `match_coverage_warning` is also what the reporting side
+// consumes, so these keep testing the thing that is actually wired up, and
+// they go on meaning the same when the rule is flipped back to an error.
 def cov_ok (cases : List MatchCase) : Bool :=
-    match validate_match_coverage cases (Option.some cov_ind) test_scope {
-        ok _ => true,
-        err _ => false,
+    match match_coverage_warning cases (Option.some cov_ind) test_scope {
+        Option.none => true,
+        Option.some _ => false,
     }
 
 def cov_msg (cases : List MatchCase) : String :=
-    match validate_match_coverage cases (Option.some cov_ind) test_scope {
-        ok _ => "",
-        err e => match e { TypeError.custom msg => msg, _ => "" },
+    match match_coverage_warning cases (Option.some cov_ind) test_scope {
+        Option.none => "",
+        Option.some msg => msg,
     }
 
 #[test]
@@ -671,24 +680,24 @@ def test_match_zero_constructor_inductive_needs_no_empty_match : Bool :=
     let voidish : Inductive := Inductive.mk
         (NamePath.npath (List.cons (Identifier.id "V") List.empty))
         List.empty (sort_n 1) List.empty List.empty Visibility.package_private in
-    match validate_match_coverage [cov_case "c"] (Option.some voidish) test_scope {
-        ok _ => true,
-        err _ => false,
+    match match_coverage_warning [cov_case "c"] (Option.some voidish) test_scope {
+        Option.none => true,
+        Option.some _ => false,
     }
 
 #[test]
 def test_match_unresolved_scrutinee_is_skipped : Bool :=
-    match validate_match_coverage [cov_case "c"] Option.none test_scope {
-        ok _ => true,
-        err _ => false,
+    match match_coverage_warning [cov_case "c"] Option.none test_scope {
+        Option.none => true,
+        Option.some _ => false,
     }
 
 #[test]
 def test_match_incomplete_match_exemption_switches_the_rule_off : Bool :=
     let exempt : Scope := { test_scope with incomplete_match_ok := true } in
-    match validate_match_coverage [cov_case "c"] (Option.some cov_ind) exempt {
-        ok _ => true,
-        err _ => false,
+    match match_coverage_warning [cov_case "c"] (Option.some cov_ind) exempt {
+        Option.none => true,
+        Option.some _ => false,
     }
 
 #[test]
@@ -701,15 +710,40 @@ def test_match_bare_field_pattern_name_covers_nothing : Bool :=
 // --- the same rule end to end, through the checker ---
 
 #[test]
-def test_match_missing_arm_is_an_error_end_to_end : Bool :=
+def test_match_missing_arm_does_not_fail_the_check_end_to_end : Bool :=
+    // The rule is a WARNING, so an uncovered match must type-check. This is
+    // the pin that would have caught the 2026-10-06 regression from the other
+    // side: when this returned `err`, the error reached codegen through
+    // `elaborate_def_with_scope`, was swallowed by its best-effort caller, and
+    // the un-elaborated body miscompiled into a SIGSEGV. Flipping the rule to
+    // an error again (strict-exhaustiveness.md Phase 4) means inverting this
+    // test and fixing the corpus in the same change.
     let scrutinee : Term := sort_n 1 in
     let body : Term := sort_n 1 in
     let case_some : MatchCase := MatchCase.mc (Identifier.id "some") List.empty body Option.none in
     let cases : List MatchCase := List.cons case_some List.empty in
     let t : Term := Term.lit (Literal.match_ scrutinee cases) in
     match type_check t Term.hole maybe_scope empty_local_types empty_locals {
-        ok _ => false,
-        err e => match e { TypeError.custom msg => String.contains msg "`Maybe.none`", _ => false },
+        ok _ => true,
+        err _ => false,
+    }
+
+/// The same shape as the pin above, but asserting the rule still SEES the
+/// gap and still names the missing constructor -- a warning that reports
+/// nothing would satisfy the pin above and be worthless.
+#[test]
+def test_match_missing_arm_is_still_reported_end_to_end : Bool :=
+    let type_name : NamePath := NamePath.npath (List.cons (Identifier.id "Maybe") List.empty) in
+    let some_cn : InductConstructor := InductConstructor.mk
+        (NamePath.npath (List.cons (Identifier.id "some") List.empty)) List.empty (sort_n 1) in
+    let none_cn : InductConstructor := InductConstructor.mk
+        (NamePath.npath (List.cons (Identifier.id "none") List.empty)) List.empty (sort_n 1) in
+    let ind : Inductive := Inductive.mk
+        type_name List.empty (sort_n 1) [some_cn, none_cn] List.empty Visibility.package_private in
+    let case_some : MatchCase := MatchCase.mc (Identifier.id "some") List.empty (sort_n 1) Option.none in
+    match match_coverage_warning [case_some] (Option.some ind) test_scope {
+        Option.some msg => String.contains msg "`Maybe.none`",
+        Option.none => false,
     }
 
 #[test]
